@@ -1,0 +1,100 @@
+[project]
+name = "ai-platform"
+version = "0.1.0"
+description = "基于 FastAPI + LangChain/LangGraph 的 AI 平台服务（RAG + Agent + MCP）"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "beautifulsoup4>=4.15.0",
+    "fastapi>=0.141.1",
+    "flagembedding>=1.4.2",
+    "langchain>=1.4.2",
+    "langchain-community>=0.4.2",
+    "langchain-milvus>=0.4.0",
+    "langchain-openai>=1.6.6",
+    "langgraph>=1.2.12",
+    "mcp>=2.2.0",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.45.0",
+    "opentelemetry-sdk>=1.45.0",
+    "prometheus-client>=0.26.0",
+    "pydantic>=2.13.5",
+    "pydantic-settings>=2.15.0",
+    "pymilvus>=3.0.2",
+    "pypdf>=6.19.0",
+    "python-docx>=1.2.0",
+    "python-dotenv>=1.2.3",
+    "sentence-transformers>=6.1.0",
+    "torch>=2.14.0",
+    "transformers>=5.17.0",
+    "uvicorn[standard]>=0.54.0",
+]
+
+[project.optional-dependencies]
+redis = [
+    "redis>=6.5.0",
+]
+kafka = [
+    "aiokafka>=0.13.0",
+]
+mysql = [
+    "asyncmy>=0.2.10",
+    "sqlalchemy[asyncio]>=2.0",
+]
+minio = [
+    "minio>=7.2.20",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[dependency-groups]
+dev = [
+    "mypy>=2.3.1",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.16.9",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["app"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "RUF"]
+ignore = [
+    "E501",    # 行太长：交给 ruff format 处理，文档字符串不强制折行
+    "RUF001",  # 中文全角标点在字符串中：误报
+    "RUF002",  # 中文全角标点在 docstring 中：误报
+    "RUF003",  # 中文全角标点在注释中：误报
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-q"
+# 测试分层见 docs/11-§2：单元 / 契约默认跑，其余按需选择
+markers = [
+    "ac: 验收用例，docstring 中标注对应的 AC 编号",
+    "integration: 需要外部容器（Milvus / Redis / MySQL / MinIO / Kafka）",
+    "e2e: 端到端场景（依赖容器 + Fake LLM）",
+    "perf: 性能测试，默认不跑（pytest -m perf）",
+    "eval: RAG 效果评估，需真实模型与 LLM",
+]
+
+[tool.mypy]
+python_version = "3.12"
+mypy_path = "."
+packages = ["app"]
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+check_untyped_defs = true

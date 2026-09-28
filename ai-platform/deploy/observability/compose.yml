@@ -1,0 +1,76 @@
+# ============================================================
+# M6 可观测性本地栈：Jaeger（链路）+ Prometheus（指标）+ Grafana（看板）
+#
+# 用法（在仓库根目录或任意 cwd 均可）：
+#   docker compose -f ai-platform/deploy/observability/compose.yml up -d
+#   docker compose -f ai-platform/deploy/observability/compose.yml down -v
+#
+# 端口：
+#   Jaeger UI        http://localhost:16686         （容器内 OTLP gRPC 4317 / HTTP 4318）
+#   Prometheus UI    http://localhost:9090
+#   Grafana          http://localhost:3000          （匿名可看；admin/admin）
+#   ai-platform 指标 http://localhost:9100/metrics   （不在本 compose 内，是宿主进程）
+#
+# 注意：Prometheus 通过 host.docker.internal 抓宿主机上的 ai-platform，
+# 所以 Docker Desktop 必须开启（Windows/macOS 自带该域名，Linux 需要 extra_hosts）。
+# ============================================================
+name: ai-platform-observability
+
+services:
+  jaeger:
+    image: jaegertracing/all-in-one:1.76.0
+    container_name: ai-platform-jaeger
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686" # UI
+      - "4317:4317" # OTLP gRPC（对应 OTEL_EXPORTER_OTLP_ENDPOINT）
+      - "4318:4318" # OTLP HTTP
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:14269/"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    container_name: ai-platform-prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+      - --web.enable-lifecycle
+    volumes:
+      - ./prometheus:/etc/prometheus:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    extra_hosts:
+      # Linux 上让 host.docker.internal 可用（Docker Desktop 已内置）
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:13.0.9
+    container_name: ai-platform-grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      # 未登录也能看（本地开发省事；生产务必关掉并用匿名只读之外的账号）
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/dashboards/ai-platform.json
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/etc/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+volumes:
+  prometheus-data:
+  grafana-data:

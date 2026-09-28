@@ -1,0 +1,57 @@
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# ---------- 虚拟环境 ----------
+.venv/
+venv/
+env/
+ENV/
+
+# ---------- uv ----------
+# 保留 uv.lock 以便可复现安装，不入库的只有缓存
+.uv/
+
+# ---------- 环境变量 ----------
+.env
+.env.*
+!.env.example
+
+# ---------- 测试 / 类型检查 / 缓存 ----------
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.tox/
+.nox/
+
+# ---------- 模型 / 向量数据缓存 ----------
+.cache/
+models/
+*.onnx
+*.safetensors
+*.bin
+*.pt
+*.pth
+volumes/
+milvus_data/
+
+# ---------- 编辑器 / 系统 ----------
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# ---------- 日志 ----------
+*.log
+logs/

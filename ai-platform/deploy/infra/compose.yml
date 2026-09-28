@@ -1,0 +1,120 @@
+# ============================================================
+# 本地基础设施栈：Redis（任务存储 / 事件总线 / 延迟重试）
+#                 + Kafka（任务队列）+ MinIO（对象存储）
+#
+# 用法（在仓库根目录或任意 cwd 均可）：
+#   docker compose -f ai-platform/deploy/infra/compose.yml up -d
+#   docker compose -f ai-platform/deploy/infra/compose.yml --profile kafka up -d
+#   docker compose -f ai-platform/deploy/infra/compose.yml down -v
+#
+# 端口：
+#   Redis            localhost:6379     （对应 REDIS_URL）
+#   MinIO API        localhost:9000     （对应 MINIO_ENDPOINT）
+#   MinIO 控制台      localhost:9011     （浏览器打开，9001 已被其它栈占用）
+#   Kafka（宿主机）  localhost:9092     （对应 KAFKA_BOOTSTRAP_SERVERS）
+#
+# 不在本文件里、但 `INFRA_BACKEND=real` 需要的两个依赖：
+#   * MySQL  —— 本机安装的实例（localhost:3306，库 ai_platform）。
+#               建表：`ai-platform/deploy/mysql/001_init_schema.sql`（+ 002/003 补丁）
+#   * Milvus —— 外部 standalone 实例（localhost:19530，默认数据库 default）。
+#               两个集合（chunks / memories）由应用启动时的 `ensure_ready()` 自建。
+#   刻意不放进来：它们需要 etcd + 自己的 MinIO，与本文件的服务重名/重端口，
+#   合成一个 project 反而会把「哪个 MinIO 是给 Milvus 用的」搞混。
+#
+# 配套环境变量（与 .env.example 一致）：
+#   INFRA_BACKEND=real        # 任务存储/事件总线/延迟重试走 Redis
+#   TASK_RUNNER=kafka         # 任务队列走 Kafka（Worker 独立进程消费）
+#   REDIS_URL=redis://localhost:6379/0
+#   MINIO_ENDPOINT=localhost:9000
+#   MINIO_ACCESS_KEY=minioadmin
+#   MINIO_SECRET_KEY=minioadmin
+#
+# 为什么 Redis 与 Kafka 要分开选：
+#   两者解决的是**不同**的问题 —— Redis 是「短期的进度与去重状态」，Kafka 是
+#   「至少一次的任务投递 + 消费者组」。只起 Redis 就能验证 Worker 的
+#   PENDING→QUEUED→RUNNING 流转与进度流（`TASK_RUNNER` 用 `inline` 时任务由
+#   API 进程自己跑），起 Kafka 才验证「投递 → 独立 Worker 消费 → 重试/补偿」。
+# ============================================================
+name: ai-platform-infra
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: ai-platform-redis
+    # 任务存储靠 TTL 过期清理，Redis 重启不该丢一半状态；AOF everysec 在
+    # 「本地开发跑一遍验收」与「性能」之间是合理取舍。
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  # 单节点 KRaft（无 ZooKeeper）。**注意**：本服务未经本仓库实际运行验证
+  # （本机未拉取镜像），仅按官方镜像文档配置；首次启动慢了会让 Worker 报
+  # `MQ_UNAVAILABLE`，那属于预期内的「依赖没起来」而不是代码问题。
+  kafka:
+    image: apache/kafka:4.1.0
+    container_name: ai-platform-kafka
+    profiles: ["kafka"]
+    environment:
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      # 本地开发：消息保留 24h，够跑完一轮验收又不会把盘吃满
+      KAFKA_LOG_RETENTION_HOURS: "24"
+    ports:
+      - "9092:9092"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+    restart: unless-stopped
+
+  # 对象存储（文档原文件）。`INFRA_BACKEND=real` 时上传/下载/删除都走它。
+  #
+  # 凭据固定为 minioadmin/minioadmin：**仅供本地开发**（容器只监听本机端口）。
+  # 真正的部署应换成密钥管理下发的凭据，并把 MINIO_SECURE 打开。
+  minio:
+    image: minio/minio:latest
+    container_name: ai-platform-minio
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      # API 用默认 9000（与 MINIO_ENDPOINT 一致）；控制台避开其它栈占用的 9001
+      - "9000:9000"
+      - "9011:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      # /minio/health/live 只表示进程活着，不校验凭据；但「起没起来」正是这里
+      # 唯一要回答的问题（凭据错会直接在应用日志里报 S3 错误）
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9000/minio/health/live || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+
+volumes:
+  redis-data:
+  kafka-data:
+  minio-data:
