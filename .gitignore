@@ -1,0 +1,20 @@
+# ===== 顶层（本仓库根 = ai-assistant） =====
+
+# ---------- 暂不纳入仓库 ----------
+# go-services 尚未完成，暂时排除；完成后删掉这一行即可纳入
+go-services/
+
+# ---------- 编辑器 / 系统 ----------
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# ---------- 日志 / 临时 ----------
+*.log
+logs/
+tmp/
+
+# 各子项目的规则（Python 虚拟环境 / .env / 模型权重等）见
+# ai-platform/.gitignore

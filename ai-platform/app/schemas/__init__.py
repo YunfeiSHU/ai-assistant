@@ -1,0 +1,82 @@
+"""Pydantic 数据模型（请求 / 响应契约）。"""
+
+from app.schemas.chat import ChatMessage, ChatRequest, ChatResponse
+from app.schemas.common import ErrorDetail, ErrorEnvelope, Page, StrictModel
+from app.schemas.document import (
+    ChunkList,
+    ChunkOut,
+    DocumentDeleteResult,
+    DocumentError,
+    DocumentList,
+    DocumentOut,
+    UploadAccepted,
+)
+from app.schemas.health import HealthResponse, LivenessResponse, ReadinessResponse
+from app.schemas.knowledge_base import (
+    KnowledgeBaseCreate,
+    KnowledgeBaseDeleteResult,
+    KnowledgeBaseList,
+    KnowledgeBaseOut,
+    KnowledgeBaseUpdate,
+    SearchItem,
+    SearchRequest,
+    SearchResponse,
+)
+from app.schemas.memory import (
+    ContextBudgetOut,
+    ContextMessageOut,
+    ContextSummaryOut,
+    ConversationContextOut,
+    MemoryCreate,
+    MemoryList,
+    MemoryOut,
+    MemorySettingsOut,
+    MemorySettingsUpdate,
+    MemoryUpdate,
+    SummaryOut,
+    SummaryRebuildAccepted,
+)
+from app.schemas.task import TaskErrorOut, TaskList, TaskOut
+
+__all__ = [
+    "ChatMessage",
+    "ChatRequest",
+    "ChatResponse",
+    "ChunkList",
+    "ChunkOut",
+    "ContextBudgetOut",
+    "ContextMessageOut",
+    "ContextSummaryOut",
+    "ConversationContextOut",
+    "DocumentDeleteResult",
+    "DocumentError",
+    "DocumentList",
+    "DocumentOut",
+    "ErrorDetail",
+    "ErrorEnvelope",
+    "HealthResponse",
+    "KnowledgeBaseCreate",
+    "KnowledgeBaseDeleteResult",
+    "KnowledgeBaseList",
+    "KnowledgeBaseOut",
+    "KnowledgeBaseUpdate",
+    "LivenessResponse",
+    "MemoryCreate",
+    "MemoryList",
+    "MemoryOut",
+    "MemorySettingsOut",
+    "MemorySettingsUpdate",
+    "MemoryUpdate",
+    "Page",
+    "ReadinessResponse",
+    "SearchItem",
+    "SearchRequest",
+    "SearchResponse",
+    "StrictModel",
+    "SummaryOut",
+    "SummaryRebuildAccepted",
+    "TaskErrorOut",
+    "TaskList",
+    "TaskOut",
+    "UploadAccepted",
+]

@@ -1,0 +1,21 @@
+# Prometheus 抓取配置：只抓 ai-platform 暴露的 /metrics 端点。
+# 指标清单与标签约束见 docs/10-非功能需求与可观测性.md §5.2。
+
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  - job_name: ai-platform
+    metrics_path: /metrics
+    static_configs:
+      # 宿主机上运行的 ai-platform（uvicorn 的 METRICS_PORT）
+      - targets: ["host.docker.internal:9100"]
+        labels:
+          service: ai-platform
+          env: local

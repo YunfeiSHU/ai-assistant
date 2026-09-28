@@ -1,0 +1,17 @@
+{
+  // Python 项目位于 ai-platform 子目录（uv 管理的 .venv）
+  "python.defaultInterpreterPath": "${workspaceFolder}/ai-platform/.venv/Scripts/python.exe",
+  "python.analysis.extraPaths": ["${workspaceFolder}/ai-platform"],
+  "python.analysis.typeCheckingMode": "basic",
+
+  // 测试
+  "python.testing.pytestEnabled": true,
+  "python.testing.unittestEnabled": false,
+  "python.testing.cwd": "${workspaceFolder}/ai-platform",
+  "python.testing.pytestArgs": ["tests"],
+
+  // 编辑器
+  "files.trimTrailingWhitespace": true,
+  "files.insertFinalNewline": true,
+  "files.eol": "\n"
+}
