@@ -1,0 +1,28 @@
+# ============================================================
+# 本机专用覆盖（**不要提交、不要在别的机器上引用**）
+#
+# 为什么需要它：本机 `127.0.0.1:9000` 被 **VS Code 的端口转发**占用
+#   （`Get-NetTCPConnection -LocalPort 9000` → `Code`），于是 Docker 无法在
+#   9000 上发布 MinIO，`http://127.0.0.1:9000/...` 拿到的是 VS Code 的错误页
+#   （`404 text/html`，无 `Server` 头）—— 表现为「MinIO 明明 healthy，
+#   应用却报 `InvalidResponseError: non-XML response`」。
+#   控制台端口 9011 没被占，所以只有 API 端口需要挪。
+#
+# 用法：
+#   docker compose -f deploy/infra/compose.yml -f deploy/infra/compose.local.yml up -d
+# 配套：`.env` 里 `MINIO_ENDPOINT=127.0.0.1:9005`。
+#
+# 为什么是 9005 而不是 9002/9003：本机的 Milvus 栈
+# （`C:\Users\79042\.openclaw\workspace\milvus\docker-compose.yml`）已经占了
+# `9001`（它的 MinIO 控制台）与 `9002`（它的 MinIO API），本文件的控制台用 9011。
+#
+# `!override` 是必要的：compose 对 `ports` 是**追加**语义，不覆盖会留下
+# 原文件里的 `9000:9000`（那条发布本身就是失败的，留着只会让人误解）。
+# 注意 **不要**写 `!reset`：实测 v2.28 下它会把 ports 整个清空（`docker port`
+# 为空、容器只 `expose 9000`），既没 9000 也没新端口。
+# ============================================================
+services:
+  minio:
+    ports: !override
+      - "9005:9000"
+      - "9011:9001"

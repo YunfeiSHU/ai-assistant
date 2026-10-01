@@ -34,6 +34,9 @@
 #   「至少一次的任务投递 + 消费者组」。只起 Redis 就能验证 Worker 的
 #   PENDING→QUEUED→RUNNING 流转与进度流（`TASK_RUNNER` 用 `inline` 时任务由
 #   API 进程自己跑），起 Kafka 才验证「投递 → 独立 Worker 消费 → 重试/补偿」。
+#   ⚠ `.env.example` 的出厂档是 `real + kafka`（隔离档：大文件的解析/切分/向量化
+#   不进 API 进程），所以**照模板起步要 Redis 与 Kafka 都起**，并另开一个终端跑
+#   `uv run python -m app.worker`；只想单进程跑通接口才改回 `memory + inline`。
 # ============================================================
 name: ai-platform-infra
 

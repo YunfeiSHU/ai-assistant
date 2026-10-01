@@ -71,7 +71,10 @@ function Req {
         [int]$timeout = 30
     )
     $out = Join-Path $work "resp.json"
-    $av = @("-s", "-o", $out, "-w", "%{http_code}", "--max-time", "$timeout", "-X", $method, "$base$path", "-H", "Accept: application/json")
+    # `--noproxy *`：本机常驻 Clash 一类代理时会设 `http_proxy` 环境变量，而 curl 是认
+    # 环境变量的（不像 Invoke-WebRequest 走 WinINET）。本脚本全部请求都打 127.0.0.1，
+    # 显式绕开代理才不会被「代理是否在跑」影响结论（docs/09-§2.1 是同一件事的另一面）。
+    $av = @("-s", "--noproxy", "*", "-o", $out, "-w", "%{http_code}", "--max-time", "$timeout", "-X", $method, "$base$path", "-H", "Accept: application/json")
     if ($body) {
         $bodyFile = Join-Path $work "body.json"
         [IO.File]::WriteAllText($bodyFile, $body, [Text.UTF8Encoding]::new($false))
@@ -106,7 +109,7 @@ function Poll {
     $last = ""
     while ((Get-Date) -lt $deadline) {
         $out = Join-Path $work "poll.json"
-        & curl.exe -s -o $out "$base/tasks/$id" | Out-Null
+        & curl.exe -s --noproxy * -o $out "$base/tasks/$id" | Out-Null
         $task = AsJson ([IO.File]::ReadAllText($out, [Text.UTF8Encoding]::new($false)))
         if ($task) {
             $last = "$($task.status)"
@@ -135,7 +138,7 @@ function ReqRaw {
         [int]$timeout = 30
     )
     $out = Join-Path $work "sse.txt"
-    $av = @("-s", "-N", "--max-time", "$timeout", "-o", $out, "-w", "%{http_code}", "-X", $method, "$base$path", "-H", "Accept: text/event-stream")
+    $av = @("-s", "-N", "--noproxy", "*", "--max-time", "$timeout", "-o", $out, "-w", "%{http_code}", "-X", $method, "$base$path", "-H", "Accept: text/event-stream")
     if ($body) {
         $bodyFile = Join-Path $work "sse-body.json"
         [IO.File]::WriteAllText($bodyFile, $body, [Text.UTF8Encoding]::new($false))
