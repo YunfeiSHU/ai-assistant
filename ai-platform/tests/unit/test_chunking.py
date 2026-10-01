@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import math
+
 from app.core.tokens import count_tokens
 from app.rag.chunking import ChunkingService, SourceBlock
 
@@ -71,6 +73,64 @@ def test_short_chunks_are_not_merged_across_headings() -> None:
 
     assert len(drafts) == 2
     assert {draft.heading_path for draft in drafts} == {"售后 > 退款", "售后 > 换货"}
+
+
+# ---------------------------------------------------------------------------
+# UP-03：合并的停止条件是「填到 chunk_size」，不是「一跨过 0.3 倍就停」
+# ---------------------------------------------------------------------------
+def test_merge_target_is_chunk_size_not_a_third_of_it() -> None:
+    """填充目标是 ``chunk_size`` 本身（``docs/06`` §4.3 的 0.3 只是**下限**）。
+
+    旧实现把「低于 ``0.3 × chunk_size`` 的块 MUST 合并」这条**下限**当成了停止条件，
+    于是每块一累到 153 token 就停：8MB 测试正文实测中位块长 175（配额的 34%）、
+    **16,969 片**，是整篇一次切（6,527 片）的 2.6 倍，还因此撞上
+    ``MAX_DOC_CHUNKS=10000`` 静默丢掉 41% 正文（见 ai-platform-go/docs/09 §7.1）。
+
+    断言的是**两个常量之间的关系**，所以改配置也不会假红：填充目标必须等于
+    ``chunk_size``，且永远不越过 ``AC-RAG-07`` 的 1.5 倍硬上限。
+    """
+    service = ChunkingService(chunk_size=512, chunk_overlap=64)
+
+    assert service.merge_target_tokens == service.chunk_size == 512
+    assert service.max_chunk_tokens == 768  # 硬上限没动
+    assert service.merge_target_tokens <= service.max_chunk_tokens
+    # 小 chunk_size 下同样是「填到配额」，不是「填到 30%」
+    assert ChunkingService(chunk_size=128, chunk_overlap=16).merge_target_tokens == 128
+
+
+def test_fragment_blocks_are_packed_close_to_chunk_size() -> None:
+    """碎段（每段只有几十 token）必须被合并到接近配额 —— 「2.6 倍放大」的直接守门。
+
+    这是 UP-03 的**行为**断言（上一条只钉住常量）：200 个平均 30~40 token 的短段，
+    合并后每个 chunk 应当填到配额的 70% 以上，且片数不超过「按配额装箱」的理论上界
+    太多。旧实现（累到 153 就停）的填充率是 34%，这条会立刻红。
+    """
+    service = ChunkingService(chunk_size=256, chunk_overlap=16)
+    blocks = [
+        SourceBlock(
+            text=f"第 {index} 条：退款需在收到货物后七个工作日内提交，附件齐全。",
+            offset=index * 64,
+            page=1,
+            heading_path="售后 > 退款",
+        )
+        for index in range(200)
+    ]
+
+    drafts = service.split_blocks(blocks)
+
+    lengths = sorted(draft.token_count for draft in drafts)
+    median = lengths[len(lengths) // 2]
+    assert median >= service.chunk_size * 0.7, (
+        f"填充率只有 {median / service.chunk_size:.0%}"
+        f"（median={median} / {service.chunk_size}）—— "
+        "停止条件是不是又回到「一跨过 SHORT_CHUNK_RATIO 就停」了？"
+    )
+    # 比 AC-RAG-07 的 1.5 倍更严：合并结果不得超出配额本身
+    for draft in drafts:
+        assert draft.token_count <= service.chunk_size, draft.content[:40]
+    # 装箱效率：实际片数应当接近「总 token ÷ chunk_size」的理论下界
+    ideal = math.ceil(sum(lengths) / service.chunk_size)
+    assert len(drafts) <= ideal * 1.15 + 1, f"实际 {len(drafts)} 片，装箱上界约 {ideal} 片"
 
 
 def test_atomic_block_kept_whole() -> None:

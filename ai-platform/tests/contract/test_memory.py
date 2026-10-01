@@ -36,16 +36,16 @@ from tests.support.memory import (
     direction,
 )
 
-from app.config import Settings
-from app.core.ids import new_id
-from app.memory.context_store import InMemoryConversationStore
-from app.rag.base import RetrievedChunk
-from app.services.chat import REASON_SUMMARY_FAILED, ChatService
-from app.services.context import (
+from app.application.chat import REASON_SUMMARY_FAILED, ChatService
+from app.application.context import (
     DEFAULT_SYSTEM_PROMPT,
     MEMORY_LABEL,
     ContextAssembler,
 )
+from app.core.config import Settings
+from app.core.ids import new_id
+from app.memory.context_store import InMemoryConversationStore
+from app.rag.base import RetrievedChunk
 
 PREFIX = "/api/v1"
 CHAT = f"{PREFIX}/chat"

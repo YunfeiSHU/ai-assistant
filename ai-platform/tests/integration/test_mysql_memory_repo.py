@@ -18,7 +18,7 @@ from typing import Any
 import pytest
 from tests.conftest import build_settings
 
-from app.core.errors import AppError, ErrorCode
+from app.core.exceptions import AppError, ErrorCode
 from app.core.ids import new_id
 from app.memory.long_term import MemoryRecord
 from app.memory.mysql_repo import MySqlMemoryRepo
@@ -194,6 +194,7 @@ async def test_delete_returns_the_removed_record(memory_repo: Any, cleanup_user:
 
 
 async def test_delete_all_returns_count(memory_repo: Any, cleanup_user: str) -> None:
+    """``delete_all`` 返回本次实际删除条数，用户已空时返回 0（可重复调用）。"""
     for index in range(3):
         await memory_repo.add(_record(cleanup_user, f"第 {index} 条"))
     assert await memory_repo.delete_all(cleanup_user) == 3

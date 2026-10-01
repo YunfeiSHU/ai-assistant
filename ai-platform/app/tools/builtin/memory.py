@@ -20,9 +20,9 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
 
-from app.core.errors import AppError
+from app.application.memory import MemoryService
+from app.core.exceptions import AppError
 from app.memory.long_term import MemoryKind
-from app.services.memory import MemoryService
 from app.tools.base import BuiltinTool, ToolContext, ToolExecutionError, ToolOutcome
 
 SAVE_TOOL_NAME = "memory_save"

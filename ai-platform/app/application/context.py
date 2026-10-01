@@ -16,8 +16,8 @@ import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
-from app.config import Settings
-from app.core.errors import AppError, ErrorCode
+from app.core.config import Settings
+from app.core.exceptions import AppError, ErrorCode
 from app.core.tokens import count_tokens, truncate_to_tokens
 from app.llm.base import LLMMessage
 from app.rag.base import RetrievedChunk

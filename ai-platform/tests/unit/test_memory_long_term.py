@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.core.errors import AppError, ErrorCode
+from app.core.exceptions import AppError, ErrorCode
 from app.core.pagination import cursor_position
 from app.memory.long_term import (
     InMemoryMemoryRepo,
@@ -118,11 +118,13 @@ async def test_find_by_hash_returns_copy() -> None:
 
 
 async def test_find_by_hash_returns_none_when_absent() -> None:
+    """没有同规范化内容的记录时返回 ``None``（让调用方走「新建」分支而不是报 404）。"""
     repo = InMemoryMemoryRepo()
     assert await repo.find_by_hash("u_1", "不存在的记忆") is None
 
 
 async def test_touch_bumps_hit_count_and_confidence_only_upward() -> None:
+    """``touch`` 累加命中次数，但置信度**只升不降**（用户明说过的话不该被弱化）。"""
     repo = InMemoryMemoryRepo()
     await repo.add(_record("mem_1", confidence=0.6))
     touched = await repo.touch("mem_1", confidence=0.9)
@@ -133,6 +135,7 @@ async def test_touch_bumps_hit_count_and_confidence_only_upward() -> None:
 
 
 async def test_touch_missing_record_raises_not_found() -> None:
+    """对不存在的记忆 ``touch`` ⇒ ``MEMORY_NOT_FOUND``（而不是静默插入一条）。"""
     repo = InMemoryMemoryRepo()
     with pytest.raises(AppError) as excinfo:
         await repo.touch("mem_missing")
@@ -169,6 +172,7 @@ async def test_eviction_clears_unique_index() -> None:
 # 列表 / 分页 / 归属
 # ---------------------------------------------------------------------------
 async def test_list_page_sorts_by_cursor_position_desc() -> None:
+    """列表按 ``(created_at, id)`` 倒序 —— 最新写入的在第一页最前面。"""
     repo = InMemoryMemoryRepo()
     for index, stamp in enumerate(
         [
@@ -202,6 +206,7 @@ async def test_list_page_cursor_does_not_skip_or_repeat() -> None:
 
 
 async def test_list_page_filters_by_kind_and_expired() -> None:
+    """``kind`` 与 ``expired`` 是**独立**筛选项，可分别单独生效、也可组合。"""
     repo = InMemoryMemoryRepo()
     await repo.add(_record("mem_p", kind="preference"))
     await repo.add(_record("mem_f", kind="fact"))
@@ -257,6 +262,7 @@ async def test_save_updates_unique_index_when_content_changes() -> None:
 
 
 async def test_save_missing_record_raises_not_found() -> None:
+    """``save`` 是纯更新：记录不存在 ⇒ ``MEMORY_NOT_FOUND``，绝不 upsert。"""
     repo = InMemoryMemoryRepo()
     with pytest.raises(AppError) as excinfo:
         await repo.save(_record("mem_missing"))
@@ -264,6 +270,7 @@ async def test_save_missing_record_raises_not_found() -> None:
 
 
 async def test_delete_removes_row_and_index_entry() -> None:
+    """删除要同时清掉唯一索引项，否则同样的内容以后再也写不进来。"""
     repo = InMemoryMemoryRepo()
     await repo.add(_record("mem_1", content="待删除内容"))
     removed = await repo.delete("mem_1", "u_1")
@@ -273,6 +280,7 @@ async def test_delete_removes_row_and_index_entry() -> None:
 
 
 async def test_delete_all_is_idempotent_and_user_scoped() -> None:
+    """``delete_all`` 只清自己的记录、返回实际删除条数，重复调用返回 0 而不报错。"""
     repo = InMemoryMemoryRepo()
     await repo.add(_record("mem_1", user_id="u_1"))
     await repo.add(_record("mem_2", user_id="u_1"))
@@ -284,6 +292,7 @@ async def test_delete_all_is_idempotent_and_user_scoped() -> None:
 
 
 async def test_count_active_only_skips_expired() -> None:
+    """``active_only=True`` 的口径是"排除已过期"，默认口径则统计全部（含过期）。"""
     repo = InMemoryMemoryRepo()
     await repo.add(_record("mem_1"))
     expired = _record("mem_2")
@@ -297,6 +306,7 @@ async def test_count_active_only_skips_expired() -> None:
 # 过期
 # ---------------------------------------------------------------------------
 def test_expiring_marks_only_due_records() -> None:
+    """只有 ``expires_at`` 已到期且尚未标记的记录被标记；永久记录（无期限）永不失效。"""
     due = _record("mem_due", expires_at="2026-09-28T09:00:00.000Z")
     future = _record("mem_future", expires_at="2099-01-01T00:00:00.000Z")
     permanent = _record("mem_forever")
@@ -315,4 +325,5 @@ def test_expiring_is_idempotent() -> None:
 
 
 def test_is_expired_at_handles_missing_deadline() -> None:
+    """没有 ``expires_at`` 的记录在任何时刻都不算过期（``None`` 不是"立刻过期"）。"""
     assert _record("mem_1").is_expired_at("2099-01-01T00:00:00.000Z") is False

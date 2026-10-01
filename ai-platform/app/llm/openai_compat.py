@@ -23,8 +23,10 @@ from collections.abc import AsyncGenerator, AsyncIterator, Sequence
 from contextlib import aclosing
 from typing import Any
 
-from app.config import Settings
-from app.core.errors import AppError, ErrorCode
+from app.core.config import Settings
+from app.core.exceptions import AppError, ErrorCode
+from app.infrastructure.observability.metrics import get_metrics
+from app.infrastructure.observability.tracing import get_tracing
 from app.llm.base import (
     LLMDelta,
     LLMMessage,
@@ -33,8 +35,6 @@ from app.llm.base import (
     LLMUsage,
     map_llm_exception,
 )
-from app.observability.metrics import get_metrics
-from app.observability.tracing import get_tracing
 
 logger = logging.getLogger("app.llm")
 
@@ -209,6 +209,7 @@ class OpenAICompatLLM:
         return self._settings.llm_model
 
     def available_models(self) -> list[dict[str, Any]]:
+        """列出可用模型（``GET /models`` 的数据源）；返回**副本**，调用方改它不影响配置。"""
         return [dict(item) for item in self._settings.llm_models]
 
     def resolve_model(self, requested: str | None) -> str:
@@ -324,6 +325,12 @@ class OpenAICompatLLM:
         timeout: float | None = None,
         tools: Sequence[dict[str, Any]] | None = None,
     ) -> LLMResponse:
+        """一次性补全（``stream=False``）。
+
+        ``model`` / ``temperature`` / ``max_tokens`` 为 ``None`` 时取配置默认值；``timeout``
+        缺省取 ``LLM_TIMEOUT_SECONDS``。``tools`` 非空时把工具定义随请求发出，响应里的
+        工具调用由上层（Agent 循环）决定如何处理。
+        """
         client, payload, resolved_model, _ = self._prepare(
             messages, model, temperature, max_tokens, tools
         )
@@ -382,6 +389,7 @@ class OpenAICompatLLM:
         idle_timeout: float | None = None,
         tools: Sequence[dict[str, Any]] | None = None,
     ) -> AsyncIterator[LLMDelta]:
+        """流式补全：把上游的增量逐个产出给上层，供"边生成边下发"使用。"""
         client, payload, resolved_model, _ = self._prepare(
             messages, model, temperature, max_tokens, tools
         )

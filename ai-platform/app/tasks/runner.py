@@ -25,10 +25,10 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Protocol, runtime_checkable
 
-from app.config import Settings
-from app.core.errors import AppError, ErrorCode
-from app.observability.metrics import get_metrics
-from app.observability.tracing import get_tracing
+from app.core.config import Settings
+from app.core.exceptions import AppError, ErrorCode
+from app.infrastructure.observability.metrics import get_metrics
+from app.infrastructure.observability.tracing import get_tracing
 from app.tasks.models import Task, TaskStatus
 from app.tasks.service import TaskService
 from app.tasks.transport import TaskMessage, TaskProducer, build_task_producer

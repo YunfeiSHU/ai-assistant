@@ -25,7 +25,7 @@ import time
 from collections.abc import AsyncGenerator, Callable
 from typing import Any
 
-from app.core.errors import ErrorCode
+from app.core.exceptions import ErrorCode
 from app.tasks.events import TaskEvent, TaskEventBus
 from app.tasks.models import Task, TaskStatus
 from app.tasks.retry import error_retryable
@@ -61,7 +61,16 @@ def _snapshot_events(task: Task) -> list[TaskEvent]:
                 retryable=error_retryable(task),
             )
         ]
-    return [TaskEvent.progress(stage=task.stage, progress=task.progress)]
+    return [
+        TaskEvent.progress(
+            stage=task.stage,
+            progress=task.progress,
+            # 与 ``TaskService.report_progress`` 同一口径：0 当作「不适用」不下发，
+            # 否则非入库类任务的进度帧会凭空多出 ``chunks_total: 0``。
+            chunks_done=task.chunks_done or None,
+            chunks_total=task.chunks_total or None,
+        )
+    ]
 
 
 async def stream_task_events(
@@ -93,8 +102,14 @@ async def stream_task_events(
         if task.status in CLOSING_STATUSES:
             return
 
-        # 订阅与快照之间可能已经推过同一帧（进度是单调的），首帧之后做一次去重
-        last: tuple[Any, Any] | None = (task.stage, task.progress)
+        # 订阅与快照之间可能已经推过同一帧（进度是单调的），首帧之后做一次去重。
+        #
+        # 去重键**必须带上** ``chunks_done``：embedding 阶段的 ``progress`` 会在 95
+        # 上饱和，之后每批只涨 ``chunks_done``。只比 ``(stage, progress)`` 会把饱和
+        # 之后的增量帧全部当成重复丢掉 —— 客户端看到进度条停住不动，而任务其实在推进。
+        # 两侧都归一成 ``None``（而不是 0）才能对称：事件的 ``chunks_done``
+        # 在计数为 0 时是**不下发**的，拿 ``None`` 与 ``0`` 比永远不会相等。
+        last: tuple[Any, Any, Any] | None = (task.stage, task.progress, task.chunks_done or None)
         while True:
             event = await _next_event(subscription, deadline, clock, pending=primed)
             # 预热的那次 ``__anext__`` 只能交出去一次（要么被消费，要么被取消）
@@ -108,7 +123,11 @@ async def stream_task_events(
                 )
                 return
             if event.event == "progress":
-                key = (event.data.get("stage"), event.data.get("progress"))
+                key = (
+                    event.data.get("stage"),
+                    event.data.get("progress"),
+                    event.data.get("chunks_done"),
+                )
                 if key == last:
                     continue
                 last = key

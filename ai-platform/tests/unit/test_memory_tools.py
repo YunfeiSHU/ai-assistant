@@ -22,13 +22,13 @@ from tests.support.memory import DEFAULT_DIM, ScriptedEmbedding
 from tests.support.memory import blend as _blend
 from tests.support.memory import direction as _direction
 
-from app.config import Settings
-from app.core.errors import AppError, ErrorCode
+from app.application.context import ContextAssembler
+from app.application.memory import MemoryService
+from app.core.config import Settings
+from app.core.exceptions import AppError, ErrorCode
 from app.memory.context_store import InMemoryConversationStore
 from app.memory.long_term import InMemoryMemoryRepo
 from app.memory.vector_index import InMemoryMemoryVectorIndex
-from app.services.context import ContextAssembler
-from app.services.memory import MemoryService
 from app.tools.base import ToolContext, ToolExecutionError
 from app.tools.builtin.memory import (
     SAVE_TOOL_NAME,
@@ -73,6 +73,7 @@ def test_save_tool_is_declared_as_write() -> None:
 
 
 async def test_save_tool_writes_and_reports_created() -> None:
+    """``memory_save`` 落库成功并回 ``created``/``mem_id``，同时记下来源会话与置信度。"""
     service = _service()
     tool = MemorySaveTool(service)
     outcome = await tool.run(
@@ -121,6 +122,7 @@ async def test_save_tool_rejects_too_short_content() -> None:
 
 
 async def test_save_tool_maps_dependency_failure() -> None:
+    """写入被依赖条件拒绝（内容太短触发的依赖故障）⇒ ``ToolExecutionError``，不抛出领域错误。"""
     service = _service(build_settings(memory_content_min_chars=50))
     with pytest.raises(ToolExecutionError) as excinfo:
         await MemorySaveTool(service).run(MemorySaveArgs(content="用户偏好用表格回答"), _ctx())
@@ -128,6 +130,7 @@ async def test_save_tool_maps_dependency_failure() -> None:
 
 
 async def test_search_tool_returns_hits() -> None:
+    """命中项必须含 ``mem_id``/``content``/``kind``/``score`` 四元组，且与非空结果不带 ``hint``。"""
     embedding = ScriptedEmbedding(
         {"用户偏好用表格回答": _direction(1.0), "用户的回答风格偏好": _direction(1.0)}
     )
@@ -166,6 +169,7 @@ async def test_search_tool_suggests_when_empty() -> None:
 
 
 async def test_search_tool_respects_top_n() -> None:
+    """返回条数不超过入参 ``top_k``（``top_k=2`` 时不回 5 条）。"""
     contents = [f"用户的第 {index} 条稳定偏好" for index in range(5)]
     embedding = ScriptedEmbedding(
         {
@@ -232,6 +236,7 @@ def test_tools_expose_json_schema_names() -> None:
 
 @pytest.mark.parametrize("kind", ["preference", "fact"])
 async def test_save_tool_accepts_both_kinds(kind: str) -> None:
+    """``preference`` 与 ``fact`` 两类都要能写入，且回显的 ``kind`` 与入参一致。"""
     outcome = await MemorySaveTool(_service()).run(
         MemorySaveArgs(content=f"用户的第 {kind} 类信息", kind=kind), _ctx()
     )

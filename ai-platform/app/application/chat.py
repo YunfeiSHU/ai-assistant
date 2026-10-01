@@ -24,8 +24,10 @@ from contextlib import aclosing
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.config import Settings
-from app.core.errors import AppError, ErrorCode
+from app.application.context import AssembledContext, ContextAssembler, MemoryItem
+from app.application.memory import MemoryService
+from app.core.config import Settings
+from app.core.exceptions import AppError, ErrorCode
 from app.core.ids import new_id
 from app.core.logging import hash_identifier
 from app.core.sse import (
@@ -38,6 +40,8 @@ from app.core.sse import (
     EVENT_USAGE,
 )
 from app.core.text import sha256_hex
+from app.infrastructure.observability.metrics import get_metrics
+from app.infrastructure.observability.tracing import get_tracing
 from app.llm.base import (
     LLMClient,
     LLMDelta,
@@ -47,8 +51,6 @@ from app.llm.base import (
     map_llm_exception,
 )
 from app.memory.context_store import ConversationStore, StoredMessage, now_iso
-from app.observability.metrics import get_metrics
-from app.observability.tracing import get_tracing
 from app.rag.base import RetrievalUnavailable, RetrievedChunk, Retriever
 from app.schemas.chat import (
     ChatRequest,
@@ -61,8 +63,6 @@ from app.schemas.chat import (
     StreamUsage,
     Usage,
 )
-from app.services.context import AssembledContext, ContextAssembler, MemoryItem
-from app.services.memory import MemoryService
 from app.tasks.models import ResourceType, TaskType
 from app.tasks.runner import TaskRunner
 from app.tasks.service import TaskService, make_idem_key
@@ -140,7 +140,7 @@ class ChatService:
     def store(self) -> ConversationStore:
         """会话上下文存储。
 
-        暴露它是为了让 :class:`~app.services.agent.AgentService` 复用**同一个**实例：
+        暴露它是为了让 :class:`~app.application.agent.AgentService` 复用**同一个**实例：
         ``/chat`` 写入的历史必须能被 ``/agent/run`` 读到（及反向），各自 new 一个
         内存实现会让「同一个会话换接口就丢上下文」——不报错，只是历史没了。
         """
@@ -150,6 +150,12 @@ class ChatService:
     # 准备阶段
     # ------------------------------------------------------------------
     async def prepare(self, request: ChatRequest, user_id: str) -> PreparedChat:
+        """把请求规整成 :class:`PreparedChat`：语义校验 → 模型解析 → 历史/摘要/记忆/检索。
+
+        ``use_tools=true`` **不在这里分支**，而是由路由层分派给 :class:`AgentService`
+        （``docs/03`` §3.1）：两种响应的形状不同，混在一个方法里会让"返回类型取决于入参"
+        扩散到整个服务层。空提问给专属的 ``QUERY_EMPTY``，而不是笼统的 ``INVALID_ARGUMENT``。
+        """
         query = request.query.strip()
         if not query:
             # 语法上过 pydantic、语义上为空：必须给专属错误码而不是 INVALID_ARGUMENT
@@ -318,6 +324,11 @@ class ChatService:
     # 非流式
     # ------------------------------------------------------------------
     async def complete(self, request: ChatRequest, user_id: str) -> ChatResponse:
+        """非流式对话入口：``prepare`` → 模型调用 → 落库/摘要/记忆投递，一次性返回。
+
+        整段（含收尾逻辑）都包在 ``chat.request`` span 里 —— 看 trace 时要能分辨"慢在模型"
+        还是"慢在我们自己的收尾"。``user_id`` 按 ``docs/10`` §5.1 哈希后才写进 span 属性。
+        """
         started = time.perf_counter()
         prepared = await self.prepare(request, user_id)
 

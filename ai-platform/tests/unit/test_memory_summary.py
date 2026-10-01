@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 from tests.support.fake_llm import FakeLLM
 
-from app.config import Settings
+from app.core.config import Settings
 from app.memory.context_store import (
     ConversationSummary,
     InMemoryConversationStore,
@@ -92,6 +92,7 @@ def test_should_summarize_rejects_empty_history() -> None:
 # 结构规整
 # ---------------------------------------------------------------------------
 def test_ensure_structure_keeps_all_four_sections() -> None:
+    """四段（用户目标/已确认事实/未决问题/用户偏好）齐全、正文不丢，且顺序固定。"""
     text = ensure_structure(_RICH_REPLY)
     for name in SUMMARY_SECTIONS:
         assert f"## {name}" in text
@@ -124,6 +125,7 @@ def test_ensure_structure_strips_markdown_fence() -> None:
 
 
 def test_ensure_structure_ignores_content_before_first_heading() -> None:
+    """首个标题之前的寒暄/解释必须丢掉，否则会被当成某一段的正文注入 Prompt。"""
     text = ensure_structure("好的，以下是摘要：\n## 用户目标\n- 目标 A")
     assert "好的，以下是摘要" not in text
     assert "- 目标 A" in text
@@ -133,6 +135,7 @@ def test_ensure_structure_ignores_content_before_first_heading() -> None:
 # 生成
 # ---------------------------------------------------------------------------
 async def test_build_writes_structured_summary(settings: Settings) -> None:
+    """成功生成后落库的摘要四段齐全，且 ``covered_until`` 是被覆盖消息的真实时间戳。"""
     store = _store(settings)
     await _append(store, "cv_1", 30)
     llm = FakeLLM(replies=[_RICH_REPLY])
@@ -307,6 +310,7 @@ def _fake_debouncer(clock: dict[str, float]) -> Any:
 
 
 async def test_build_returns_none_when_disabled() -> None:
+    """``summary_enabled=false`` 时连 ``force=True`` 也不生成（总开关优先于手动重建）。"""
     from tests.conftest import build_settings
 
     settings = build_settings(summary_enabled=False)
@@ -318,6 +322,7 @@ async def test_build_returns_none_when_disabled() -> None:
 
 @pytest.mark.parametrize("count", [0, 1])
 def test_ensure_structure_on_empty_text(count: int) -> None:
+    """空串或全空白输入也要产出四段骨架（每段``- 无``），而不是空字符串。"""
     text = ensure_structure("" if count == 0 else "   ")
     assert text.count("## ") == 4
     assert text.count("- 无") == 4

@@ -3,7 +3,9 @@
 **为什么把 Embedding 做成可替换的端口**：DeepSeek 之类只提供对话接口，不提供
 embedding，所以向量化必须本地跑；但本地跑 BGE 需要下载数 GB 权重。于是：
 
-* ``bge``  —— 真实语义向量，生产使用；
+* ``ark``  —— 火山方舟**云端**多模态向量化：真实语义向量、不占本机算力，
+  代价是按 token 计费且"一条请求一条向量"（并发由 provider 内部负责）；
+* ``bge``  —— 本地权重的真实语义向量（CPU 上 1.45~2.06 ms/token，8MB 要 70~100min）；
 * ``hash`` —— 确定性词法向量，零下载。
 
 ``hash`` 不是「玩具」：它保证**同一个输入永远得到同一个向量**（用 blake2b 而不是
@@ -19,8 +21,8 @@ import time
 from collections.abc import Sequence
 from typing import Protocol, runtime_checkable
 
-from app.observability.metrics import get_metrics
-from app.observability.tracing import get_tracing
+from app.infrastructure.observability.metrics import get_metrics
+from app.infrastructure.observability.tracing import get_tracing
 
 #: 单批 Embedding 的超时（``docs/06`` §4.4：单批超时 120s）
 BATCH_TIMEOUT_SECONDS = 120.0
@@ -113,7 +115,7 @@ async def embed_texts(
                 seconds=time.perf_counter() - started,
             )
             return result
-    from app.core.errors import AppError, ErrorCode
+    from app.core.exceptions import AppError, ErrorCode
 
     raise AppError(
         ErrorCode.RETRIEVAL_FAILED,

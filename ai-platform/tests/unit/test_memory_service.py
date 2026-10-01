@@ -25,16 +25,16 @@ from tests.support.memory import DEFAULT_DIM, ScriptedEmbedding
 from tests.support.memory import blend as _blend
 from tests.support.memory import direction as _direction
 
-from app.config import Settings
-from app.core.errors import AppError, ErrorCode
+from app.application.context import ContextAssembler
+from app.application.memory import DEFAULT_MANUAL_CONFIDENCE, MemoryService
+from app.core.config import Settings
+from app.core.exceptions import AppError, ErrorCode
 from app.memory.context_store import InMemoryConversationStore, StoredMessage
 from app.memory.extractor import MemoryExtractor
 from app.memory.long_term import InMemoryMemoryRepo
 from app.memory.preferences import InMemoryMemoryPreferenceStore
 from app.memory.summary import SummaryBuilder
 from app.memory.vector_index import InMemoryMemoryVectorIndex
-from app.services.context import ContextAssembler
-from app.services.memory import DEFAULT_MANUAL_CONFIDENCE, MemoryService
 
 DIM = DEFAULT_DIM
 
@@ -67,6 +67,7 @@ def _service(
 # 写入：三层去重
 # ---------------------------------------------------------------------------
 async def test_first_write_creates_record() -> None:
+    """首次写入是新建：``created=True``、ID 带 ``mem_`` 前缀，且关系库与向量索引各一条。"""
     service = _service()
     result = await service.remember("用户偏好简洁回答", user_id="u_1", kind="preference")
     assert result.created is True
@@ -137,6 +138,7 @@ async def test_orphan_vector_does_not_block_creation() -> None:
 
 
 async def test_write_rejects_too_short_and_too_long() -> None:
+    """长度越界（短于 ``min`` / 长于 ``max``）都返回 ``INVALID_ARGUMENT``，不落库。"""
     settings = build_settings(memory_content_min_chars=5, memory_content_max_chars=20)
     service = _service(settings)
     with pytest.raises(AppError) as short:
@@ -157,6 +159,7 @@ async def test_write_rejects_past_expiry() -> None:
 
 
 async def test_write_accepts_future_expiry() -> None:
+    """``expires_at`` 是未来时间 ⇒ 正常写入，且存下来的值就是传入的那个字符串。"""
     service = _service()
     future = (datetime.now(UTC) + timedelta(days=1)).isoformat()
     result = await service.remember("用户偏好简洁回答", user_id="u_1", expires_at=future)
@@ -164,6 +167,7 @@ async def test_write_accepts_future_expiry() -> None:
 
 
 async def test_write_rejects_malformed_expiry() -> None:
+    """``expires_at`` 无法解析成时间 ⇒ ``INVALID_ARGUMENT``，而不是当作「无期限」。"""
     service = _service()
     with pytest.raises(AppError) as excinfo:
         await service.remember("用户偏好简洁回答", user_id="u_1", expires_at="明天")
@@ -190,6 +194,7 @@ async def test_search_filters_by_score_threshold() -> None:
 
 
 async def test_search_respects_top_n_preference() -> None:
+    """``search`` 的返回条数由用户偏好 ``top_n`` 决定，而不是调用方的固定值。"""
     contents = [f"用户的第 {index} 条稳定偏好" for index in range(5)]
     # 5 条记忆彼此正交（不会互相合并），但都与查询向量保持 0.6 的相似度
     embedding = ScriptedEmbedding(
@@ -230,6 +235,7 @@ async def test_search_skips_orphan_and_expired_records() -> None:
 
 
 async def test_search_empty_query_returns_nothing() -> None:
+    """全空白查询直接返回空，不发向量化请求（避免花一次调用换回一堆无关记忆）。"""
     service = _service()
     await service.remember("用户偏好简洁回答", user_id="u_1")
     assert await service.search("   ", "u_1") == []
@@ -248,12 +254,14 @@ async def test_preference_defaults_follow_global_switch() -> None:
 
 
 async def test_update_preference_clamps_top_n() -> None:
+    """``top_n`` 写入时被夹到 [1, 20]，超范围值不会原样存下（否则检索条数失控）。"""
     service = _service()
     assert (await service.update_preference("u_1", top_n=0)).top_n == 1
     assert (await service.update_preference("u_1", top_n=99)).top_n == 20
 
 
 async def test_update_preference_keeps_other_field() -> None:
+    """局部更新：只传 ``top_n`` 时 ``enabled`` 保持原值，不会被重置为默认。"""
     service = _service()
     await service.update_preference("u_1", enabled=False, top_n=5)
     kept = await service.update_preference("u_1", top_n=2)
@@ -265,6 +273,7 @@ async def test_update_preference_keeps_other_field() -> None:
 # CRUD
 # ---------------------------------------------------------------------------
 async def test_list_memories_returns_cursor() -> None:
+    """分页返回 ``(items, next_cursor)``：还有剩余就给游标，翻到底给 ``None``。"""
     settings = build_settings()
     service = _service(settings)
     for index in range(3):
@@ -307,6 +316,7 @@ async def test_update_content_revectorises() -> None:
 
 
 async def test_update_without_content_keeps_vector() -> None:
+    """只改 ``kind`` 时正文与向量都不动（无谓的重新向量化既慢又改变语义）。"""
     service = _service()
     record = (await service.remember("用户偏好简洁回答", user_id="u_1")).record
     updated = await service.update(record.id, "u_1", kind="preference")
@@ -315,6 +325,7 @@ async def test_update_without_content_keeps_vector() -> None:
 
 
 async def test_update_clear_expiry() -> None:
+    """``clear_expiry=True`` 把 ``expires_at`` 置空，同时把 ``expired`` 标记复位。"""
     service = _service()
     future = (datetime.now(UTC) + timedelta(days=1)).isoformat()
     record = (await service.remember("用户偏好简洁回答", user_id="u_1", expires_at=future)).record
@@ -333,6 +344,7 @@ async def test_delete_removes_from_repo_and_index() -> None:
 
 
 async def test_delete_all_clears_both_sides_and_marks_cooldown() -> None:
+    """清空返回删除条数，关系库与索引同时清零，并把偏好标上 ``cleared_at``（触发冷却）。"""
     clock = {"value": datetime.now(UTC)}
     service = _service(clock=lambda: clock["value"])
     for index in range(3):
@@ -361,6 +373,7 @@ def _messages(*contents: str) -> list[StoredMessage]:
 
 
 async def test_extract_and_store_writes_candidates() -> None:
+    """抽取出的候选要真的落库：返回新建记录且仓储里能查到。"""
     llm = FakeLLM(
         replies=['[{"content": "用户偏好简洁回答", "kind": "preference", "confidence": 0.9}]']
     )
@@ -395,6 +408,7 @@ async def test_extract_skipped_during_clear_cooldown() -> None:
 
 
 async def test_extract_resumes_after_cooldown() -> None:
+    """清空冷却窗口（24h）过去后，抽取必须恢复工作。"""
     now = {"value": datetime.now(UTC)}
     llm = FakeLLM(
         replies=['[{"content": "用户偏好简洁回答", "kind": "preference", "confidence": 0.9}]']
@@ -407,6 +421,7 @@ async def test_extract_resumes_after_cooldown() -> None:
 
 
 async def test_extract_skipped_when_disabled() -> None:
+    """用户级偏好 ``enabled=false`` 时不做抽取（返回空列表，也不调模型）。"""
     llm = FakeLLM(
         replies=['[{"content": "用户偏好简洁回答", "kind": "preference", "confidence": 0.9}]']
     )
@@ -416,6 +431,7 @@ async def test_extract_skipped_when_disabled() -> None:
 
 
 async def test_extract_skipped_when_globally_disabled() -> None:
+    """全局开关 ``memory_extract_enabled=false`` 时同样跳过（用户偏好无权开启）。"""
     settings = build_settings(memory_extract_enabled=False)
     llm = FakeLLM(
         replies=['[{"content": "用户偏好简洁回答", "kind": "preference", "confidence": 0.9}]']
@@ -428,6 +444,7 @@ async def test_extract_skipped_when_globally_disabled() -> None:
 # 上下文视图
 # ---------------------------------------------------------------------------
 async def test_context_overview_reports_budget() -> None:
+    """上下文视图给出消息、token 总量与分段预算（``token_by_part`` 至少含 system）。"""
     service = _service()
     store = service.store
     await store.ensure("cv_1", "u_1")
@@ -452,6 +469,7 @@ async def test_context_overview_injects_memories() -> None:
 
 
 async def test_context_overview_hides_long_term_memories_from_other_users() -> None:
+    """别人的长期记忆不得出现在本用户上下文中（连 ``memory`` 分段都不该有）。"""
     service = _service()
     await service.remember("用户偏好简洁回答", user_id="u_1")
     await service.store.ensure("cv_1", "u_2")
@@ -460,6 +478,7 @@ async def test_context_overview_hides_long_term_memories_from_other_users() -> N
 
 
 async def test_build_summary_returns_none_without_builder() -> None:
+    """没注入 ``summary_builder`` 时 ``build_summary`` 返回 ``None``（记忆功能可独立关闭）。"""
     settings = build_settings()
     store = InMemoryConversationStore(settings)
     service = MemoryService(

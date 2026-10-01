@@ -18,7 +18,7 @@ from typing import Any
 
 import pytest
 
-from app.core.errors import AppError, ErrorCode
+from app.core.exceptions import AppError, ErrorCode
 from app.tasks.events import InMemoryTaskEventBus, TaskEvent
 from app.tasks.models import ResourceType, Task, TaskError, TaskStatus, TaskType
 from app.tasks.stream import CLOSING_STATUSES, stream_task_events
@@ -247,6 +247,43 @@ async def test_duplicate_first_progress_frame_is_dropped() -> None:
     rest = await _collect(stream)
     assert [(event.event, event.data.get("progress")) for event in rest] == [
         ("progress", 90),
+        ("done", None),
+    ]
+
+
+async def test_progress_frames_after_saturation_are_not_deduped() -> None:
+    """``progress`` 饱和后，仅靠 ``chunks_done`` 前进的帧**不能**被当成重复丢掉。
+
+    embedding 阶段的 ``progress`` 封顶在 95，之后每批只涨 ``chunks_done``。
+    去重键只比 ``(stage, progress)`` 的话，客户端会看到进度条停住 ——
+    而任务其实在推进，「停住」与「卡死」在响应上就再也分不出来（``docs/10`` UP-02）。
+    """
+    bus = InMemoryTaskEventBus()
+    clock = _Clock()
+    stream = stream_task_events(
+        tasks=_FakeTaskService(  # type: ignore[arg-type]
+            _task(progress=95, stage="EMBEDDING", chunks_total=100, chunks_done=10)
+        ),
+        bus=bus,
+        task_id="task_1",
+        user_id="u_1",
+        max_seconds=5.0,
+        clock=clock,
+    )
+    first = await anext(stream)
+    assert first.data["chunks_done"] == 10, "快照首帧也要带上计数，否则客户端起点算不出 ETA"
+
+    # 两帧的 (stage, progress) 完全相同，只有 chunks_done 在走 —— 都必须发出去
+    for done in (20, 30):
+        await bus.publish(
+            "task_1",
+            TaskEvent.progress(stage="EMBEDDING", progress=95, chunks_done=done, chunks_total=100),
+        )
+    await bus.publish("task_1", TaskEvent.done(status="succeeded", finished_at=None))
+    rest = await _collect(stream)
+    assert [(event.event, event.data.get("chunks_done")) for event in rest] == [
+        ("progress", 20),
+        ("progress", 30),
         ("done", None),
     ]
 

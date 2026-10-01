@@ -22,8 +22,9 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
 
-from app.config import Settings
-from app.core.errors import AppError, ErrorCode
+from app.application.context import AssembledContext, ContextAssembler, MemoryItem
+from app.core.config import Settings
+from app.core.exceptions import AppError, ErrorCode
 from app.core.ids import new_id
 from app.llm.base import LLMMessage
 from app.memory.context_store import (
@@ -48,7 +49,6 @@ from app.memory.summary import SummaryBuilder, SummaryOutcome
 from app.memory.vector_index import MemoryVectorIndex
 from app.rag.base import RetrievedChunk
 from app.rag.embedding.base import EmbeddingProvider, embed_texts
-from app.services.context import AssembledContext, ContextAssembler, MemoryItem
 
 logger = logging.getLogger("app.memory.service")
 
@@ -375,6 +375,7 @@ class MemoryService:
         return items, next_cursor
 
     async def get(self, mem_id: str, user_id: str) -> MemoryRecord:
+        """取一条记忆（``user_id`` 一起传入：租户隔离由仓库层保证，不在这里过滤）。"""
         return await self._repo.get(mem_id, user_id)
 
     async def update(
@@ -509,7 +510,7 @@ class MemoryService:
     ) -> ContextSnapshot:
         """算出「下一轮真实会发给模型的 messages 与 token 占用」。
 
-        刻意用**同一套** :class:`~app.services.context.ContextAssembler` 与真实对话
+        刻意用**同一套** :class:`~app.application.context.ContextAssembler` 与真实对话
         完全一致地装配一次，而不是另外拼一份「看起来差不多」的统计：两份实现
         迟早会不一致，而不一致的代价是这个排障接口开始骗人。
 
@@ -541,6 +542,7 @@ class MemoryService:
     # 摘要
     # ------------------------------------------------------------------
     async def summary(self, conversation_id: str, user_id: str) -> ConversationSummary | None:
+        """取会话摘要；返回 ``None`` 表示"还没生成"，**不是**错误。"""
         return await self._store.summary(conversation_id, user_id)
 
     async def build_summary(

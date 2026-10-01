@@ -21,8 +21,9 @@ from typing import Any, Literal
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-#: 项目根目录（``ai-platform/``），用于定位 .env
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+#: 项目根目录（``ai-platform/``），用于定位 .env。
+#: ``__file__`` 为 ``app/core/config.py``，因此需要向上一共三层。
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 #: ``/models`` 的默认白名单。刻意做成静态配置表而不做运行期探测：
 #: 探测会引入额外延迟与不确定性，而模型能力是部署期已知的。
@@ -42,6 +43,71 @@ DEFAULT_LLM_MODELS: list[dict[str, Any]] = [
         "context_window": 131072,
     },
 ]
+
+#: 已知 BGE 模型的**真实输出维度**（来自各自 ``config.json`` 的 ``hidden_size``）。
+#:
+#: 换模型时 ``EMBEDDING_DIM`` 与 ``MILVUS_VECTOR_DIM`` 必须一起改 —— 只改模型不改维度，
+#: 写入的向量**查不出来也不报错**。启动期的 ``VECTOR_DIM_MISMATCH`` 只保证这两个
+#: *配置项*彼此一致，不知道模型的真实维度，所以这张表补上「模型 → 维度」这一环。
+#:
+#: 候选档位（``docs/10`` §7 配置表，实测口径见 ``docs/12``）：
+#:
+#: =====================================  ======  ==================================
+#: 模型                                    维度    说明
+#: =====================================  ======  ==================================
+#: ``BAAI/bge-m3``                       1024    **当前默认**：多语言 + 长上下文
+#: ``BAAI/bge-large-zh-v1.5``            1024    中文，与默认同维度（换它不用重建集合）
+#: ``BAAI/bge-base-zh-v1.5``              768    中文，体积/质量折中
+#: ``BAAI/bge-small-zh-v1.5``             512    中文，最快（换它**必须重建集合**）
+#: =====================================  ======  ==================================
+EMBEDDING_MODEL_DIMS: dict[str, int] = {
+    "BAAI/bge-m3": 1024,
+    "BAAI/bge-large-zh-v1.5": 1024,
+    "BAAI/bge-base-zh-v1.5": 768,
+    "BAAI/bge-small-zh-v1.5": 512,
+    # 火山方舟多模态向量化：维度**随版本变**（实测 2026-10-02）
+    "doubao-embedding-vision-251215": 2048,
+    "doubao-embedding-vision-250615": 1024,
+    # 硅基流动 Qwen3-Embedding 系列：**原生**维度（实测 2026-10-02，均可用 dimensions 降维）
+    "Qwen/Qwen3-Embedding-0.6B": 1024,
+    "Qwen/Qwen3-Embedding-4B": 2560,
+    "Qwen/Qwen3-Embedding-8B": 4096,
+}
+
+#: 硅基流动 Qwen3-Embedding 系列**允许的降维档位**（官方文档明示，仅 Qwen3 系列支持）。
+#: 设 ``SILICONFLOW_EMBEDDING_DIMENSIONS`` 时必须是其中之一；不在表里的模型一律放行
+#: （真实维度由 provider 在第一次编码后自检）。
+SILICONFLOW_QWEN3_DIMENSIONS: dict[str, tuple[int, ...]] = {
+    "Qwen/Qwen3-Embedding-8B": (64, 128, 256, 512, 768, 1024, 1536, 2048, 2560, 4096),
+    "Qwen/Qwen3-Embedding-4B": (64, 128, 256, 512, 768, 1024, 1536, 2048, 2560),
+    "Qwen/Qwen3-Embedding-0.6B": (64, 128, 256, 512, 768, 1024),
+}
+
+
+def default_torch_num_threads() -> int:
+    """本地 CPU 推理的 ``TORCH_NUM_THREADS`` 默认值：**逻辑核数的一半**（至少 1）。
+
+    ``0`` 仍然是合法的显式取值（= 不干预，保留 torch 默认），但**不再作为默认**：
+    torch 默认按逻辑核数开线程，8MB 文档的向量化会把整机的核吃满，同机的
+    MySQL / Redis / 网关 / 验收脚本一起被拖慢 **2~3 倍**
+    （实测连跑两遍全套：M1 41s→75s、M2 71s→186s，看起来像「产品变慢了」）。
+
+    取一半是「单次向量化略慢」与「整机不被饿死」之间的折中：不做成 2 是因为
+    大文档的**绝对**耗时也会跟着翻倍，而验收与用户感知的正是绝对耗时。
+    见 ``app/rag/torch_threads.py`` 与 ``ai-platform-go/docs/09`` §7.2。
+
+    .. note::
+       **本机端到端实测（``ai-platform-go/docs/11-§3.4``）里这一半核是双赢**：
+       `=10` 比 `=20` 的入库快 25~30%（223.9s → 156.8~178.5s），在线请求 `/health`
+       中位 66.2 → 39.1~43.0ms、最大 3731 → 69~130ms。原因是这台机器可用内存只剩
+       ~1.7GB，逻辑核全开会把内存带宽打满；内存宽裕的机器上仍可能出现
+       「单次吞吐略降」，但那也不亏 —— 唯一稳的结论是「一半核不会更差」。
+
+    .. note::
+       ``os.cpu_count()`` 是**逻辑**核数（含超线程），这也是 torch 自己用的口径；
+       取不到时按 2 兜底（宁可设 1 也不要退回「不干预」）。
+    """
+    return max(1, (os.cpu_count() or 2) // 2)
 
 
 class ConfigurationError(RuntimeError):
@@ -84,6 +150,22 @@ class Settings(BaseSettings):
     api_key_pepper: str = ""
     #: JSON 请求体上限（字节）；multipart 走 ``upload_max_mb``。
     max_json_body_bytes: int = 2 * 1024 * 1024
+    #: 服务间调用凭据（Go 网关的后台任务用，如摘要重建）。
+    #: 与用户 JWT 分开的理由：后台任务没有「当前用户」，用用户令牌凑合会让
+    #: 审计日志里出现「某个普通用户发起了全局重建」这种看不懂的记录。
+    internal_service_token: str = ""
+
+    # ==================== gRPC（Go 网关 → 本地编排）====================
+    # 与 HTTP 并存：外部接口走 HTTP/SSE，``Chat`` / ``ChatStream``
+    # 走 gRPC（见 docs/04 §2）。默认关闭，需要显式打开才会监听端口。
+    grpc_enabled: bool = False
+    #: 默认只听回环：开发机上「忘了配鉴权就暴露到 0.0.0.0」是最常见的
+    #: 事故来源，容器里部署时显式改成 0.0.0.0。
+    grpc_host: str = "127.0.0.1"
+    grpc_port: int = 50051
+    #: 同时在处理的 gRPC 请求数上限。LLM 调用是长尾 IO，给得比 HTTP 小一些，
+    #: 让排队发生在这里（可观测）而不是在下游供应商那里（不可观测）。
+    grpc_max_concurrency: int = 64
 
     # ==================== LLM ====================
     # 走 OpenAI 兼容协议，换供应商只需改 base_url + model，不用改代码：
@@ -108,17 +190,94 @@ class Settings(BaseSettings):
     # ==================== Embedding ====================
     # 注意：DeepSeek 不提供 embedding 接口，所以向量化必须用本地 BGE 模型
     # （sentence-transformers），不能像 LLM 那样换个 base_url 就走。
-    #: ``bge`` = 真实语义向量（需下载权重）；``hash`` = 确定性词法向量。
-    #: 后者用于本地/测试：同一个 query 每次都得到同一向量，不依赖网络与模型文件，
+    #: ``bge`` = 真实语义向量（本地权重，需下载）；``hash`` = 确定性词法向量；
+    #: ``ark`` = 火山方舟云端多模态向量化（**每片一次 HTTP + 并发**，见 ``ark.py``）；
+    #: ``siliconflow`` = 硅基流动云端（**真批量 N 进 N 出**，见 ``siliconflow.py``）。
+    #: ``hash`` 用于本地/测试：同一个 query 每次都得到同一向量，不依赖网络与模型文件，
     #: 因此「检索链路」能被机械断言（拿语义向量测链路会因为权重变动而随机失败）。
-    embedding_provider: Literal["hash", "bge"] = "hash"
+    embedding_provider: Literal["hash", "bge", "ark", "siliconflow"] = "hash"
+    #: 模型标识：本地是 HF 仓库名，云端是服务商的模型 ID（写入 KB / chunk 元数据）
     embedding_model: str = "BAAI/bge-m3"
     embedding_device: str = "cpu"
+    #: **调用粒度**（不是模型批量）：``bge`` 档是 ``encode(batch_size=...)``；
+    #: ``ark`` 档决定每次 ``embed()`` 提交多少条（每条一次 HTTP），建议 32~64；
+    #: ``siliconflow`` 档是**每次 HTTP 里放几条**（端点支持真批量），实测 32 最优。
     embedding_batch_size: int = 16
+    #: 入库时**同时在飞的批次数**（``_embed_and_upsert`` 按窗口 ``asyncio.gather``）。
+    #: 云端 provider 下这是在"每次调用一次网络往返"之上拿吞吐的唯一办法：
+    #: 实测（8MB / 5,821 片 / 硅基流动，batch=32）：串行 **98.2s** → 窗口 4/8/16 分别
+    #: **40.4s / 40.9s**（窗口 8 已是拐点，再大无增益）。默认 4 = 留余量；
+    #: 本地 BGE 档建议设 1（多线程 encode 会一起抢同一批核，反而更慢）。
+    ingest_embed_window: int = 4
     embedding_dim: int = 1024
     embedding_cache_enabled: bool = True
 
-    # ==================== Reranker (BGE) ====================
+    # ==================== 云端 Embedding（火山方舟 Ark）====================
+    #: 密钥：**只允许放 .env / Secret**，禁止提交（``.env.example`` 只放占位符）。
+    ark_api_key: str = ""
+    ark_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
+    #: 单次 ``embed()`` 内的最大并发请求数。实测（490 token 的块、``-251215``）：
+    #: 并发 1 → 4.4 req/s、8 → 31.6、**32 → 98.9**、64 → 99.5（无增益）。
+    #: 默认取 16：吞吐约为峰值的 60~80%，同时给账户 TPM 留余量。
+    ark_embedding_concurrency: int = 16
+    ark_embedding_timeout_seconds: float = 30.0
+    #: 单条请求的退避重试次数（限流/5xx 才重试；4xx 立刻失败）
+    ark_embedding_max_retries: int = 2
+    #: 响应里向量的编码：``base64``（float32 小端，响应体约为 float 的 1/3 —— 实测
+    #: 34,240B → 11,219B）| ``float``（JSON 浮点数组，可读性好，调试时用）
+    ark_embedding_encoding: Literal["base64", "float"] = "base64"
+    #: 降维输出（Matryoshka 截断式，实测与全维前 N 维余弦 0.9992）。
+    #: ``0`` = 用模型原生维度（推荐：召回最好）；设成 N 时 MUST 与 EMBEDDING_DIM 一致。
+    ark_embedding_dimensions: int = 0
+    #: 检索指令前缀（如"为检索任务生成向量"），留空则不发该参数
+    ark_embedding_instructions: str = ""
+
+    # ==================== 云端 Embedding / Rerank（硅基流动 SiliconFlow）====================
+    #: 密钥：**只允许放 .env / Secret**，禁止提交（``.env.example`` 只放占位符）。
+    #: 同一个 key 同时用于 ``/v1/embeddings`` 与 ``/v1/rerank``。
+    siliconflow_api_key: str = ""
+    siliconflow_base_url: str = "https://api.siliconflow.cn/v1"
+    #: 单次 ``embed()`` 内的**并发请求数**（每请求 ``EMBEDDING_BATCH_SIZE`` 条）。
+    #: 实测（``Qwen/Qwen3-Embedding-0.6B``，490 token 的块）：
+    #: batch=16/并发4 → 140 片/s；batch=32/并发4 → 206；**batch=32/并发8 → 379.6**；
+    #: batch=48/并发8 → 289（中位延迟 1265ms，尾延迟变差）。默认 4 = 留余量，
+    #: 单机独占可提到 8。
+    siliconflow_embedding_concurrency: int = 4
+    #: 单次请求超时。注意它是**批量**请求：batch=32 时实测中位 612ms、最大 1085ms，
+    #: 但上游排队时会显著变长，故给足 60s。
+    siliconflow_embedding_timeout_seconds: float = 60.0
+    #: 单次请求的退避重试次数（只对 429/5xx/网络重试；4xx 立刻失败）
+    siliconflow_embedding_max_retries: int = 2
+    #: ``base64`` = float32 小端（单条 21,891B → 5,641B，**3.9×**）| ``float`` = JSON 数组
+    siliconflow_embedding_encoding: Literal["base64", "float"] = "base64"
+    #: 降维输出（MRL）。``0`` = 用模型原生维度（推荐）。Qwen3 系列可选维度见
+    #: ``SILICONFLOW_QWEN3_DIMENSIONS``；设成 N 时 MUST 与 ``EMBEDDING_DIM`` 一致。
+    siliconflow_embedding_dimensions: int = 0
+    #: 单次 rerank 请求最多带多少条候选（分片阈值）。文档未给上限，实测 201 条仍 200；
+    #: 但 201 条耗时 2903ms，为了控住尾延迟默认 100。
+    siliconflow_rerank_max_documents: int = 100
+    siliconflow_rerank_timeout_seconds: float = 30.0
+    siliconflow_rerank_max_retries: int = 1
+    #: 重排指令（仅 Qwen3-Reranker 系列支持），留空则不发
+    siliconflow_rerank_instruction: str = ""
+
+    # ==================== 本地推理运行时 ====================
+    #: 本地 CPU 推理的 torch 线程数上限，**只对 `bge` 档生效**（`bge` embedding 与
+    #: `bge` reranker 是仅有的两个本地推理实现）。当前出厂档 embedding 与 rerank 都走
+    #: 云端 API，进程里不跑 torch，因此这一项**不影响任何东西**；切回本地档才重新有意义。
+    #: 默认 = **逻辑核数的一半**（见 ``default_torch_num_threads``）：
+    #: torch 出厂默认按逻辑核数开线程，向量化吃满全部核时，同机的
+    #: MySQL / Redis / 网关 / curl 会被一起拖慢 2~3 倍。
+    #: 显式写 ``0`` = **不干预**（只在单机独占、且不在意同机其它服务时用）。
+    #: 见 ``app/rag/torch_threads.py``。
+    torch_num_threads: int = Field(default_factory=default_torch_num_threads)
+
+    # ==================== Reranker ====================
+    #: 重排实现：``bge`` = 本地交叉编码器（需 torch + 权重）；``siliconflow`` = 云端
+    #: ``/v1/rerank``。**显式枚举而不是"看模型名里有没有 bge"**：靠模型名猜会让
+    #: 换模型/接外部 API 时静默退化成"不重排"（只记一行 unsupported_reranker_model），
+    #: 而"静默不生效"是本项目踩得最多的一类坑（``docs/12-§3``）。
+    reranker_provider: Literal["bge", "siliconflow"] = "bge"
     reranker_model: str = "BAAI/bge-reranker-v2-m3"
     reranker_device: str = "cpu"
     reranker_top_n: int = 5
@@ -330,6 +489,14 @@ class Settings(BaseSettings):
         if self.auth_required and not self.jwt_secret:
             errors.append("AUTH_ENABLED 开启时 JWT_SECRET 必填（与 Go 侧共享的 HS256 密钥）")
 
+        # 无鉴权的 gRPC 一旦绑到非回环地址，等于把一个可写库、可读知识库的
+        # 接口开到内网上；这种配置错误必须在启动期暴露，而不是等到被扫到。
+        if self.grpc_enabled and not self.auth_required and not _is_loopback(self.grpc_host):
+            errors.append(
+                f"GRPC_HOST={self.grpc_host} 非回环地址时 AUTH_ENABLED 必须为 true"
+                "（否则任何能连上该端口的人都能以 DEBUG_USER_ID 的身份读写数据）"
+            )
+
         if not self.is_local and not self.openai_api_key:
             errors.append("非 local 环境必须配置 OPENAI_API_KEY")
 
@@ -357,6 +524,12 @@ class Settings(BaseSettings):
         if self.milvus_search_ef < 1:
             errors.append("MILVUS_SEARCH_EF 必须 ≥ 1")
 
+        if self.torch_num_threads < 0:
+            errors.append(
+                f"TORCH_NUM_THREADS 必须 ≥ 0（0 = 不干预 / 保留 torch 默认，当前 "
+                f"{self.torch_num_threads}）"
+            )
+
         if self.embedding_dim != self.milvus_vector_dim:
             # 维度不一致时写入的向量**查不出来也看不出来**（Milvus 只会在对比时报维度错），
             # 所以必须在启动期就拦住（docs/09-§3 / AC-DATA-03）。
@@ -364,6 +537,111 @@ class Settings(BaseSettings):
                 f"VECTOR_DIM_MISMATCH: EMBEDDING_DIM({self.embedding_dim}) 必须等于 "
                 f"MILVUS_VECTOR_DIM({self.milvus_vector_dim})"
             )
+
+        known_dim = EMBEDDING_MODEL_DIMS.get(self.embedding_model)
+        if (
+            self.embedding_provider in ("bge", "ark", "siliconflow")
+            and known_dim is not None
+            and self.embedding_dim != known_dim
+        ):
+            # 「换了模型没换维度」是最容易踩的一步（候选档位见 EMBEDDING_MODEL_DIMS）：
+            # 只改 EMBEDDING_MODEL 时两个维度配置项仍然彼此一致，所以上一条校验不会响，
+            # 而真实向量维度已经变了 ⇒ 表现为「写入成功但永远检索不到」。
+            # 只在**已知模型**上判断：自训 / 本地路径 / 表外的云模型，一律放行
+            # （真实维度由 provider 在第一次编码后自检，见 ark.py::_check_dim）。
+            errors.append(
+                f"EMBEDDING_MODEL({self.embedding_model}) 的真实输出维度是 {known_dim}，"
+                f"但 EMBEDDING_DIM={self.embedding_dim}。换模型必须同时改 "
+                f"EMBEDDING_DIM 与 MILVUS_VECTOR_DIM，并**重建 Milvus 集合**"
+                f"（已有向量是旧维度，检索不出来）"
+            )
+
+        if self.embedding_provider == "ark":
+            if not self.ark_api_key:
+                errors.append(
+                    "EMBEDDING_PROVIDER=ark 时必须配置 ARK_API_KEY"
+                    "（密钥只放 .env / Secret，不要写进 .env.example）"
+                )
+            if not self.ark_base_url.startswith("http"):
+                errors.append(f"ARK_BASE_URL 必须是完整 URL（当前 {self.ark_base_url}）")
+            if not 1 <= self.ark_embedding_concurrency <= 64:
+                errors.append(
+                    f"ARK_EMBEDDING_CONCURRENCY 必须在 [1,64]"
+                    f"（当前 {self.ark_embedding_concurrency}；实测 32 ≈ 99 req/s，64 无增益）"
+                )
+            if self.ark_embedding_timeout_seconds <= 0:
+                errors.append("ARK_EMBEDDING_TIMEOUT_SECONDS 必须为正数")
+            if self.ark_embedding_max_retries < 0:
+                errors.append("ARK_EMBEDDING_MAX_RETRIES 必须 ≥ 0")
+            if self.embedding_dim <= 0:
+                errors.append("EMBEDDING_PROVIDER=ark 时 EMBEDDING_DIM 必须为正整数")
+            if self.ark_embedding_dimensions and (
+                self.ark_embedding_dimensions != self.embedding_dim
+            ):
+                # 请求降维到 N，却把 EMBEDDING_DIM 写成别的值 ⇒ 维度自检会在第一次
+                # 编码时炸（或更糟：写进维度不符的集合）。启动期就说清楚。
+                errors.append(
+                    f"ARK_EMBEDDING_DIMENSIONS({self.ark_embedding_dimensions}) 必须等于 "
+                    f"EMBEDDING_DIM({self.embedding_dim})；用原生维度请把它设为 0"
+                )
+
+        if self.embedding_provider == "siliconflow":
+            if not self.siliconflow_api_key:
+                errors.append(
+                    "EMBEDDING_PROVIDER=siliconflow 时必须配置 SILICONFLOW_API_KEY"
+                    "（密钥只放 .env / Secret，不要写进 .env.example）"
+                )
+            if not self.siliconflow_base_url.startswith("http"):
+                errors.append(
+                    f"SILICONFLOW_BASE_URL 必须是完整 URL（当前 {self.siliconflow_base_url}）"
+                )
+            if not 1 <= self.siliconflow_embedding_concurrency <= 32:
+                errors.append(
+                    f"SILICONFLOW_EMBEDDING_CONCURRENCY 必须在 [1,32]"
+                    f"（当前 {self.siliconflow_embedding_concurrency}；"
+                    f"实测 batch=32 时并发 8 ≈ 380 片/s）"
+                )
+            if self.siliconflow_embedding_timeout_seconds <= 0:
+                errors.append("SILICONFLOW_EMBEDDING_TIMEOUT_SECONDS 必须为正数")
+            if self.siliconflow_embedding_max_retries < 0:
+                errors.append("SILICONFLOW_EMBEDDING_MAX_RETRIES 必须 ≥ 0")
+            if self.embedding_batch_size < 1:
+                errors.append("EMBEDDING_BATCH_SIZE 必须 ≥ 1（它是每次 HTTP 里的文本条数）")
+            allowed = SILICONFLOW_QWEN3_DIMENSIONS.get(self.embedding_model)
+            if self.siliconflow_embedding_dimensions:
+                if allowed is not None and self.siliconflow_embedding_dimensions not in allowed:
+                    errors.append(
+                        f"SILICONFLOW_EMBEDDING_DIMENSIONS({self.siliconflow_embedding_dimensions})"
+                        f" 不在 {self.embedding_model} 支持的档位里 {list(allowed)}"
+                    )
+                if self.siliconflow_embedding_dimensions != self.embedding_dim:
+                    # 请求降维到 N 却把 EMBEDDING_DIM 写成别的值 ⇒ 维度自检会在第一次
+                    # 编码时炸（或更糟：写进维度不符的集合）。启动期就说清楚。
+                    errors.append(
+                        f"SILICONFLOW_EMBEDDING_DIMENSIONS"
+                        f"({self.siliconflow_embedding_dimensions}) 必须等于 "
+                        f"EMBEDDING_DIM({self.embedding_dim})；用原生维度请把它设为 0"
+                    )
+
+        if self.reranker_provider == "siliconflow" and self.reranker_enabled:
+            # 只在真的启用重排时才要求 key：关掉重排就不该被一条无关的配置拦住启动。
+            if not self.siliconflow_api_key:
+                errors.append(
+                    "RERANKER_PROVIDER=siliconflow 且 RERANKER_ENABLED=true 时必须配置 "
+                    "SILICONFLOW_API_KEY"
+                )
+            if not self.siliconflow_base_url.startswith("http"):
+                errors.append(
+                    f"SILICONFLOW_BASE_URL 必须是完整 URL（当前 {self.siliconflow_base_url}）"
+                )
+            if self.siliconflow_rerank_timeout_seconds <= 0:
+                errors.append("SILICONFLOW_RERANK_TIMEOUT_SECONDS 必须为正数")
+            if self.siliconflow_rerank_max_retries < 0:
+                errors.append("SILICONFLOW_RERANK_MAX_RETRIES 必须 ≥ 0")
+            if self.siliconflow_rerank_max_documents < 1:
+                errors.append("SILICONFLOW_RERANK_MAX_DOCUMENTS 必须 ≥ 1")
+            if self.reranker_top_n < 1:
+                errors.append("RERANKER_TOP_N 必须 ≥ 1")
 
         if self.task_runner == "kafka" and not self.kafka_bootstrap_servers:
             errors.append("TASK_RUNNER=kafka 时必须配置 KAFKA_BOOTSTRAP_SERVERS")
@@ -459,6 +737,20 @@ class Settings(BaseSettings):
 
         if errors:
             raise ConfigurationError("配置校验失败：\n  - " + "\n  - ".join(errors))
+
+
+def _is_loopback(host: str) -> bool:
+    """判断监听地址是否只在回环上。
+
+    只看字面量，不做 DNS 解析：``localhost`` 在有些环境里会解析到非回环地址，
+    而校验的目的恰恰是「不要相信环境」。
+
+    .. note::
+       写成独立函数是为了能被测试直接覆盖 —— 把它内联进
+       ``validate_for_startup`` 的话，验证这条规则就得先构造一个非法配置，
+       而得靠「启动失败」来断言，测试会变成对异常文案的断言。
+    """
+    return host.strip().lower() in {"127.0.0.1", "::1", "localhost"}
 
 
 @lru_cache

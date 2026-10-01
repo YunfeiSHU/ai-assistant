@@ -1,6 +1,6 @@
 """关系库（MySQL）访问的共用基础设施：引擎、时间转换、错误分类。
 
-**为什么单独一个模块**：``app/storage``（KB / 文档 / 切片）与 ``app/memory``
+**为什么单独一个模块**：``app/infrastructure/storage``（KB / 文档 / 切片）与 ``app/memory``
 （长期记忆）各自持有自己的表定义，但下面三件事必须**只有一份实现**：
 
 1. **引擎**：每个仓储各自 ``create_async_engine`` 会各自持有一个连接池
@@ -17,7 +17,7 @@
    ``409`` / ``503`` / ``503``。分散在各仓储里写 ``except IntegrityError``
    一定会漏掉某一种，而漏掉的表现是**500**——把「部署忘了建表」报成服务端 bug。
 
-依赖方向：本模块只依赖 ``app.config`` / ``app.core``，不被它们反向依赖。
+依赖方向：本模块只依赖 ``app.core.config`` / ``app.core``，不被它们反向依赖。
 """
 
 from __future__ import annotations
@@ -25,8 +25,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any, NoReturn
 
-from app.config import Settings
-from app.core.errors import AppError, ErrorCode
+from app.core.config import Settings
+from app.core.exceptions import AppError, ErrorCode
 
 #: MySQL 的 ``wait_timeout`` 默认 8 小时，但云上/中间件常调到几分钟。
 #: 让连接池主动回收，比等 ``pool_pre_ping`` 在每次取连接时兜底更省往返。
@@ -46,7 +46,7 @@ def create_engine_from_settings(settings: Settings) -> Any:
     """按 ``MYSQL_DSN`` 取异步引擎（同 DSN 复用同一个连接池）。
 
     懒导入 ``sqlalchemy``：``INFRA_BACKEND=memory`` 的部署不该因为没装驱动而起不来
-    （与 ``app/storage/objectstore.py`` 对 ``minio`` 的口径一致）。
+    （与 ``app/infrastructure/storage/objectstore.py`` 对 ``minio`` 的口径一致）。
 
     Raises:
         AppError: 未安装 ``sqlalchemy`` / 异步驱动时给明确的 ``503``，而不是 ``ImportError``。

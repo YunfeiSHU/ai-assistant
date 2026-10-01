@@ -17,7 +17,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from typing import Literal, Protocol, runtime_checkable
 
-from app.core.errors import AppError, ErrorCode
+from app.core.exceptions import AppError, ErrorCode
 from app.core.pagination import cursor_position, decode_cursor, encode_cursor, is_after_cursor
 from app.core.text import sha256_hex
 from app.memory.context_store import now_iso

@@ -18,7 +18,7 @@ from docx.document import Document as DocxDocumentType
 from docx.table import Table
 from docx.text.paragraph import Paragraph
 
-from app.core.errors import AppError, ErrorCode
+from app.core.exceptions import AppError, ErrorCode
 from app.core.text import normalize_text
 from app.rag.parsers.base import BlockBuilder, ParsedDocument
 

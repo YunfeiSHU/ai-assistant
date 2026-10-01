@@ -14,9 +14,9 @@ from typing import Any
 
 import pytest
 
-from app.core.errors import AppError, ErrorCode
+from app.core.exceptions import AppError, ErrorCode
 from app.core.ids import new_id
-from app.storage.base import build_object_key
+from app.infrastructure.storage.base import build_object_key
 
 pytestmark = pytest.mark.usefixtures("minio_settings")
 
@@ -58,7 +58,7 @@ async def test_get_missing_object_returns_404(object_store: Any) -> None:
 
 async def test_bucket_is_created_on_demand(minio_settings: Any) -> None:
     """桶不存在时由实现自动创建（部署脚本里没有「建桶」这一步）。"""
-    from app.storage.objectstore import MinioObjectStore
+    from app.infrastructure.storage.objectstore import MinioObjectStore
 
     store = MinioObjectStore(minio_settings)
     key = build_object_key(new_id("u"), new_id("kb"), new_id("doc"), "probe.txt")
@@ -71,14 +71,16 @@ async def test_bucket_is_created_on_demand(minio_settings: Any) -> None:
 
 
 def test_build_object_store_uses_minio_when_real(minio_settings: Any) -> None:
-    from app.storage import build_object_store
+    """``INFRA_BACKEND=real`` ⇒ 工厂给出 MinIO 实现（不是内存兜底）。"""
+    from app.infrastructure.storage import build_object_store
 
     assert build_object_store(minio_settings).__class__.__name__ == "MinioObjectStore"
 
 
 def test_build_object_store_uses_memory_otherwise() -> None:
+    """非 real 后端 ⇒ 工厂给出内存实现，本地/单测不需要对象存储容器。"""
     from tests.conftest import build_settings
 
-    from app.storage import build_object_store
+    from app.infrastructure.storage import build_object_store
 
     assert build_object_store(build_settings()).__class__.__name__ == "InMemoryObjectStore"

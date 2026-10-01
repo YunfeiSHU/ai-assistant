@@ -13,7 +13,10 @@ from typing import Annotated, cast
 
 from fastapi import Depends, Query, Request
 
-from app.config import Settings
+from app.application.agent import AgentService
+from app.application.chat import ChatService
+from app.application.memory import MemoryService
+from app.core.config import Settings
 from app.core.pagination import decode_cursor
 from app.core.security import AuthUser, authenticate
 from app.llm.base import LLMClient
@@ -23,9 +26,6 @@ from app.rag.service import (
     KnowledgeBaseService,
     SearchService,
 )
-from app.services.agent import AgentService
-from app.services.chat import ChatService
-from app.services.memory import MemoryService
 from app.tasks.events import TaskEventBus
 from app.tasks.runner import TaskRunner
 from app.tasks.service import TaskService

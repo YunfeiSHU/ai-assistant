@@ -56,6 +56,8 @@ def test_task_shape_matches_contract(rag_client: TestClient) -> None:
         "resource_id",
         "progress",
         "stage",
+        "chunks_total",
+        "chunks_done",
         "retry_count",
         "max_retries",
         "error",
@@ -73,6 +75,9 @@ def test_task_shape_matches_contract(rag_client: TestClient) -> None:
     assert task["progress"] == 100
     assert task["finished_at"]
     assert task["error"] is None
+    # 切片计数（docs/10 UP-02）：完成后必须「全部已入库」，否则进度条的终点是假的
+    assert task["chunks_total"] > 0
+    assert task["chunks_done"] == task["chunks_total"]
     # 终态不可再操作 —— 前端不该靠猜
     assert task["cancelable"] is False
     assert task["retryable"] is False

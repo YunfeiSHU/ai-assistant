@@ -13,7 +13,7 @@ import base64
 import binascii
 from datetime import UTC, datetime
 
-from app.core.errors import AppError, ErrorCode
+from app.core.exceptions import AppError, ErrorCode
 
 _SEPARATOR = "|"
 

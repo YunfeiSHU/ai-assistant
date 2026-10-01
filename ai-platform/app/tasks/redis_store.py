@@ -32,10 +32,10 @@ from dataclasses import replace
 from datetime import datetime
 from typing import Any
 
-from app.config import Settings
-from app.core.errors import AppError, ErrorCode
+from app.core.config import Settings
+from app.core.exceptions import AppError, ErrorCode
 from app.core.pagination import cursor_position, decode_cursor, is_after_cursor
-from app.core.redis import create_redis_client, redis_text
+from app.infrastructure.redis.client import create_redis_client, redis_text
 from app.tasks.models import (
     ACTIVE_STATUSES,
     ResourceType,
@@ -134,6 +134,8 @@ def task_to_record(task: Task) -> dict[str, Any]:
         "payload": task.payload,
         "progress": task.progress,
         "stage": task.stage,
+        "chunks_total": task.chunks_total,
+        "chunks_done": task.chunks_done,
         "retry_count": task.retry_count,
         "max_retries": task.max_retries,
         "error": task.error.to_dict() if task.error else None,
@@ -168,6 +170,8 @@ def task_from_record(record: dict[str, Any]) -> Task:
         payload=payload,
         progress=int(record.get("progress") or 0),
         stage=record.get("stage") if isinstance(record.get("stage"), str) else None,
+        chunks_total=int(record.get("chunks_total") or 0),
+        chunks_done=int(record.get("chunks_done") or 0),
         retry_count=int(record.get("retry_count") or 0),
         max_retries=int(record.get("max_retries") or 0),
         error=TaskError(

@@ -17,7 +17,7 @@ from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
 from typing import Any
 
-from app.core.errors import AppError, ErrorCode
+from app.core.exceptions import AppError, ErrorCode
 from app.core.ids import new_id
 from app.tasks.events import Publisher, TaskEvent
 from app.tasks.models import (
@@ -208,9 +208,32 @@ class TaskService:
         """``QUEUED → RUNNING``。"""
         return await self._transition(task_id, TaskStatus.RUNNING, _stamp_started)
 
-    async def report_progress(self, task_id: str, *, stage: str, progress: int) -> Task:
-        """上报阶段与进度（``REQ-TASK-002``）。进度只允许单调不减。"""
+    async def report_progress(
+        self,
+        task_id: str,
+        *,
+        stage: str,
+        progress: int,
+        chunks_done: int | None = None,
+        chunks_total: int | None = None,
+    ) -> Task:
+        """上报阶段与进度（``REQ-TASK-002``）。进度只允许单调不减。
+
+        ``chunks_done`` / ``chunks_total``（``docs/10`` UP-02）是可选的**绝对口径**：
+        百分比只能画进度条，只有计数能回答「还要多久」，也才能让客户端自己发现
+        「总数比最终入库数大 ⇒ 被截断了」。
+
+        三条不变量与 ``progress`` 同源，回退一律报错：
+
+        * ``progress`` 单调不减；
+        * ``chunks_done`` 单调不减；
+        * ``chunks_total`` 一旦定下就不再变化（由切分阶段一次算定）。
+          允许它漂移会让客户端算出的 ETA 在批与批之间突然跳变，而跳变的原因
+          （重算？截断？）从响应里完全看不出来。
+        """
         bounded = max(0, min(100, int(progress)))
+        total = None if chunks_total is None else max(0, int(chunks_total))
+        done = None if chunks_done is None else max(0, int(chunks_done))
 
         def mutate(task: Task) -> None:
             if bounded < task.progress:
@@ -219,11 +242,36 @@ class TaskService:
                     ErrorCode.INVALID_ARGUMENT,
                     f"进度不得回退（{task.progress} → {bounded}）",
                 )
+            if total is not None:
+                if task.chunks_total and task.chunks_total != total:
+                    raise AppError(
+                        ErrorCode.INVALID_ARGUMENT,
+                        f"切片总数不得变更（{task.chunks_total} → {total}）",
+                    )
+                task.chunks_total = total
+            if done is not None:
+                if done < task.chunks_done:
+                    raise AppError(
+                        ErrorCode.INVALID_ARGUMENT,
+                        f"切片进度不得回退（{task.chunks_done} → {done}）",
+                    )
+                task.chunks_done = done
             task.stage = stage
             task.progress = bounded
 
         task = await self._store_update(task_id, mutate)
-        await self._publish(task_id, TaskEvent.progress(stage=task.stage, progress=task.progress))
+        await self._publish(
+            task_id,
+            TaskEvent.progress(
+                stage=task.stage,
+                progress=task.progress,
+                # 0 表示「还不知道 / 不适用」而不是「 0 片」：不转成 None 的话，
+                # 摘要/记忆抽取这类没有切片概念的任务，其进度帧会多出
+                # `chunks_total: 0`，把「无此概念」渲染成「一片都没有」。
+                chunks_done=task.chunks_done or None,
+                chunks_total=task.chunks_total or None,
+            ),
+        )
         return task
 
     async def succeed(self, task_id: str) -> Task:
@@ -306,6 +354,10 @@ class TaskService:
             current.retry_count += 1
             current.progress = 0
             current.stage = None
+            # 切片计数与 progress 同样必须归零：本轮会从解析开始重跑，
+            # 留着上一轮的总数会让新一次切分的 ``chunks_total`` 与它不等并直接被拒。
+            current.chunks_total = 0
+            current.chunks_done = 0
             current.error = None
             current.finished_at = None
             # ``started_at`` 必须一起清：它是**本次**尝试的开始时间，留着上一轮的
@@ -343,6 +395,9 @@ class TaskService:
             # 不归零的后果是「第二次尝试的 progress=10 被拒」，任务卡在上一轮的最大值。
             current.progress = 0
             current.stage = None
+            # 同 progress：切片计数不归零会让新一轮的 ``chunks_total`` 被「总数不得变更」拦住
+            current.chunks_total = 0
+            current.chunks_done = 0
             current.error = None
             current.finished_at = None
             current.started_at = None

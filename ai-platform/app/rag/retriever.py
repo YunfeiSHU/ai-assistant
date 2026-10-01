@@ -18,10 +18,10 @@ import time
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 
-from app.config import Settings
+from app.core.config import Settings
 from app.core.tokens import count_tokens
-from app.observability.metrics import get_metrics
-from app.observability.tracing import get_tracing
+from app.infrastructure.observability.metrics import get_metrics
+from app.infrastructure.observability.tracing import get_tracing
 from app.rag.base import RetrievalUnavailable, RetrievedChunk
 from app.rag.embedding.base import EmbeddingProvider
 from app.rag.reranker.base import Reranker

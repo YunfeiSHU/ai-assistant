@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.observability.circuit import (
+from app.infrastructure.observability.circuit import (
     DEFAULT_RULES,
     CircuitBreaker,
     CircuitOpenError,

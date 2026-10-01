@@ -11,14 +11,63 @@
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Sequence
 from typing import Any
 
-from app.config import Settings
-from app.core.errors import AppError, ErrorCode
+from app.core.config import Settings
+from app.core.exceptions import AppError, ErrorCode
 from app.rag.base import RetrievedChunk
 
 logger = logging.getLogger("app.rag.vectorstore")
+
+
+def _import_pymilvus_guarded() -> Any:
+    """导入 ``pymilvus``，并**撤销它在 import 期对 ``os.environ`` 的污染**。
+
+    ``pymilvus/settings.py`` 第 6 行直接调了 ``load_dotenv()``（不是我们的代码）：
+    只要 import 到它，就会把**从 CWD 往上找到的第一个 ``.env``** 灌进 ``os.environ``。
+    说"多几个环境变量"是不够的 —— ``Settings(_env_file=None, ...)`` 仍会读到它们，
+    因为**环境变量的优先级与 env_file 无关**。实测后果（本机）：
+
+    * pytest 里第一个碰到真实向量库的用例 import 了 pymilvus，**此后整个进程**的
+      ``Settings(_env_file=None, embedding_provider="hash")`` 都会带上开发机 ``.env``
+      的 ``EMBEDDING_DIM=2048`` / ``EMBEDDING_MODEL=doubao-…``（provider 仍是调用方
+      显式传的 ``hash``）⇒ 契约用例「就绪探针报 1024 维」直接变成 2048 而失败；
+    * 生产进程同理：``.env`` 变成真实环境变量，配置来源不再可分辨，且会被
+      **子进程继承**（MCP Server 的环境白名单传递、以及任何 ``subprocess``）。
+
+    所以这里做「快照 → import → 恢复」：pymilvus 自己想读的 ``MILVUS_*`` 已经由
+    :class:`~app.core.config.Settings` 显式传入，不需要它去读 ``.env``。
+    """
+    snapshot = dict(os.environ)
+    try:
+        import pymilvus
+    except ImportError as exc:  # pragma: no cover - 需要真实部署才走到
+        raise AppError(
+            ErrorCode.DEPENDENCY_UNAVAILABLE,
+            "未安装 pymilvus，无法使用 INFRA_BACKEND=real 的向量库",
+        ) from exc
+    finally:
+        # 只回滚它加进来/改掉的键，不做 clear()，避免出现"环境为空"的瞬间
+        for key in set(os.environ) - set(snapshot):
+            del os.environ[key]
+        for key, value in snapshot.items():
+            if os.environ.get(key) != value:
+                os.environ[key] = value
+    return pymilvus
+
+
+def _import_pymilvus_client() -> Any:
+    """``MilvusClient``（import 走 :func:`_import_pymilvus_guarded`）。"""
+    return _import_pymilvus_guarded().MilvusClient
+
+
+def _import_pymilvus_schema_types() -> tuple[Any, Any]:
+    """``(DataType, MilvusClient)``：建集合时用。"""
+    module = _import_pymilvus_guarded()
+    return module.DataType, module.MilvusClient
+
 
 #: 输出字段（与 ``docs/09`` §3.1 的集合 schema 一一对应）
 _OUTPUT_FIELDS = [
@@ -39,6 +88,28 @@ _OUTPUT_FIELDS = [
 UPSERT_BATCH_SIZE = 500
 
 
+def _vector_dim_of(described: Any) -> int | None:
+    """从 ``describe_collection`` 的结果里取向量字段的维度（取不到返回 ``None``）。
+
+    写成独立函数而不是内联：``describe_collection`` 的返回结构随 pymilvus 版本变过，
+    而这里的用途是"**能判就判、判不了不拦**"——真正的防线还有写入时的显式校验
+    （``app/rag/embedding/*.py`` 的 ``_check_dim``）。
+    """
+    fields = (described or {}).get("fields") if isinstance(described, dict) else None
+    for field in fields or []:
+        if not isinstance(field, dict):
+            continue
+        if field.get("name") != "vector":
+            continue
+        params = field.get("params") or {}
+        dim = params.get("dim") if isinstance(params, dict) else None
+        try:
+            return int(dim) if dim is not None else None
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
 class MilvusVectorStore:
     """Milvus 适配器。"""
 
@@ -53,13 +124,7 @@ class MilvusVectorStore:
     def _client_sync(self) -> Any:
         """懒加载 ``MilvusClient``。"""
         if self._client is None:
-            try:
-                from pymilvus import MilvusClient
-            except ImportError as exc:  # pragma: no cover - 需要真实部署才走到
-                raise AppError(
-                    ErrorCode.DEPENDENCY_UNAVAILABLE,
-                    "未安装 pymilvus，无法使用 INFRA_BACKEND=real 的向量库",
-                ) from exc
+            MilvusClient = _import_pymilvus_client()
             # 注意：``milvus_connection_args`` 是 @property，不是方法
             self._client = MilvusClient(**self._settings.milvus_connection_args)
         return self._client
@@ -77,7 +142,7 @@ class MilvusVectorStore:
         client = self._client_sync()
         exists = await self._run(client.has_collection, self._collection_name)
         if not exists:
-            from pymilvus import DataType, MilvusClient
+            DataType, MilvusClient = _import_pymilvus_schema_types()
 
             schema = MilvusClient.create_schema(auto_id=False, enable_dynamic_field=False)
             schema.add_field("chunk_id", DataType.VARCHAR, max_length=64, is_primary=True)
@@ -112,6 +177,28 @@ class MilvusVectorStore:
                 "milvus.collection_created",
                 extra={"collection": self._collection_name, "dim": self.dim},
             )
+        else:
+            # 集合**已存在**时必须核对维度：Milvus 的向量维度是建集合时固化的，
+            # 维度不符时写入不会立刻报错（表现为"写成功但永远检索不到"）。
+            # 换 embedding 模型（如 bge-m3 1024 → ark/2048）就会踩这一步，
+            # 所以在启动期把它变成一条明确的错误，而不是等到检索空手而归。
+            described = await self._run(client.describe_collection, self._collection_name)
+            existing = _vector_dim_of(described)
+            if existing is not None and int(existing) != self.dim:
+                raise AppError(
+                    ErrorCode.VECTOR_DIM_MISMATCH,
+                    f"Milvus 集合 {self._collection_name} 的向量维度是 {existing}，"
+                    f"而配置是 {self.dim}",
+                    {
+                        "collection": self._collection_name,
+                        "existing_dim": int(existing),
+                        "configured_dim": self.dim,
+                        "hint": (
+                            "换 embedding 模型后旧向量不可用：请 drop 该集合重建，"
+                            "或用 MILVUS_COLLECTION 换一个新集合名（旧数据保留作回滚）"
+                        ),
+                    },
+                )
         self._ready = True
 
     async def upsert(

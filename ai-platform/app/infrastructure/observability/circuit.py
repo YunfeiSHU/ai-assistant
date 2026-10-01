@@ -25,7 +25,7 @@ from collections.abc import Callable
 from typing import Final, Literal
 
 from app.core.logging import get_logger
-from app.observability.metrics import get_metrics
+from app.infrastructure.observability.metrics import get_metrics
 
 logger = get_logger("app.circuit")
 

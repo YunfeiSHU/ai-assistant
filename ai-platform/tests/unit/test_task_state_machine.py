@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from app.core.errors import AppError, ErrorCode
+from app.core.exceptions import AppError, ErrorCode
 from app.tasks.models import (
     ALLOWED_TRANSITIONS,
     CANCELABLE_STATUSES,

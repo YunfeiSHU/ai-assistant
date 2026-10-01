@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
-from app.core.errors import AppError, ErrorCode
+from app.core.exceptions import AppError, ErrorCode
 
 
 class TaskStatus(StrEnum):
@@ -96,6 +96,7 @@ class TaskError:
     at: str = field(default_factory=now_iso)
 
     def to_dict(self) -> dict[str, Any]:
+        """转成任务响里 ``error`` 字段的形状（对外契约，见 ``docs/08``）。"""
         return {"code": self.code, "message": self.message, "detail": self.detail, "at": self.at}
 
 
@@ -112,6 +113,13 @@ class Task:
     payload: dict[str, Any] = field(default_factory=dict)
     progress: int = 0
     stage: str | None = None
+    #: 切片总数（切分阶段一次算定）/ 已完成切片数（``docs/10`` UP-02）。
+    #:
+    #: ``progress`` 是给进度条用的百分比，只能表达「阶段内的大致位置」；
+    #: 这两个计数才能回答「还要多久」，并让「截断」在**任务侧**也可验证：
+    #: ``chunks_total`` 与文档的 ``chunk_count`` 不等即为被 ``MAX_DOC_CHUNKS`` 截断。
+    chunks_total: int = 0
+    chunks_done: int = 0
     retry_count: int = 0
     max_retries: int = 3
     error: TaskError | None = None
@@ -152,6 +160,8 @@ class Task:
             "payload": self.payload,
             "progress": self.progress,
             "stage": self.stage,
+            "chunks_total": self.chunks_total,
+            "chunks_done": self.chunks_done,
             "retry_count": self.retry_count,
             "max_retries": self.max_retries,
             "error": self.error.to_dict() if self.error else None,

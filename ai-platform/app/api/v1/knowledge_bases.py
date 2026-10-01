@@ -22,7 +22,8 @@ from app.api.deps import (
     SearchServiceDep,
     UserId,
 )
-from app.core.errors import AppError, ErrorCode
+from app.core.exceptions import AppError, ErrorCode
+from app.infrastructure.storage.base import Document, KnowledgeBase
 from app.schemas.document import DocumentList, UploadAccepted
 from app.schemas.knowledge_base import (
     KnowledgeBaseCreate,
@@ -33,7 +34,6 @@ from app.schemas.knowledge_base import (
     SearchRequest,
     SearchResponse,
 )
-from app.storage.base import Document, KnowledgeBase
 
 logger = logging.getLogger("app.api.knowledge_bases")
 

@@ -5,7 +5,7 @@
 行到实体的映射」。Core 的 ``Table`` 定义能同时给出「列清单」与「SQL 构造器」，
 而 ORM 会额外引入 session 生命周期（在 FastAPI 的请求作用域外很容易用错）。
 
-**与内存实现的关系**：:mod:`app.storage.memory` 是**语义基准**。这里刻意逐条对齐：
+**与内存实现的关系**：:mod:`app.infrastructure.storage.memory` 是**语义基准**。这里刻意逐条对齐：
 
 | 语义 | 内存实现 | 这里 |
 | --- | --- | --- |
@@ -19,7 +19,7 @@
 （唯一约束会报错，但那时已经晚了 —— 请求变成 500）；只靠唯一约束，则无法给出
 ``409 KB_NAME_CONFLICT`` 里那个「已存在的 ID」的 details。所以两者都要：
 应用层查一次给出友好错误，约束做最后一道防线，并把 ``IntegrityError`` 翻译回
-同一个领域错误（见 :func:`app.core.db.classify_db_error`）。
+同一个领域错误（见 :func:`app.infrastructure.mysql.db.classify_db_error`）。
 """
 
 from __future__ import annotations
@@ -30,6 +30,7 @@ from typing import Any, NoReturn
 from sqlalchemy import (
     JSON,
     BigInteger,
+    Boolean,
     Column,
     DateTime,
     Float,
@@ -47,8 +48,11 @@ from sqlalchemy import (
 )
 from sqlalchemy.exc import IntegrityError
 
-from app.config import Settings
-from app.core.db import (
+from app.core.config import Settings
+from app.core.exceptions import AppError, ErrorCode
+from app.core.logging import get_logger
+from app.core.pagination import decode_cursor
+from app.infrastructure.mysql.db import (
     FETCH_AHEAD,
     create_engine_from_settings,
     db_now,
@@ -57,14 +61,11 @@ from app.core.db import (
     reraise,
     to_db,
 )
-from app.core.errors import AppError, ErrorCode
-from app.core.logging import get_logger
-from app.core.pagination import decode_cursor
-from app.storage.base import Chunk, Document, KnowledgeBase
+from app.infrastructure.storage.base import Chunk, Document, KnowledgeBase
 
-logger = get_logger("app.storage.mysql")
+logger = get_logger("app.infrastructure.storage.mysql")
 
-# 方法名 ``list`` 会在类作用域里遮蔽内建 ``list``（``app.storage.memory`` 同样处理）
+# 方法名 ``list`` 会在类作用域里遮蔽内建 ``list``（``app.infrastructure.storage.memory`` 同样处理）
 _KBPage = tuple[list[KnowledgeBase], bool]
 _DocumentPage = tuple[list[Document], bool]
 _ChunkPage = tuple[list[Chunk], bool]
@@ -120,6 +121,12 @@ document_table = Table(
     Column("status", String(16), nullable=False),
     Column("chunk_count", Integer, nullable=False, server_default="0"),
     Column("char_count", Integer, nullable=False, server_default="0"),
+    # 截断事实（``docs/10`` UP-01）：``chunks_total`` 是切分产出数、``chunk_count``
+    # 是实际入库数，``truncated`` 显式冗余一份是为了让「被截断」可被 SQL 直接筛出来
+    # （推理式 ``chunks_total > chunk_count`` 在 NULL 上不成立，会漏掉那些
+    #  还没走到切分就失败、但已经声明过超限的文档）。
+    Column("chunks_total", Integer),
+    Column("truncated", Boolean, nullable=False, server_default="0"),
     Column("chunk_size", Integer, nullable=False),
     Column("chunk_overlap", Integer, nullable=False),
     Column("task_id", String(32)),
@@ -243,6 +250,8 @@ def _document_values(document: Document) -> dict[str, Any]:
         "status": document.status,
         "chunk_count": document.chunk_count,
         "char_count": document.char_count,
+        "chunks_total": document.chunks_total,
+        "truncated": bool(document.truncated),
         "chunk_size": document.chunk_size,
         "chunk_overlap": document.chunk_overlap,
         "task_id": document.task_id,
@@ -270,6 +279,8 @@ def _document_from_row(row: dict[str, Any]) -> Document:
         page_count=None if row["page_count"] is None else int(row["page_count"]),
         chunk_count=int(row["chunk_count"]),
         char_count=int(row["char_count"]),
+        chunks_total=None if row["chunks_total"] is None else int(row["chunks_total"]),
+        truncated=bool(row["truncated"]),
         chunk_size=int(row["chunk_size"]),
         chunk_overlap=int(row["chunk_overlap"]),
         task_id=row["task_id"],
@@ -331,7 +342,7 @@ def _rows(result: Any) -> list[dict[str, Any]]:
 
 
 class MySqlKnowledgeBaseRepo:
-    """:class:`~app.storage.base.KnowledgeBaseRepo` 的 MySQL 实现。"""
+    """:class:`~app.infrastructure.storage.base.KnowledgeBaseRepo` 的 MySQL 实现。"""
 
     def __init__(self, engine: Any) -> None:
         self._engine = engine
@@ -457,7 +468,7 @@ class MySqlKnowledgeBaseRepo:
 
 
 class MySqlDocumentRepo:
-    """:class:`~app.storage.base.DocumentRepo` 的 MySQL 实现。"""
+    """:class:`~app.infrastructure.storage.base.DocumentRepo` 的 MySQL 实现。"""
 
     def __init__(self, engine: Any) -> None:
         self._engine = engine
@@ -598,7 +609,7 @@ class MySqlDocumentRepo:
 
 
 class MySqlChunkRepo:
-    """:class:`~app.storage.base.ChunkRepo` 的 MySQL 实现。"""
+    """:class:`~app.infrastructure.storage.base.ChunkRepo` 的 MySQL 实现。"""
 
     def __init__(self, engine: Any) -> None:
         self._engine = engine
@@ -692,8 +703,8 @@ REQUIRED_TABLES = ("knowledge_base", "document", "document_chunk")
 class MySqlRagRepository:
     """一次构造出三个仓储（共享同一个连接池）。
 
-    与 :class:`~app.storage.memory.InMemoryRagRepository` 同形：业务代码只依赖
-    :class:`~app.storage.base.RagRepositories`，不关心实现。
+    与 :class:`~app.infrastructure.storage.memory.InMemoryRagRepository` 同形：业务代码只依赖
+    :class:`~app.infrastructure.storage.base.RagRepositories`，不关心实现。
     """
 
     def __init__(self, settings: Settings) -> None:

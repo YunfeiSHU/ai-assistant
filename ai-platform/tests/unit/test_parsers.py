@@ -15,7 +15,7 @@ import io
 import pytest
 from docx import Document as DocxDocument
 
-from app.core.errors import AppError, ErrorCode
+from app.core.exceptions import AppError, ErrorCode
 from app.rag.parsers import (
     EXTENSION_MIME,
     PARSERS,
@@ -296,6 +296,64 @@ def test_markdown_sibling_heading_pops_stack() -> None:
 
     paths = [block.heading_path for block in parsed.blocks]
     assert paths == ["售后 > 退款", "售后 > 换货"]
+
+
+def test_markdown_heading_immediately_followed_by_cjk_body() -> None:
+    """标题下一行**没有空行**、直接跟中文正文时，正文 MUST NOT 被当成标题吃掉。
+
+    回归用例（真实踩到）：归一化里的「合并中文孤行」会把标题行与下一行正文粘成
+    ``## 年假员工入职满一年后……``；该行**仍以 ``## `` 开头**，于是被
+    :data:`_HEADING` 当成标题、而标题内容只用来填 ``heading_path`` ⇒
+    **正文被静默丢弃**；整篇都这么写时 ``char_count=0``，用户只看到一句
+    「文档有效文本不足（0 < 50 字符）」。
+
+    触发条件是「标题以 CJK 结尾 且 下一行以 CJK 开头」——中文文档的常态写法
+    （很多编辑器/导出工具不强制标题后空行）。上面几条用例都在标题后留了空行，
+    所以一直没暴露。
+    """
+    raw = (
+        "# 员工手册\n"
+        "## 年假\n"
+        "员工入职满一年后享有 5 天带薪年假。\n"
+        "## 报销\n"
+        "差旅费需在出差结束后 15 天内提交。\n"
+    ).encode()
+
+    parsed = MarkdownParser().parse(raw, filename="手册.md")
+
+    assert parsed.char_count > 0
+    texts = [block.text for block in parsed.blocks]
+    assert any("员工入职满一年后" in text for text in texts), texts
+    assert any("差旅费需在出差结束后" in text for text in texts), texts
+    # 标题仍然要进 heading_path（修法不能把标题也一起丢掉）
+    assert [block.heading_path for block in parsed.blocks] == [
+        "员工手册 > 年假",
+        "员工手册 > 报销",
+    ]
+
+
+def test_parse_document_accepts_cjk_markdown_without_blank_lines() -> None:
+    """端到端：这种写法必须能过 ``min_chars`` 校验（修前直接 422）。"""
+    raw = (
+        "# 员工手册\n"
+        "## 年假\n"
+        "员工入职满一年后享有 5 天带薪年假，每满一年增加 1 天，上限 15 天。\n"
+        "## 报销\n"
+        "差旅费报销需在出差结束后 15 天内提交，附上发票与行程单，超期不予受理。\n"
+    ).encode()
+
+    parsed = parse_document("手册.md", raw, min_chars=50)
+
+    assert parsed.char_count >= 50
+    assert len(parsed.blocks) == 2
+
+
+def test_cjk_line_join_still_applies_to_plain_text() -> None:
+    """反向守门：``.txt``（PDF 抽取那类硬换行文本）**仍然**要合并中文孤行。"""
+    parsed = TextParser().parse("退款时效为\n七个自然日。\n".encode(), filename="政策.txt")
+
+    assert "\n" not in parsed.blocks[0].text
+    assert parsed.blocks[0].text == "退款时效为七个自然日。"
 
 
 def test_markdown_code_fence_is_atomic() -> None:

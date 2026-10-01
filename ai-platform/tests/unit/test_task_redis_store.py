@@ -69,6 +69,8 @@ def test_record_carries_every_contract_field() -> None:
         "payload",
         "progress",
         "stage",
+        "chunks_total",
+        "chunks_done",
         "retry_count",
         "max_retries",
         "error",

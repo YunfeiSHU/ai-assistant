@@ -21,7 +21,7 @@ from tests.support.fake_broker import (
     FakeTaskProducer,
 )
 
-from app.core.errors import AppError, ErrorCode
+from app.core.exceptions import AppError, ErrorCode
 from app.tasks.compensation import SCAN_BATCH, TaskCompensator
 from app.tasks.models import ResourceType, Task, TaskStatus, TaskType
 from app.tasks.runner import KafkaTaskRunner

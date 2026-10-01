@@ -15,7 +15,7 @@ from typing import Any
 
 import pytest
 
-from app.core.errors import AppError, ErrorCode
+from app.core.exceptions import AppError, ErrorCode
 from app.tasks.events import InMemoryTaskEventBus, TaskEvent, make_publisher
 from app.tasks.models import ResourceType, TaskError, TaskStatus, TaskType
 from app.tasks.retry import NON_RETRYABLE_CODES, error_retryable

@@ -9,7 +9,7 @@ from collections.abc import Callable
 
 import pytest
 
-from app.config import ConfigurationError, Settings
+from app.core.config import ConfigurationError, Settings
 
 
 def test_baseline_local_config_is_valid(make_settings: Callable[..., Settings]) -> None:
@@ -86,6 +86,70 @@ def test_context_budget_must_exceed_system_plus_output(
 
     with pytest.raises(ConfigurationError, match="CONTEXT_TOKEN_BUDGET"):
         settings.validate_for_startup()
+
+
+def test_negative_torch_num_threads_is_rejected(
+    make_settings: Callable[..., Settings],
+) -> None:
+    """``TORCH_NUM_THREADS`` 负数会让 ``torch.set_num_threads`` 报错，启动期就拦住。"""
+    settings = make_settings(torch_num_threads=-1)
+
+    with pytest.raises(ConfigurationError, match="TORCH_NUM_THREADS"):
+        settings.validate_for_startup()
+
+
+def test_known_bge_model_must_match_the_configured_dimension(
+    make_settings: Callable[..., Settings],
+) -> None:
+    """换 embedding 模型必须同步维度：已知模型的真实维度与配置不一致 → 拒绝启动。
+
+    「只改模型没改维度」是换模型（例如换 ``bge-small-zh-v1.5`` 提速）最容易踩的一步：
+    ``EMBEDDING_DIM`` 与 ``MILVUS_VECTOR_DIM`` 仍然彼此相等，所以
+    ``VECTOR_DIM_MISMATCH`` 那条不会响，但写进 Milvus 的向量真实维度已经变了 ——
+    现象是「写入成功、永远检索不到」。
+    """
+    ok = make_settings(
+        embedding_provider="bge",
+        embedding_model="BAAI/bge-small-zh-v1.5",
+        embedding_dim=512,
+        milvus_vector_dim=512,
+    )
+    ok.validate_for_startup()  # 与模型卡一致 ⇒ 放行
+
+    bad = make_settings(
+        embedding_provider="bge",
+        embedding_model="BAAI/bge-small-zh-v1.5",
+        embedding_dim=1024,
+        milvus_vector_dim=1024,
+    )
+    with pytest.raises(ConfigurationError, match="EMBEDDING_MODEL"):
+        bad.validate_for_startup()
+
+
+def test_hash_provider_and_unknown_models_are_never_blocked(
+    make_settings: Callable[..., Settings],
+) -> None:
+    """反向对照：``hash`` 档位与表外模型都不受这条规则影响。
+
+    只对**已知模型**判断是刻意的 —— 自训模型 / 本地路径的维度只有运行时才知道
+    （``BgeEmbeddingProvider._check_dim`` 会在第一次编码后比对），
+    在这里误拦会让正常配置直接起不来。
+    """
+    hash_tier = make_settings(
+        embedding_provider="hash",
+        embedding_model="BAAI/bge-small-zh-v1.5",
+        embedding_dim=64,
+        milvus_vector_dim=64,
+    )
+    hash_tier.validate_for_startup()
+
+    local_model = make_settings(
+        embedding_provider="bge",
+        embedding_model="/models/my-finetune",
+        embedding_dim=384,
+        milvus_vector_dim=384,
+    )
+    local_model.validate_for_startup()
 
 
 def test_all_errors_are_reported_together(make_settings: Callable[..., Settings]) -> None:

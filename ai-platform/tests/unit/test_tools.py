@@ -15,7 +15,7 @@ import pytest
 from pydantic import BaseModel, Field, ValidationError
 from tests.support.fake_llm import tool_call
 
-from app.config import Settings
+from app.core.config import Settings
 from app.llm.base import LLMToolCall
 from app.rag.base import RetrievedChunk
 from app.tools.base import (
@@ -172,6 +172,7 @@ def test_namespace_tool_replaces_unsafe_characters() -> None:
 
 
 def test_clip_leaves_short_text_untouched() -> None:
+    """未超上限的文本原样返回：不截断、不加标记（标记会污染本来就正常的结果）。"""
     assert clip("abc", 10) == "abc"
 
 
@@ -183,6 +184,7 @@ def test_clip_marks_truncation() -> None:
 
 
 def test_payload_summary_is_json_not_empty() -> None:
+    """摘要取的是 payload 的 JSON 文本，正文内容必须真实出现在里面（不是空串/占位符）。"""
     assert "hello" in payload_summary({"msg": "hello"})
 
 
@@ -203,6 +205,7 @@ def test_registry_rejects_duplicate_builtin_names() -> None:
 
 
 def test_registry_rejects_invalid_name() -> None:
+    """不符合工具名规则的注册项（如大写开头）直接抛 ``ToolRegistrationError``。"""
     registry = ToolRegistry()
     with pytest.raises(ToolRegistrationError, match="不合法"):
         registry.register(_RawTool(ToolSpec(name="BadName", description="x", parameters={})))
@@ -228,6 +231,7 @@ def test_registry_filter_prefers_denylist() -> None:
 
 
 def test_registry_filter_skips_disabled_by_default() -> None:
+    """默认关闭的工具不进默认集合；只有显式 ``include_disabled=True`` 才把它露出来。"""
     registry = ToolRegistry()
     registry.register(_EchoTool(name="on_tool"))
     registry.register(_EchoTool(name="off_tool", enabled=False))
@@ -236,6 +240,7 @@ def test_registry_filter_skips_disabled_by_default() -> None:
 
 
 def test_registry_upstream_specs_skips_unknown() -> None:
+    """给上游拼 ``tools`` 时忽略未注册的名字（不抛错），只输出真实存在的工具。"""
     registry = ToolRegistry()
     registry.register(_EchoTool())
     specs = registry.upstream_specs(["echo", "nope"])
@@ -243,12 +248,14 @@ def test_registry_upstream_specs_skips_unknown() -> None:
 
 
 def test_registry_require_raises_for_missing() -> None:
+    """``require`` 对未注册的工具名报「未注册」错误；与 ``get``（返回 ``None``）分工不同。"""
     registry = ToolRegistry()
     with pytest.raises(ToolRegistrationError, match="未注册"):
         registry.require("nope")
 
 
 def test_registry_specs_filters_by_source() -> None:
+    """``specs(source=...)`` 按来源精确切分：builtin 与 mcp 各只回自己那一组。"""
     registry = ToolRegistry()
     registry.register(_EchoTool())
     registry.register(
@@ -272,6 +279,7 @@ def test_registry_specs_filters_by_source() -> None:
 
 
 def test_parse_arguments_accepts_json_dict_and_empty() -> None:
+    """三种合法入参（JSON 文本、已是 dict、``None``/空串）都要归一成 dict 且无错误。"""
     assert parse_arguments('{"a":1}')[0] == {"a": 1}
     assert parse_arguments({"a": 1})[0] == {"a": 1}
     assert parse_arguments(None)[0] == {}
@@ -287,6 +295,7 @@ def test_parse_arguments_rejects_non_object(raw: str) -> None:
 
 
 async def test_executor_returns_not_found_without_raising(settings: Settings) -> None:
+    """未注册的工具不抛异常，而是回一条 ``ERROR_NOT_FOUND`` 记录（模型能据此改口）。"""
     executor = ToolExecutor(settings, ToolRegistry())
     records = await executor.execute([tool_call("nope", {})], _ctx())
     assert records[0].status == "error"
@@ -294,6 +303,7 @@ async def test_executor_returns_not_found_without_raising(settings: Settings) ->
 
 
 async def test_executor_rejects_tool_outside_allowlist(settings: Settings) -> None:
+    """执行前的授权校验：空白名单下即使工具已注册也回 ``ERROR_NOT_ALLOWED``、不执行。"""
     registry = ToolRegistry()
     registry.register(_EchoTool())
     executor = ToolExecutor(settings, registry)
@@ -314,6 +324,7 @@ async def test_executor_maps_bad_arguments_to_replyable_error(settings: Settings
 
 
 async def test_executor_maps_timeout(settings: Settings) -> None:
+    """工具超时被归成 ``status=timeout`` + ``ERROR_TIMEOUT``，而不是通用的执行失败。"""
     registry = ToolRegistry()
     registry.register(_EchoTool(delay=0.3, timeout=0.05))
     executor = ToolExecutor(settings, registry)
@@ -333,6 +344,7 @@ async def test_executor_never_raises_on_tool_crash(settings: Settings) -> None:
 
 
 async def test_executor_never_raises_on_unexpected_exception(settings: Settings) -> None:
+    """工具抛出意料之外的异常也要收敛成 ``execution_failed``，绝不让异常冒到调用方。"""
     registry = ToolRegistry()
     registry.register(_EchoTool(failure=RuntimeError("内部错误")))
     executor = ToolExecutor(settings, registry)
@@ -372,6 +384,7 @@ async def test_executor_serialises_when_any_write_present(settings: Settings) ->
 
 
 async def test_executor_blocks_write_when_not_allowed(settings: Settings) -> None:
+    """``allow_write=False`` 时写工具被挡在 ``write_forbidden``（不是执行后再报错）。"""
     registry = ToolRegistry()
     registry.register(_EchoTool(side_effect="write"))
     executor = ToolExecutor(settings, registry)
@@ -392,10 +405,13 @@ async def test_executor_keeps_result_order(settings: Settings) -> None:
 
 
 async def test_executor_empty_calls_returns_empty(settings: Settings) -> None:
+    """空调用列表返回空结果列表（不报错），便于调用方直接展开而不用特判。"""
     assert await ToolExecutor(settings, ToolRegistry()).execute([], _ctx()) == []
 
 
 async def test_executor_truncates_long_summary(settings: Settings) -> None:
+    """过长的工具摘要被截到 500 字符量级（含截断标记），避免污染下游上下文。"""
+
     class _VerboseTool(_EchoTool):
         async def run(self, arguments: BaseModel, ctx: ToolContext) -> ToolOutcome:
             return ToolOutcome(payload={"blob": "y" * 5000}, summary="z" * 5000)
@@ -418,7 +434,8 @@ def test_signature_is_order_insensitive() -> None:
 
 
 async def test_invoke_public_reports_missing_tool(settings: Settings) -> None:
-    from app.core.errors import AppError, ErrorCode
+    """调试接口对不存在的工具抛 ``TOOL_NOT_FOUND``（与列表接口同一错误码）。"""
+    from app.core.exceptions import AppError, ErrorCode
 
     executor = ToolExecutor(settings, ToolRegistry())
     with pytest.raises(AppError) as excinfo:
@@ -427,6 +444,7 @@ async def test_invoke_public_reports_missing_tool(settings: Settings) -> None:
 
 
 async def test_invoke_public_dry_run_validates_only(settings: Settings) -> None:
+    """``dry_run`` 只校验参数就返回 ``ok``（摘要标明 dry_run），工具实现体不得被执行。"""
     registry = ToolRegistry()
     registry.register(_EchoTool(failure=RuntimeError("不该被执行")))
     executor = ToolExecutor(settings, registry)
@@ -436,7 +454,8 @@ async def test_invoke_public_dry_run_validates_only(settings: Settings) -> None:
 
 
 async def test_invoke_public_maps_timeout_to_504(settings: Settings) -> None:
-    from app.core.errors import AppError, ErrorCode
+    """调试调用超时映射成 ``TOOL_TIMEOUT``（HTTP 504），与工具内部错误区分开。"""
+    from app.core.exceptions import AppError, ErrorCode
 
     registry = ToolRegistry()
     registry.register(_EchoTool(delay=0.3, timeout=0.05))
@@ -447,9 +466,10 @@ async def test_invoke_public_maps_timeout_to_504(settings: Settings) -> None:
 
 
 async def test_invoke_public_rejects_denylisted_tool(settings: Settings) -> None:
+    """配置在 ``tool_denylist`` 里的工具即使已注册也不能被调试接口调用（``TOOL_FORBIDDEN``）。"""
     from tests.conftest import build_settings
 
-    from app.core.errors import AppError, ErrorCode
+    from app.core.exceptions import AppError, ErrorCode
 
     registry = ToolRegistry()
     registry.register(_EchoTool())
@@ -464,7 +484,7 @@ async def test_invoke_public_maps_bad_arguments_to_400(settings: Settings) -> No
     """调用方参数错是 **400**，而不是 502：两者都是 ``status=error``，
     必须靠 ``record.error`` 区分，否则前端会把「自己写错了」当成「服务挂了」。
     """
-    from app.core.errors import AppError, ErrorCode
+    from app.core.exceptions import AppError, ErrorCode
     from app.tools.base import ToolArgumentError
 
     class _StrictTool(_EchoTool):
@@ -481,7 +501,8 @@ async def test_invoke_public_maps_bad_arguments_to_400(settings: Settings) -> No
 
 
 async def test_invoke_public_maps_write_forbidden_to_403(settings: Settings) -> None:
-    from app.core.errors import AppError, ErrorCode
+    """``allow_write=False`` 时调试调用写工具 ⇒ ``TOOL_FORBIDDEN``（403），不执行。"""
+    from app.core.exceptions import AppError, ErrorCode
     from app.tools.base import ToolContext
 
     registry = ToolRegistry()
@@ -533,6 +554,7 @@ def test_error_to_code_covers_every_reason() -> None:
 
 
 def test_kb_retrieve_schema_is_object() -> None:
+    """``kb_retrieve`` 的 ``parameters`` 必须是 ``object`` 且含检索相关的五个字段名。"""
     spec = KbRetrieveTool(_StubRetriever()).spec
     assert spec.parameters["type"] == "object"
     assert {"query", "kb_ids", "top_k", "rerank_top_n", "score_threshold"} <= set(
@@ -564,6 +586,7 @@ async def test_kb_retrieve_reports_empty_result_with_hint() -> None:
 
 
 async def test_kb_retrieve_wraps_retrieval_failure() -> None:
+    """检索层故障包装成 ``ToolExecutionError("知识库暂不可用")``，让 Agent 能降级回话。"""
     from app.rag.base import RetrievalUnavailable
 
     retriever = _StubRetriever()
@@ -590,6 +613,7 @@ async def test_kb_retrieve_wraps_retrieval_failure() -> None:
     ],
 )
 def test_calculator_evaluates_arithmetic(expression: str, expected: float) -> None:
+    """白名单内的四则运算、幂、取模与负数都要算出正确结果。"""
     assert evaluate(__import__("ast").parse(expression, mode="eval")) == expected
 
 
@@ -619,6 +643,7 @@ def test_calculator_rejects_non_whitelisted_syntax(expression: str) -> None:
 
 
 def test_calculator_rejects_too_long_expression() -> None:
+    """表达式长度超上限时 schema 直接拒（避免超长串的解析开销与绕过尝试）。"""
     with pytest.raises(ValidationError):
         CalculatorArgs(expression="1+" * 200)
 
@@ -631,12 +656,14 @@ async def test_calculator_rejects_oversized_exponent() -> None:
 
 
 async def test_calculator_reports_division_by_zero() -> None:
+    """除以 0 报可读的 ``ToolExecutionError("除数为 0")``，而不是让 ``ZeroDivisionError`` 冒出去。"""
     tool = CalculatorTool()
     with pytest.raises(ToolExecutionError, match="除数为 0"):
         await tool.invoke({"expression": "1/0"}, _ctx())
 
 
 async def test_calculator_returns_structured_result() -> None:
+    """结果是结构化 payload 且摘要里带 ``= 2``，方便模型直接引用数值。"""
     outcome = await CalculatorTool().invoke({"expression": "1+1"}, _ctx())
     assert outcome.payload["result"] == 2
     assert "= 2" in outcome.summary
@@ -648,6 +675,7 @@ async def test_calculator_returns_structured_result() -> None:
 
 
 async def test_current_time_defaults_to_shanghai() -> None:
+    """不传时区时默认 ``Asia/Shanghai``，返回的 ISO 串必须带 ``+08:00`` 偏移。"""
     outcome = await CurrentTimeTool().invoke({}, _ctx())
     assert outcome.payload["timezone"] == "Asia/Shanghai"
     assert outcome.payload["iso"].endswith("+08:00")
@@ -660,6 +688,7 @@ async def test_current_time_rejects_unknown_timezone() -> None:
 
 
 async def test_current_time_accepts_utc() -> None:
+    """显式传 ``UTC`` 时按 UTC 返回（ISO 串以 ``+00:00`` 结尾），不被默认时区覆盖。"""
     outcome = await CurrentTimeTool().invoke({"timezone": "UTC"}, _ctx())
     assert outcome.payload["iso"].endswith("+00:00")
 
@@ -705,6 +734,7 @@ def test_http_fetch_rejects_ssrf_targets(url: str) -> None:
     ],
 )
 def test_assert_public_host_accepts_public_literals(hostname: str) -> None:
+    """公网 IPv4/IPv6 字面量必须放行（校验过严会把合法目标一起挡掉）。"""
     _assert_public_host(hostname)
 
 
@@ -726,6 +756,7 @@ def test_http_fetch_rejects_dns_rebinding_to_private(monkeypatch: pytest.MonkeyP
 
 
 def test_http_fetch_rejects_unresolvable_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    """域名解析失败时按「无法解析」直接拒（不能让请求带着未校验的主机名发出去）。"""
     import socket
 
     from app.tools.builtin import http_fetch as module
@@ -752,6 +783,7 @@ def _service(settings: Settings) -> tuple[ToolService, ToolRegistry]:
 
 
 def test_tool_service_paginates(settings: Settings) -> None:
+    """``list_specs`` 按 ``limit`` 分页：首页给游标，翻到最后一页 ``has_more=False``。"""
     service, _ = _service(settings)
     page, cursor, has_more = service.list_specs(limit=2)
     assert [spec.name for spec in page] == ["a_tool", "b_tool"]
@@ -763,6 +795,7 @@ def test_tool_service_paginates(settings: Settings) -> None:
 
 
 def test_tool_service_filters_by_source(settings: Settings) -> None:
+    """``list_specs(source="mcp")`` 在只有内置工具时返回空页，不会把内置工具混进来。"""
     service, _ = _service(settings)
     page, _, _ = service.list_specs(source="mcp")
     assert page == []
@@ -772,8 +805,8 @@ async def test_tool_service_invoke_blocked_in_prod() -> None:
     """``AC-AGENT-08``：prod 下调试调用必须 404（连「存在」都不暴露）。"""
     from tests.conftest import build_settings
 
-    from app.config import Settings as _Settings
-    from app.core.errors import AppError, ErrorCode
+    from app.core.config import Settings as _Settings
+    from app.core.exceptions import AppError, ErrorCode
 
     prod = _Settings(
         _env_file=None,
@@ -833,6 +866,7 @@ def test_tool_call_accumulator_merges_fragments() -> None:
 
 
 def test_tool_call_accumulator_tracks_parallel_calls_by_index() -> None:
+    """上游并行下发多个工具调用时按 ``index`` 分别累积，且**各自**的片段不会串台。"""
     from app.llm.openai_compat import _ToolCallAccumulator
 
     accumulator = _ToolCallAccumulator()
@@ -858,6 +892,7 @@ def test_tool_call_accumulator_skips_nameless_before_final() -> None:
 
 
 def test_tool_call_accumulator_flags_malformed_arguments() -> None:
+    """参数分片拼完仍不是合法 JSON 时，该 index 必须被登记为「解析失败」而不是静默当空参数。"""
     from app.llm.openai_compat import _ToolCallAccumulator
 
     accumulator = _ToolCallAccumulator()

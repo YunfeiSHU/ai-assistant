@@ -12,7 +12,7 @@ from typing import Any
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.config import Settings
+from app.core.config import Settings
 from app.core.pagination import encode_cursor
 
 #: 错误信封必备字段（docs/02 §3.3）

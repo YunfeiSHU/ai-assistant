@@ -3,6 +3,6 @@
 本包不依赖任何业务模块，业务模块可以放心 import。
 """
 
-from app.core.errors import ERROR_SPECS, AppError, ErrorCode, ErrorSpec
+from app.core.exceptions import ERROR_SPECS, AppError, ErrorCode, ErrorSpec
 
 __all__ = ["ERROR_SPECS", "AppError", "ErrorCode", "ErrorSpec"]

@@ -27,7 +27,8 @@ from app.api.deps import (
     TaskServiceDep,
     UserId,
 )
-from app.core.errors import AppError, ErrorCode
+from app.application.memory import MemoryService
+from app.core.exceptions import AppError, ErrorCode
 from app.core.tokens import count_tokens
 from app.memory.long_term import MemoryKind, MemoryRecord
 from app.schemas.memory import (
@@ -44,7 +45,6 @@ from app.schemas.memory import (
     SummaryOut,
     SummaryRebuildAccepted,
 )
-from app.services.memory import MemoryService
 from app.tasks.models import ResourceType, TaskType
 
 logger = logging.getLogger("app.api.memory")

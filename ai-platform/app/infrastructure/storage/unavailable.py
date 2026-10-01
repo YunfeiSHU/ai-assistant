@@ -2,17 +2,17 @@
 
 **什么时候会走到这里**：``INFRA_BACKEND=real`` 但仓储**初始化就失败** ——
 典型是没装驱动（``uv sync --extra mysql`` 忘了加）或 DSN 无法解析。
-M8 之后 MySQL 仓储已经实现（:mod:`app.storage.mysql`），所以这里不再
+M8 之后 MySQL 仓储已经实现（:mod:`app.infrastructure.storage.mysql`），所以这里不再
 是「尚未提供」的临时占位，而是**依赖故障矩阵的一个分支**。
 
 **为什么不是「启动直接报错」**：``APP_ENV=prod`` 强制 ``INFRA_BACKEND=real``
-（``app/config.py``）。如果这里在构造期抛异常，那么**整个 prod 应用都起不来** ——连
+（``app/core/config.py``）。如果这里在构造期抛异常，那么**整个 prod 应用都起不来** ——连
 ``POST /chat``、鉴权、健康检查这些完全不依赖关系库的能力也一起没了。
 
 ``docs/10-非功能需求与可观测性.md`` 的依赖故障矩阵给出的口径正是本文实现的：
 「MySQL 不可用 | 对话仍可用（无任务、无长期记忆）；写类接口返回
 ``503 DEPENDENCY_UNAVAILABLE``」。所以每个方法都抛
-:data:`~app.core.errors.ErrorCode.DEPENDENCY_UNAVAILABLE`，客户端拿到的是
+:data:`~app.core.exceptions.ErrorCode.DEPENDENCY_UNAVAILABLE`，客户端拿到的是
 **明确的 503 + 可读原因**，而不是一个看起来成功、实际把数据丢进进程内存的
 「静默回退」（后者才是最危险的：重启即丢数据，而且没人会发现）。
 """
@@ -21,8 +21,8 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from app.core.errors import AppError, ErrorCode
-from app.storage.base import (
+from app.core.exceptions import AppError, ErrorCode
+from app.infrastructure.storage.base import (
     Chunk,
     Document,
     KnowledgeBase,
@@ -31,7 +31,7 @@ from app.storage.base import (
     _KBPage,
 )
 
-#: 降级原因。具体失败细节在 :func:`app.storage.build_repositories` 的 error 日志里
+#: 降级原因。具体失败细节在 :func:`app.infrastructure.storage.build_repositories` 的 error 日志里
 REASON = "MySQL 仓储不可用（INFRA_BACKEND=real 但仓储初始化失败，详见服务端日志）"
 
 
@@ -45,7 +45,7 @@ def _unavailable(repo: str, method: str) -> AppError:
 
 
 class UnavailableKnowledgeBaseRepo:
-    """满足 :class:`~app.storage.base.KnowledgeBaseRepo` 的占位实现。"""
+    """满足 :class:`~app.infrastructure.storage.base.KnowledgeBaseRepo` 的占位实现。"""
 
     async def add(self, kb: KnowledgeBase) -> KnowledgeBase:
         raise _unavailable("knowledge_bases", "add")
@@ -70,7 +70,7 @@ class UnavailableKnowledgeBaseRepo:
 
 
 class UnavailableDocumentRepo:
-    """满足 :class:`~app.storage.base.DocumentRepo` 的占位实现。"""
+    """满足 :class:`~app.infrastructure.storage.base.DocumentRepo` 的占位实现。"""
 
     async def add(self, document: Document) -> Document:
         raise _unavailable("documents", "add")
@@ -106,7 +106,7 @@ class UnavailableDocumentRepo:
 
 
 class UnavailableChunkRepo:
-    """满足 :class:`~app.storage.base.ChunkRepo` 的占位实现。"""
+    """满足 :class:`~app.infrastructure.storage.base.ChunkRepo` 的占位实现。"""
 
     async def replace_for_document(self, doc_id: str, chunks: Sequence[Chunk]) -> int:
         raise _unavailable("chunks", "replace_for_document")

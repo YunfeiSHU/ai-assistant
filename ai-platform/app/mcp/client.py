@@ -27,8 +27,11 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from app.core.errors import AppError, ErrorCode
+from app.core.exceptions import AppError, ErrorCode
 from app.core.logging import get_logger, redact, redact_mapping
+from app.infrastructure.observability.circuit import CircuitBreaker
+from app.infrastructure.observability.metrics import get_metrics
+from app.infrastructure.observability.tracing import Tracing
 from app.mcp.config import McpServerConfig
 from app.mcp.session import (
     McpCallResult,
@@ -37,9 +40,6 @@ from app.mcp.session import (
     SessionFactory,
     open_session,
 )
-from app.observability.circuit import CircuitBreaker
-from app.observability.metrics import get_metrics
-from app.observability.tracing import Tracing
 
 logger = get_logger("app.mcp")
 

@@ -21,9 +21,9 @@ import logging
 from collections.abc import Sequence
 from typing import Any, Protocol, runtime_checkable
 
-from app.config import Settings
-from app.core.errors import AppError, ErrorCode
-from app.core.redis import RedisUnavailable, create_redis_client
+from app.core.config import Settings
+from app.core.exceptions import AppError, ErrorCode
+from app.infrastructure.redis.client import RedisUnavailable, create_redis_client
 from app.memory.context_store import ConversationSummary, StoredMessage
 
 logger = logging.getLogger("app.memory.redis")
@@ -73,7 +73,7 @@ class RedisCommands(Protocol):
 
 
 def create_redis_commands(settings: Settings) -> RedisCommands:
-    """按配置建立 Redis 连接（**懒导入**，实现见 :mod:`app.core.redis`）。
+    """按配置建立 Redis 连接（**懒导入**，实现见 :mod:`app.infrastructure.redis.client`）。
 
     ``redis`` 不在基础依赖里：本地与测试用内存实现，只有 ``INFRA_BACKEND=real``
     才需要它。缺失时给出可执行的提示，而不是一个 ``ModuleNotFoundError`` 堆栈。

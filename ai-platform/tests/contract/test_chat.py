@@ -16,10 +16,10 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from tests.support.fake_llm import FakeLLM
 
-from app.config import Settings
+from app.application.chat import REASON_MEMORY_UNAVAILABLE, REASON_RAG_UNAVAILABLE
+from app.core.config import Settings
 from app.core.tokens import count_tokens
 from app.llm.base import LLMMessage
-from app.services.chat import REASON_MEMORY_UNAVAILABLE, REASON_RAG_UNAVAILABLE
 
 CHAT = "/api/v1/chat"
 
@@ -147,6 +147,7 @@ def test_model_not_in_whitelist_is_rejected(
     chat_headers: dict[str, str],
     fake_llm: FakeLLM,
 ) -> None:
+    """白名单外的模型名一律 400，并在 ``details.allowed`` 里回报可选模型（不是静默用默认）。"""
     application, _ = make_chat_app(llm=fake_llm)
 
     with TestClient(application) as client:
@@ -192,6 +193,7 @@ def test_malformed_conversation_id_is_rejected(
     chat_headers: dict[str, str],
     fake_llm: FakeLLM,
 ) -> None:
+    """``conversation_id`` 格式非法 ⇒ 400，且 ``details.fields`` 指出是哪个字段出错。"""
     application, _ = make_chat_app(llm=fake_llm)
 
     with TestClient(application) as client:
@@ -227,6 +229,7 @@ def test_unauthenticated_request_is_rejected(
     make_chat_app: Callable[..., tuple[FastAPI, Settings]],
     fake_llm: FakeLLM,
 ) -> None:
+    """不带 ``Authorization`` 访问 ``/chat`` ⇒ 401 ``UNAUTHENTICATED``（认证先于参数校验）。"""
     application, _ = make_chat_app(llm=fake_llm)
 
     with TestClient(application) as client:
@@ -367,6 +370,7 @@ def test_models_lists_whitelist_with_default_flag(
     chat_headers: dict[str, str],
     fake_llm: FakeLLM,
 ) -> None:
+    """``GET /models`` 按白名单顺序列出模型，且**恰好一个** ``is_default=true``。"""
     application, _ = make_chat_app(llm=fake_llm)
 
     with TestClient(application) as client:
@@ -384,6 +388,7 @@ def test_models_requires_auth(
     make_chat_app: Callable[..., tuple[FastAPI, Settings]],
     fake_llm: FakeLLM,
 ) -> None:
+    """``GET /models`` 同样要鉴权：模型清单不外泄（401 而非 200）。"""
     application, _ = make_chat_app(llm=fake_llm)
 
     with TestClient(application) as client:

@@ -88,6 +88,16 @@ class Document:
     page_count: int | None = None
     chunk_count: int = 0
     char_count: int = 0
+    #: 切分器产出的切片数（**截断前**）。``chunk_count`` 是实际入库数，
+    #: 两者不等就说明被 ``MAX_DOC_CHUNKS`` 截断了（见 ``truncated``）。
+    #: ``None`` = 还没走到切分（PENDING/PARSING），而不是「0 片」。
+    chunks_total: int | None = None
+    #: 是否因 ``MAX_DOC_CHUNKS`` 丢弃了尾部切片。
+    #:
+    #: 这是**必须让调用方看见**的事实：8MB 测试正文实测切出 16,969 片、只入库
+    #: 10,000 片（丢 41% 正文），而截断前只打了一条 warning、接口照旧 202 ——
+    #: 「入库成功」因此是假的（见 ``docs/10`` 的 UP-01）。
+    truncated: bool = False
     chunk_size: int = 512
     chunk_overlap: int = 64
     task_id: str | None = None
@@ -111,6 +121,8 @@ class Document:
             "page_count": self.page_count,
             "chunk_count": self.chunk_count,
             "char_count": self.char_count,
+            "chunks_total": self.chunks_total,
+            "truncated": self.truncated,
             "chunk_size": self.chunk_size,
             "chunk_overlap": self.chunk_overlap,
             "content_sha256": self.content_sha256,

@@ -27,6 +27,7 @@ async def _collect(stream: AsyncIterator[bytes]) -> list[bytes]:
 
 
 def test_format_frame_uses_event_and_single_line_json() -> None:
+    """帧格式固定为 ``event:`` + 单行紧凑 JSON + 空行，且中文不转义成 ``\\uXXXX``。"""
     frame = format_frame("token", {"delta": "你好"})
 
     assert frame == 'event: token\ndata: {"delta":"你好"}\n\n'.encode()
@@ -46,6 +47,8 @@ def test_ping_frame_is_a_real_event() -> None:
 
 
 def test_format_frame_accepts_pydantic_like_objects() -> None:
+    """带 ``model_dump`` 的对象（Pydantic 模型）必须能直接成帧，不需要调用方先转 dict。"""
+
     class _Model:
         def model_dump(self) -> dict[str, object]:
             return {"delta": "x"}
@@ -55,6 +58,8 @@ def test_format_frame_accepts_pydantic_like_objects() -> None:
 
 @pytest.mark.asyncio
 async def test_frame_stream_preserves_event_order() -> None:
+    """``frame_stream`` 不得重排或吞掉事件：meta → token → token → done 的顺序原样保持。"""
+
     async def events() -> AsyncIterator[_Event]:
         yield _Event("meta", {"a": 1})
         yield _Event("token", {"delta": "一"})

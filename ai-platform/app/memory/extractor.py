@@ -20,7 +20,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from app.config import Settings
+from app.core.config import Settings
 from app.llm.base import LLMClient, LLMMessage, map_llm_exception
 from app.memory.context_store import StoredMessage
 from app.memory.long_term import normalise_content

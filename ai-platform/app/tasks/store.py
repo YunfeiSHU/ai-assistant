@@ -16,8 +16,8 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Protocol, runtime_checkable
 
-from app.config import Settings
-from app.core.errors import AppError, ErrorCode
+from app.core.config import Settings
+from app.core.exceptions import AppError, ErrorCode
 from app.core.pagination import (
     cursor_position,
     decode_cursor,
@@ -97,7 +97,7 @@ class TaskStore(Protocol):
 
 
 class InMemoryTaskStore:
-    """进程内实现，语义与 MySQL 版对齐（含 idem_key 唯一与版本号）。"""
+    """进程内任务表：:class:`~app.tasks.store.TaskStore` 的实现，语义与 MySQL 版对齐（含 idem_key 唯一与版本号）。"""
 
     def __init__(self) -> None:
         self._tasks: dict[str, Task] = {}
@@ -250,7 +250,7 @@ def build_task_store(settings: Settings) -> TaskStore:
     """
     if not settings.uses_shared_task_store:
         return InMemoryTaskStore()
-    from app.core.redis import RedisUnavailable
+    from app.infrastructure.redis.client import RedisUnavailable
     from app.tasks.redis_store import RedisTaskStore
 
     try:

@@ -28,6 +28,10 @@ class TaskOut(StrictModel):
     resource_id: str
     progress: int = 0
     stage: str | None = None
+    #: 切片总数 / 已完成切片数（``docs/10`` UP-02）：给出绝对的「还要多久」口径，
+    #: 同时也是截断的侧证（``chunks_total > 文档 chunk_count``）
+    chunks_total: int = 0
+    chunks_done: int = 0
     retry_count: int = 0
     max_retries: int = 3
     error: TaskErrorOut | None = None

@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import logging
 
-from app.core.errors import AppError, ErrorCode
-from app.services.memory import MemoryService
+from app.application.memory import MemoryService
+from app.core.exceptions import AppError, ErrorCode
 from app.tasks.models import Task, TaskType
 from app.tasks.service import TaskService
 

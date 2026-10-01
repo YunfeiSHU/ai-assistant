@@ -15,7 +15,7 @@ from app.rag.base import RetrievedChunk
 
 
 class InMemoryVectorStore:
-    """内存向量库（暴力余弦，精确）。"""
+    """内存向量库（暴力余弦，精确）：:class:`~app.rag.vectorstore.base.VectorStore` 的进程内实现。"""
 
     def __init__(self, *, dim: int) -> None:
         self.dim = dim

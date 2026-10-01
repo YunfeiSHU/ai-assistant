@@ -18,7 +18,7 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
 from app.api.deps import AgentServiceDep, ChatServiceDep, UserId
-from app.core.errors import AppError, ErrorCode
+from app.core.exceptions import AppError, ErrorCode
 from app.core.sse import SSE_HEADERS, SSE_MEDIA_TYPE, frame_stream
 from app.schemas.agent import AgentRunRequest
 from app.schemas.chat import ChatRequest, ChatResponse

@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Iterator
 from typing import Any, cast
 
@@ -20,8 +21,12 @@ from tests.support.fake_mcp import FakeMcpServer
 
 from app.agent.loop import AgentLoop
 from app.api.deps import PaginationDep, UserId
-from app.config import Settings
-from app.core.errors import AppError, ErrorCode
+from app.application.agent import AgentService
+from app.application.chat import ChatService
+from app.application.context import ContextAssembler
+from app.application.memory import MemoryService
+from app.core.config import Settings
+from app.core.exceptions import AppError, ErrorCode
 from app.core.security import create_access_token
 from app.main import build_agent_services, build_memory_services, create_app
 from app.mcp import client as mcp_client_module
@@ -29,10 +34,6 @@ from app.mcp.session import McpToolDef
 from app.memory.context_store import InMemoryConversationStore
 from app.rag.base import NullRetriever, Retriever
 from app.rag.embedding.base import EmbeddingProvider
-from app.services.agent import AgentService
-from app.services.chat import ChatService
-from app.services.context import ContextAssembler
-from app.services.memory import MemoryService
 from app.tools import build_tool_service, tool_diagnostics
 from app.tools.executor import ToolExecutor
 
@@ -63,6 +64,14 @@ _BASE: dict[str, Any] = {
     # 想验证「建了任务但还没入库」（``AC-RAG-04``）时，用
     # ``make_settings(task_runner="none")`` 显式覆盖。
     "embedding_provider": "hash",
+    # 维度与模型名也**必须显式钉住**：``_env_file=None`` 只关掉 .env 文件，
+    # **关不掉已经存在于进程环境里的同名变量**。而 ``import pymilvus`` 会在
+    # import 期调 ``load_dotenv()``，把开发机 .env 灌进 ``os.environ``
+    # （见 app/rag/vectorstore/milvus.py::_import_pymilvus_guarded 的说明）。
+    # 钉住之后，无论环境里有什么，测试断言的都是"库内默认档"。
+    "embedding_model": "BAAI/bge-m3",
+    "embedding_dim": 1024,
+    "milvus_vector_dim": 1024,
     "reranker_enabled": False,
     "task_runner": "inline",
     # ---- M6 可观测 ----
@@ -96,6 +105,28 @@ def build_settings(**overrides: Any) -> Settings:
     """构造隔离的测试配置（不读 ``.env``）。"""
     values = {**_BASE, **overrides}
     return Settings(_env_file=None, **values)  # type: ignore[arg-type]
+
+
+@pytest.fixture(autouse=True)
+def _isolate_process_env() -> Iterator[None]:
+    """每个用例前后都把 ``os.environ`` 还原，防止第三方库把 .env 灌进进程环境。
+
+    为什么需要它（实测教训）：``import pymilvus`` 会在 import 期执行
+    ``dotenv.load_dotenv()``，把**开发机的 .env** 写进 ``os.environ``；
+    ``Settings(_env_file=None, ...)`` 照样会读到（环境变量与 env_file 是两条独立来源）。
+    后果是"先跑过任何真实向量库用例之后，后面所有用例的配置都变成开发机的 .env" ——
+    失败现象与其原因完全指不到一起（比如"就绪探针为何报 2048 维"）。
+
+    应用侧已在 ``app/rag/vectorstore/milvus.py`` 里做了快照-恢复；这里再加一道
+    用例级保险：任何库泄漏的环境变量都不会跨用例传播。
+    """
+    snapshot = dict(os.environ)
+    yield
+    for key in set(os.environ) - set(snapshot):
+        del os.environ[key]
+    for key, value in snapshot.items():
+        if os.environ.get(key) != value:
+            os.environ[key] = value
 
 
 @pytest.fixture

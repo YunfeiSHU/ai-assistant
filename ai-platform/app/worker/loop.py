@@ -27,10 +27,10 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from app.config import Settings
-from app.core.errors import AppError, ErrorCode
-from app.observability.metrics import get_metrics
-from app.observability.tracing import get_tracing
+from app.core.config import Settings
+from app.core.exceptions import AppError, ErrorCode
+from app.infrastructure.observability.metrics import get_metrics
+from app.infrastructure.observability.tracing import get_tracing
 from app.tasks.dispatch import TaskDispatcher
 from app.tasks.models import (
     TERMINAL_STATUSES,

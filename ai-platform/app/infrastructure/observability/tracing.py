@@ -224,7 +224,7 @@ def shutdown_tracing() -> None:
     _provider_owned = False
 
 
-#: 进程级当前门面（与 ``app.observability.metrics`` 的 ``_active`` 同一套约定）
+#: 进程级当前门面（与 ``app.infrastructure.observability.metrics`` 的 ``_active`` 同一套约定）
 _active: Tracing | None = None
 
 #: 装在 ``TracerProvider`` 上的「导出器已挂好」标记（复用 provider 时避免重复挂）

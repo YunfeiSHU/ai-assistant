@@ -21,8 +21,8 @@ import logging
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
-from app.config import Settings
-from app.core.errors import AppError, ErrorCode
+from app.core.config import Settings
+from app.core.exceptions import AppError, ErrorCode
 from app.tasks.models import Task, TaskError
 from app.tasks.runner import TaskRunner
 from app.tasks.service import TaskService

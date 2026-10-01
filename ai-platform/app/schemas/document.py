@@ -42,6 +42,10 @@ class DocumentOut(StrictModel):
     page_count: int | None = None
     chunk_count: int = 0
     char_count: int = 0
+    #: 切分产出的切片数（截断前）；与 ``chunk_count`` 不等即说明被 ``MAX_DOC_CHUNKS`` 截断
+    chunks_total: int | None = None
+    #: 是否因 ``MAX_DOC_CHUNKS`` 丢弃了尾部切片（静默截断已被 ``docs/10`` 的 UP-01 立项）
+    truncated: bool = False
     chunk_size: int = 512
     chunk_overlap: int = 64
     content_sha256: str = ""

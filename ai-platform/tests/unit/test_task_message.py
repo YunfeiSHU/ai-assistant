@@ -13,7 +13,7 @@ import json
 import pytest
 from tests.conftest import build_settings
 
-from app.core.errors import AppError, ErrorCode
+from app.core.exceptions import AppError, ErrorCode
 from app.tasks.models import ResourceType, Task, TaskStatus, TaskType
 from app.tasks.transport import (
     DLQ_TOPIC,

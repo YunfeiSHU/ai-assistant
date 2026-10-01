@@ -18,7 +18,7 @@ from typing import Any
 import pytest
 from redis.exceptions import ResponseError
 
-from app.core.errors import AppError, ErrorCode
+from app.core.exceptions import AppError, ErrorCode
 from app.core.ids import new_id
 from app.tasks.events import RedisTaskEventBus, TaskEvent
 from app.tasks.models import ResourceType, Task, TaskError, TaskStatus, TaskType

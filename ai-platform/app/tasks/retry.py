@@ -21,9 +21,9 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from app.config import Settings
-from app.core.errors import ErrorCode
-from app.core.redis import RedisUnavailable, create_redis_client, redis_text
+from app.core.config import Settings
+from app.core.exceptions import ErrorCode
+from app.infrastructure.redis.client import RedisUnavailable, create_redis_client, redis_text
 
 if TYPE_CHECKING:  # 只为标注：``models`` 不认识 ``retry``，不会构成循环导入
     from app.tasks.models import Task

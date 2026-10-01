@@ -14,9 +14,9 @@ import asyncio
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 
-from app.core.errors import AppError, ErrorCode
+from app.core.exceptions import AppError, ErrorCode
 from app.core.pagination import cursor_position, decode_cursor, encode_cursor, is_after_cursor
-from app.storage.base import Chunk, Document, KnowledgeBase
+from app.infrastructure.storage.base import Chunk, Document, KnowledgeBase
 
 # 三个仓储里都有名为 ``list`` 的方法，会在类作用域内遮蔽内建 ``list``，
 # 导致返回注解 `list[X]` 被当成方法对象（mypy: not valid as a type）。
@@ -54,7 +54,7 @@ class _State:
 
 
 class InMemoryKnowledgeBaseRepo:
-    """:class:`~app.storage.base.KnowledgeBaseRepo` 的内存实现。"""
+    """:class:`~app.infrastructure.storage.base.KnowledgeBaseRepo` 的内存实现。"""
 
     def __init__(self, state: _State) -> None:
         self._state = state
@@ -136,7 +136,7 @@ class InMemoryKnowledgeBaseRepo:
 
 
 class InMemoryDocumentRepo:
-    """:class:`~app.storage.base.DocumentRepo` 的内存实现。"""
+    """:class:`~app.infrastructure.storage.base.DocumentRepo` 的内存实现。"""
 
     def __init__(self, state: _State) -> None:
         self._state = state
@@ -240,7 +240,7 @@ class InMemoryDocumentRepo:
 
 
 class InMemoryChunkRepo:
-    """:class:`~app.storage.base.ChunkRepo` 的内存实现。"""
+    """:class:`~app.infrastructure.storage.base.ChunkRepo` 的内存实现。"""
 
     def __init__(self, state: _State) -> None:
         self._state = state

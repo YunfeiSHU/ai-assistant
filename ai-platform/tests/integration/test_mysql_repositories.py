@@ -20,11 +20,11 @@ from typing import Any
 import pytest
 from tests.conftest import build_settings
 
-from app.core.errors import AppError, ErrorCode
+from app.core.exceptions import AppError, ErrorCode
 from app.core.ids import new_id
+from app.infrastructure.storage.base import Chunk, Document, KnowledgeBase
+from app.infrastructure.storage.memory import encode_created_cursor, encode_index_cursor
 from app.memory.context_store import now_iso
-from app.storage.base import Chunk, Document, KnowledgeBase
-from app.storage.memory import encode_created_cursor, encode_index_cursor
 
 pytestmark = pytest.mark.usefixtures("mysql_dsn")
 
@@ -317,7 +317,7 @@ async def test_delete_for_document_removes_all_chunks(rag_repos: Any, cleanup_us
 
 def test_build_repositories_uses_mysql_when_real(mysql_settings: Any) -> None:
     """``INFRA_BACKEND=real`` 必须拿到真实 SQL 仓储（而不是 503 占位）。"""
-    from app.storage import build_repositories
+    from app.infrastructure.storage import build_repositories
 
     repos = build_repositories(mysql_settings)
     assert repos.knowledge_bases.__class__.__name__ == "MySqlKnowledgeBaseRepo"
@@ -325,11 +325,11 @@ def test_build_repositories_uses_mysql_when_real(mysql_settings: Any) -> None:
 
 def test_build_repositories_falls_back_when_driver_missing(monkeypatch: Any) -> None:
     """驱动缺失 → 降级到 503 占位实现，而不是让进程起不来（``docs/10``）。"""
-    from app.storage import build_repositories
+    from app.infrastructure.storage import build_repositories
 
     def _boom(_settings: Any) -> Any:
         raise AppError(ErrorCode.DEPENDENCY_UNAVAILABLE, "未安装 sqlalchemy")
 
-    monkeypatch.setattr("app.storage.mysql.MySqlRagRepository", _boom)
+    monkeypatch.setattr("app.infrastructure.storage.mysql.MySqlRagRepository", _boom)
     repos = build_repositories(build_settings(infra_backend="real"))
     assert repos.knowledge_bases.__class__.__name__ == "UnavailableKnowledgeBaseRepo"

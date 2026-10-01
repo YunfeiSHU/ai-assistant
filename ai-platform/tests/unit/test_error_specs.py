@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.core.errors import ERROR_SPECS, AppError, ErrorCode
+from app.core.exceptions import ERROR_SPECS, AppError, ErrorCode
 
 #: docs/02 §5 中列出的、必须存在的错误码
 DOCUMENTED_CODES = {

@@ -19,7 +19,7 @@ import contextlib
 from typing import Final
 
 from app.core.logging import get_logger
-from app.observability.metrics import Metrics
+from app.infrastructure.observability.metrics import Metrics
 
 logger = get_logger("app.metrics.server")
 
