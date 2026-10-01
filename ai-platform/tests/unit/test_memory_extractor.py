@@ -15,7 +15,7 @@ import pytest
 from tests.conftest import build_settings
 from tests.support.fake_llm import FakeLLM
 
-from app.config import Settings
+from app.core.config import Settings
 from app.memory.context_store import StoredMessage
 from app.memory.extractor import (
     MemoryCandidate,
@@ -37,6 +37,7 @@ def _message(content: str, role: str = "user") -> StoredMessage:
 # 解析容错
 # ---------------------------------------------------------------------------
 def test_parse_plain_json_array() -> None:
+    """最规范形态（裸 JSON 数组）直接解析成 ``MemoryCandidate``，不要任何预处理。"""
     candidates = parse_candidates(
         '[{"content": "用户偏好简洁回答", "kind": "preference", "confidence": 0.9}]'
     )
@@ -60,11 +61,13 @@ def test_parse_strips_json_fence_and_prose() -> None:
 
 
 def test_parse_unknown_kind_falls_back_to_fact() -> None:
+    """``kind`` 是文档未定义的取值 ⇒ 归一到 ``fact``，而不是整条丢弃或原样透传。"""
     candidates = parse_candidates('[{"content": "用户养了一只猫", "kind": "preference_v2"}]')
     assert candidates[0].kind == "fact"
 
 
 def test_parse_skips_non_dict_and_blank_content() -> None:
+    """数组里混进非对象元素、或 ``content`` 全空白时只跳过该条，不影响其余候选。"""
     candidates = parse_candidates('[1, {"content": "   "}, {"content": "用户喜欢深色主题"}]')
     assert [candidate.content for candidate in candidates] == ["用户喜欢深色主题"]
 
@@ -76,6 +79,7 @@ def test_parse_unparsable_returns_empty() -> None:
 
 
 def test_parse_empty_array() -> None:
+    """模型明确返回「没有候选」的空数组时结果是空列表，且不算解析失败。"""
     assert parse_candidates("[]") == []
 
 
@@ -138,20 +142,24 @@ def test_speculation_is_rejected(content: str, settings: Settings) -> None:
     ["用户本次想要一份周报", "用户今天要发布版本", "用户帮我查一下天气"],
 )
 def test_one_off_information_is_rejected(content: str, settings: Settings) -> None:
+    """一次性任务/临时诉求（"本次""今天""帮我查一下"）不是长期偏好，必须被挡。"""
     assert rejection_reason(content, 0.9, settings) == "one_off"
 
 
 def test_length_bounds(settings: Settings) -> None:
+    """内容长度在 ``memory_content_min_chars`` / ``memory_content_max_chars`` 之外各有专属原因。"""
     assert rejection_reason("短", 0.9, settings) == "too_short"
     assert rejection_reason("很长" * 400, 0.9, settings) == "too_long"
 
 
 def test_low_confidence_is_rejected(settings: Settings) -> None:
+    """低于 ``memory_min_confidence``（默认 0.7）判 ``low_confidence``，达到阈值则放行。"""
     assert rejection_reason("用户偏好深色主题", 0.5, settings) == "low_confidence"
     assert rejection_reason("用户偏好深色主题", 0.7, settings) is None
 
 
 def test_accept_candidates_splits_accepted_and_rejected(settings: Settings) -> None:
+    """``accept_candidates`` 按原因分流：通过的原样保留，被拒的带上 ``reason`` 返回。"""
     accepted, rejected = accept_candidates(
         [
             MemoryCandidate(content="用户偏好简洁回答", kind="preference", confidence=0.9),
@@ -209,6 +217,7 @@ async def test_extract_renders_only_user_messages(settings: Settings) -> None:
 
 
 async def test_extract_returns_accepted_and_rejected(settings: Settings) -> None:
+    """端到端一次抽取要同时给出「采纳的候选」与「被拒的候选 + 原因」，便于审计。"""
     llm = FakeLLM(
         replies=[
             '[{"content": "用户偏好简洁回答", "kind": "preference", "confidence": 0.9},'
@@ -230,6 +239,7 @@ async def test_extract_without_user_messages_skips_llm(settings: Settings) -> No
 
 
 async def test_extract_unparsable_output_yields_no_candidates(settings: Settings) -> None:
+    """模型输出无法解析 ⇒ 空结果（不抛异常），且失败在日志里可观测而不是静默成功。"""
     llm = FakeLLM(replies=["我不确定该抽什么"])
     extractor = MemoryExtractor(settings, llm)
     assert await extractor.extract([_message("我喜欢简洁回答")]) == ([], [])
@@ -237,7 +247,7 @@ async def test_extract_unparsable_output_yields_no_candidates(settings: Settings
 
 async def test_extract_propagates_llm_failure(settings: Settings) -> None:
     """上游失败必须抛出（由 ``MemoryService`` 决定降级方式），不能假装「没抽到」。"""
-    from app.core.errors import AppError
+    from app.core.exceptions import AppError
 
     llm = FakeLLM(replies=["[]"], complete_error=RuntimeError("上游挂了"))
     extractor = MemoryExtractor(settings, llm)

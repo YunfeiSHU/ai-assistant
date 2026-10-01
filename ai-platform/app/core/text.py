@@ -64,7 +64,7 @@ def _normalize_preserving_lines(text: str) -> str:
     return "\n".join(line.rstrip() for line in cleaned.split("\n"))
 
 
-def normalize_text(text: str) -> str:
+def normalize_text(text: str, *, join_cjk_lines: bool = True) -> str:
     """归一化：去零宽字符、统一换行、修连字符断词、合并 CJK 孤行、压缩空行。
 
     刻意**不做**的事：不删空格、不做全角/半角互转、不做大小写折叠。这些会改变
@@ -72,11 +72,20 @@ def normalize_text(text: str) -> str:
 
     调用顺序注意：本函数会合并行，**行级清洗必须在它之前**（见
     :func:`_normalize_preserving_lines` 与 :func:`clean_pages`）。
+
+    Args:
+        join_cjk_lines: 是否合并中文孤行。**Markdown 必须传 ``False``** ——
+            它的行结构是语义（``## 标题`` 独占一行），而合并会把
+            「``## 年假`` + 下一行正文」粘成一行 ``## 年假员工入职……``；
+            这一行仍然以 ``## `` 开头，于是被当成**标题**、正文被静默丢弃
+            （全文如此则 ``char_count=0``，报"有效文本不足"）。
+            详见 ``app/rag/parsers/markdown.py`` 的调用点与回归用例。
     """
     if not text:
         return ""
     cleaned = _normalize_preserving_lines(text)
-    cleaned = _CJK_LINEBREAK.sub(r"\1\2", cleaned)
+    if join_cjk_lines:
+        cleaned = _CJK_LINEBREAK.sub(r"\1\2", cleaned)
     # 只裁剪首尾的空行：用 ``strip()`` 会把首行缩进一起吃掉（与「保留行首缩进」矛盾）
     return _BLANK_LINES.sub("\n\n", cleaned).strip("\n")
 

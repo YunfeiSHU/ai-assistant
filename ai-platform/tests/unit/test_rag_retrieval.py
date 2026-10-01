@@ -13,7 +13,7 @@ import pytest
 from tests.conftest import build_settings
 from tests.support.fake_embedding import FakeEmbedding, FixedEmbedding
 
-from app.config import Settings
+from app.core.config import Settings
 from app.rag.base import RetrievedChunk
 from app.rag.embedding import CachingEmbeddingProvider, build_embedding_provider
 from app.rag.embedding.hash import HashEmbeddingProvider

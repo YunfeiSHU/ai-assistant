@@ -19,12 +19,9 @@ import signal
 import sys
 from typing import Any
 
-from app.config import Settings, get_settings
+from app.core.config import Settings, get_settings
 from app.core.logging import get_logger, setup_logging
-from app.llm.openai_compat import OpenAICompatLLM
-from app.main import build_memory_services, build_rag_services
-from app.memory import build_conversation_store
-from app.observability import (
+from app.infrastructure.observability import (
     Metrics,
     MetricsServer,
     configure_metrics,
@@ -32,6 +29,9 @@ from app.observability import (
     setup_tracing,
     shutdown_tracing,
 )
+from app.llm.openai_compat import OpenAICompatLLM
+from app.main import build_memory_services, build_rag_services
+from app.memory import build_conversation_store
 from app.tasks.events import build_task_event_bus, make_publisher
 from app.tasks.store import build_task_store
 from app.worker.loop import build_worker

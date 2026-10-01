@@ -12,10 +12,10 @@ import logging
 import threading
 from typing import Any
 
-from app.config import Settings
-from app.core.errors import AppError, ErrorCode
+from app.core.config import Settings
+from app.core.exceptions import AppError, ErrorCode
 
-logger = logging.getLogger("app.storage.object_store")
+logger = logging.getLogger("app.infrastructure.storage.object_store")
 
 
 class InMemoryObjectStore:

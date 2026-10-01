@@ -23,15 +23,15 @@ import asyncio
 from collections.abc import Iterator
 from typing import Any
 
-from app.core.errors import AppError, ErrorCode
+from app.core.exceptions import AppError, ErrorCode
 from app.core.health import CheckResult, HealthCheck
 from app.core.logging import get_logger
+from app.infrastructure.observability.circuit import CircuitRegistry
+from app.infrastructure.observability.metrics import get_metrics
+from app.infrastructure.observability.tracing import Tracing
 from app.mcp.client import McpClient, McpServerStatus
 from app.mcp.config import McpServerConfig
 from app.mcp.session import McpToolDef, SessionFactory
-from app.observability.circuit import CircuitRegistry
-from app.observability.metrics import get_metrics
-from app.observability.tracing import Tracing
 
 logger = get_logger("app.mcp")
 

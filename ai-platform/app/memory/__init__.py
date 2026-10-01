@@ -19,8 +19,8 @@
 
 from __future__ import annotations
 
-from app.config import Settings
-from app.core.errors import AppError
+from app.core.config import Settings
+from app.core.exceptions import AppError
 from app.core.logging import get_logger
 from app.memory.context_store import (
     ConversationStore,

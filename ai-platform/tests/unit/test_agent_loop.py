@@ -24,7 +24,7 @@ from app.agent.loop import (
     collect_citations,
     render_tool_result,
 )
-from app.config import Settings
+from app.core.config import Settings
 from app.llm.base import LLMMessage, LLMToolCall
 from app.rag.base import RetrievalUnavailable, RetrievedChunk
 from app.tools.base import BuiltinTool, ToolContext, ToolOutcome, ToolSpec
@@ -327,7 +327,7 @@ async def test_loop_stops_when_total_time_budget_exhausted() -> None:
 
 async def test_loop_wrap_up_failure_does_not_fail_the_request() -> None:
     """收尾调用失败不能把整个请求变成错误：降级成「已有内容」并保持 ``max_steps``。"""
-    from app.core.errors import AppError, ErrorCode
+    from app.core.exceptions import AppError, ErrorCode
 
     scripts = [
         [tool_call("calculator", {"expression": f"{i}+1"}, call_id=f"c{i}")] for i in range(3)
@@ -370,6 +370,7 @@ async def test_loop_offers_only_allowed_tools() -> None:
 
 
 async def test_loop_disables_tools_when_none_offered() -> None:
+    """``tool_names`` 为空 ⇒ 请求里根本不带 ``tools``（而不是带一个空数组）。"""
     llm = FakeLLM(replies=["直接回答"])
     loop, registry, _ = _make_loop([CalculatorTool()], llm)
     await loop.run([_user()], _ctx(registry), tool_names=[])
@@ -399,6 +400,7 @@ async def test_loop_registers_citations_globally() -> None:
 
 
 async def test_loop_reports_retrieval_failure_as_tool_failure() -> None:
+    """检索不可用要落成该次调用的 ``execution_failed``，并把 ``tools_failed`` 记进降级原因。"""
     retriever = _StubRetriever()
     retriever.failure = RetrievalUnavailable("milvus down")
     llm = FakeLLM(
@@ -426,6 +428,7 @@ async def test_loop_passes_user_id_to_retriever() -> None:
 
 
 async def test_loop_accumulates_usage_across_rounds() -> None:
+    """多轮循环的 token 用量必须**累加**（两轮各 10+5 ⇒ prompt 20 / total 30），不取最后一轮。"""
     llm = FakeLLM(
         replies=["", "答案"],
         tool_scripts=[[tool_call("calculator", {"expression": "1+1"})]],
@@ -445,6 +448,7 @@ async def test_loop_accumulates_usage_across_rounds() -> None:
 
 
 def test_render_tool_result_truncates_body() -> None:
+    """超长工具结果要被截断并留 ``…[truncated]`` 标记，避免撑爆下游模型的上下文。"""
     record = ToolCallRecord(call_id="c1", name="echo", payload={"blob": "x" * 6000}, status="ok")
     text = render_tool_result(record)
     assert "…[truncated]" in text
@@ -469,12 +473,14 @@ def test_render_tool_result_escapes_nothing_but_keeps_boundaries() -> None:
 
 
 def test_collect_citations_dedupes_and_keeps_order() -> None:
+    """跨调用收集引用：同 ``chunk_id`` 只留一次，并保持首次出现的先后顺序。"""
     first = ToolCallRecord(call_id="c1", name="kb_retrieve", citations=[_chunk("a"), _chunk("b")])
     second = ToolCallRecord(call_id="c2", name="kb_retrieve", citations=[_chunk("b"), _chunk("c")])
     assert [chunk.chunk_id for chunk in collect_citations([first, second])] == ["a", "b", "c"]
 
 
 def test_collect_citations_ignores_non_retrieval_tools() -> None:
+    """只有检索类工具的 ``citations`` 算引用；计算器等工具不贡献引用条目。"""
     record = ToolCallRecord(call_id="c1", name="calculator", payload={"result": 2})
     assert collect_citations([record]) == []
 
@@ -493,6 +499,7 @@ def test_tool_spec_upstream_shape() -> None:
 
 
 def test_tool_spec_public_shape_matches_docs() -> None:
+    """``to_public`` 的字段集合与 ``docs/04`` 的 ``GET /tools`` 契约逐字段一致（不多不少）。"""
     spec = ToolSpec(
         name="a_tool",
         description="描述",
@@ -516,6 +523,7 @@ def test_tool_spec_public_shape_matches_docs() -> None:
 
 @pytest.mark.parametrize("bad_name", ["A", "1tool", "tool-with-dash", "", "a"])
 def test_tool_name_pattern_rules(bad_name: str) -> None:
+    """大写、数字开头、含连字符、空串与单字符都不得通过工具名正则。"""
     from app.tools.base import TOOL_NAME_PATTERN
 
     assert TOOL_NAME_PATTERN.match(bad_name) is None

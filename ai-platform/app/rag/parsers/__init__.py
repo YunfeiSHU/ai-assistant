@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 
-from app.core.errors import AppError, ErrorCode
+from app.core.exceptions import AppError, ErrorCode
 from app.rag.parsers.base import (
     BlockBuilder,
     DocumentParser,

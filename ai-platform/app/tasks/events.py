@@ -15,7 +15,7 @@
 
 **事件不可信也就不重放**：总线只做「尽力而为」的增量推送；断线重连的正确姿势是
 先 ``GET /tasks/{id}`` 拿权威快照，再订阅增量。SSE 路由正是这么写的（见
-``app/api/routes/tasks.py``）：**先订阅、后读快照**，两者之间无缝隙。
+``app/api/v1/tasks.py``）：**先订阅、后读快照**，两者之间无缝隙。
 """
 
 from __future__ import annotations
@@ -28,8 +28,8 @@ from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
-from app.config import Settings
-from app.core.redis import RedisUnavailable, create_redis_client, redis_text
+from app.core.config import Settings
+from app.infrastructure.redis.client import RedisUnavailable, create_redis_client, redis_text
 
 logger = logging.getLogger("app.tasks.events")
 
@@ -83,9 +83,26 @@ class TaskEvent:
 
     # ------------------------------------------------------------------
     @classmethod
-    def progress(cls, *, stage: str | None, progress: int) -> TaskEvent:
-        """``progress``：阶段与进度（``{stage, progress}``）。"""
-        return cls(EVENT_PROGRESS, {"stage": stage, "progress": int(progress)})
+    def progress(
+        cls,
+        *,
+        stage: str | None,
+        progress: int,
+        chunks_done: int | None = None,
+        chunks_total: int | None = None,
+    ) -> TaskEvent:
+        """``progress``：阶段与进度（``docs/10`` UP-02 起多了两个切片计数）。
+
+        新字段是**追加**的：旧的消费者按 ``{stage, progress}`` 取值的代码不受影响，
+        而需要 ETA 的客户端能从 ``chunks_done`` / ``chunks_total`` 算出来。
+        计数为 ``None``（非入库类任务）时不下发，避免出现「0/0」这种看上去像卡住的帧。
+        """
+        data: dict[str, Any] = {"stage": stage, "progress": int(progress)}
+        if chunks_total is not None:
+            data["chunks_total"] = int(chunks_total)
+        if chunks_done is not None:
+            data["chunks_done"] = int(chunks_done)
+        return cls(EVENT_PROGRESS, data)
 
     @classmethod
     def done(cls, *, status: str, finished_at: str | None) -> TaskEvent:

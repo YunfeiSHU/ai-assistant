@@ -16,7 +16,7 @@ import random
 
 import pytest
 
-from app.core.errors import ErrorCode
+from app.core.exceptions import ErrorCode
 from app.tasks.retry import (
     CLAIM_LIMIT,
     NON_RETRYABLE_CODES,

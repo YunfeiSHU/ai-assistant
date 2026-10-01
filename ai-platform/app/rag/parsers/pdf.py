@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pypdf import PdfReader
 
-from app.core.errors import AppError, ErrorCode
+from app.core.exceptions import AppError, ErrorCode
 from app.core.text import clean_pages
 from app.rag.parsers.base import ParsedDocument, build_blocks_from_pages
 

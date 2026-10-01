@@ -7,11 +7,11 @@ pub/sub 的「订阅前发的帧不会重放」）都只在真实连接上才暴
 
 M8 之后这一层还多了三个依赖：
 
-* **MySQL** —— :mod:`app.storage.mysql` / :mod:`app.memory.mysql_repo` 的
+* **MySQL** —— :mod:`app.infrastructure.storage.mysql` / :mod:`app.memory.mysql_repo` 的
   «SQL 写得对不对»（行值游标、唯一键冲突映射、``hit_count`` 的原子自增）；
 * **Milvus** —— :mod:`app.memory.milvus_index` 的 «集合建得对不对»
   （标量索引存不存在、``user_id`` 过滤有没有生效）；
-* **MinIO** —— :class:`~app.storage.objectstore.MinioObjectStore` 的上传/下载/删除。
+* **MinIO** —— :class:`~app.infrastructure.storage.objectstore.MinioObjectStore` 的上传/下载/删除。
 
 约定：
 
@@ -41,7 +41,7 @@ from urllib.parse import urlsplit
 import pytest
 from tests.conftest import build_settings
 
-from app.config import Settings
+from app.core.config import Settings
 from app.core.ids import new_id
 
 REDIS_URL_ENV = "AI_TEST_REDIS_URL"
@@ -122,7 +122,7 @@ async def redis_client(redis_url: str) -> AsyncIterator[Any]:
 
 
 # ---------------------------------------------------------------------------
-# MySQL（app.storage.mysql / app.memory.mysql_repo）
+# MySQL（app.infrastructure.storage.mysql / app.memory.mysql_repo）
 # ---------------------------------------------------------------------------
 
 
@@ -159,7 +159,7 @@ def test_user() -> str:
 @pytest.fixture
 async def rag_repos(mysql_settings: Settings) -> AsyncIterator[Any]:
     """真实 MySQL 的 KB / 文档 / 切片仓储门面。"""
-    from app.storage.mysql import MySqlRagRepository
+    from app.infrastructure.storage.mysql import MySqlRagRepository
 
     facade = MySqlRagRepository(mysql_settings)
     try:
@@ -178,7 +178,7 @@ async def cleanup_user(mysql_settings: Settings, test_user: str) -> AsyncIterato
     yield test_user
     from sqlalchemy import text
 
-    from app.core.db import create_engine_from_settings, release_engine
+    from app.infrastructure.mysql.db import create_engine_from_settings, release_engine
 
     engine = create_engine_from_settings(mysql_settings)
     try:
@@ -239,7 +239,7 @@ async def memory_index(milvus_settings: Settings) -> AsyncIterator[Any]:
 
 
 # ---------------------------------------------------------------------------
-# MinIO（app.storage.objectstore）
+# MinIO（app.infrastructure.storage.objectstore）
 # ---------------------------------------------------------------------------
 
 
@@ -261,6 +261,6 @@ def minio_settings() -> Settings:
 @pytest.fixture
 async def object_store(minio_settings: Settings) -> Any:
     """真实 MinIO 对象存储适配器（桶不存在时由实现自动创建）。"""
-    from app.storage.objectstore import MinioObjectStore
+    from app.infrastructure.storage.objectstore import MinioObjectStore
 
     return MinioObjectStore(minio_settings)

@@ -11,6 +11,15 @@
 合并的上限就取 ``chunk_size × 1.5``：这既是长度硬上限，也是「短块必须合并」与
 「块不能太长」两条约束的交点。没有这个上限，把 100 token 的碎片并进 512 token 的
 正常块会得到 612 token 的超长块，反而违反验收标准。
+
+**UP-03（2026-10-02）：合并的「触发阈值」与「填充目标」是两件事，此前被混为一谈。**
+原实现用 ``chunk_size × 0.3`` 同时当两者 —— 一旦累到 153 token 就停止合并，
+于是「碎段文档」（每段只有几十 token，例如逐行重复模板的测试正文）的有效块长
+被钉在配额的 **34%**（8MB 实测中位 175 token / 配置 512），片数被放大 **2.6 倍**
+（16,969 vs 整篇一次切的 6,527），并因此撞上 ``MAX_DOC_CHUNKS=10000`` 丢掉 41% 正文。
+现在：``SHORT_CHUNK_RATIO`` 只表达「低于它 MUST 合并」的语义下限，
+真正决定停在哪儿的是 :data:`MERGE_FILL_RATIO`（默认填到 ``chunk_size`` 为止）。
+两者是**超集关系** —— 合并范围只会更大，那条 MUST 依旧成立。
 """
 
 from __future__ import annotations
@@ -36,8 +45,25 @@ SEPARATORS: tuple[str, ...] = (
     "",
 )
 
-#: 短块合并阈值（占 ``chunk_size`` 的比例）
+#: 短块合并的**触发**阈值（占 ``chunk_size`` 的比例）：低于它的块 MUST 与后一块合并
+#: （``docs/06`` §4.3 ``REQ-RAG-005``）。
+#:
+#: .. note::
+#:    它**不再**决定合并「停在哪里」—— 那是 :data:`MERGE_FILL_RATIO` 的事。
+#:    保留它是因为「必须合并」这条语义需要一个可引用的数字，
+#:    而实际合并范围是它的超集（见 ``ChunkingService._merge_short``）。
 SHORT_CHUNK_RATIO = 0.3
+
+#: 短块合并的**填充目标**（占 ``chunk_size`` 的比例）：合并到「再加一块就超它」为止。
+#:
+#: 为什么不是 0.3：碎片文档会「一累到 153 就停」，有效块长被钉在配额的 34%，
+#: 片数被放大 2.6 倍（8MB 实测 16,969 片，而整篇一次切只有 6,527 片），
+#: 并因此触发 ``MAX_DOC_CHUNKS`` 静默截断。取 ``1.0`` = 合并结果不超 ``chunk_size``，
+#: 比 ``AC-RAG-07`` 的 1.5 倍硬上限更严。
+#:
+#: ⚠️ 改这个值是**改召回配方**（召回粒度、上下文预算、向量条数一起变），
+#: 必须连同 ``AC-RAG-*`` 与召回评测一起重定标（见 ``ai-platform-go/docs/10`` §8-2）。
+MERGE_FILL_RATIO = 1.0
 
 #: 单块长度硬上限（占 ``chunk_size`` 的比例，``AC-RAG-07``）
 MAX_CHUNK_RATIO = 1.5
@@ -108,6 +134,15 @@ class ChunkingService:
         """单块长度硬上限（``AC-RAG-07``）。"""
         return int(self.chunk_size * MAX_CHUNK_RATIO)
 
+    @property
+    def merge_target_tokens(self) -> int:
+        """短块合并的填充目标：合并到「再加一块就超它」为止。
+
+        取 ``min(MERGE_FILL_RATIO × chunk_size, max_chunk_tokens)``：
+        这样无论两个比例怎么配，合并结果都不可能突破 ``AC-RAG-07`` 的硬上限。
+        """
+        return min(int(self.chunk_size * MERGE_FILL_RATIO), self.max_chunk_tokens)
+
     def split_blocks(self, blocks: Sequence[SourceBlock]) -> list[ChunkDraft]:
         """把带位置信息的文本块切成切片草稿。"""
         drafts: list[ChunkDraft] = []
@@ -156,16 +191,21 @@ class ChunkingService:
         )
 
     def _merge_short(self, drafts: list[ChunkDraft]) -> list[ChunkDraft]:
-        """相邻短块向后合并。
+        """相邻短块向后合并，**填到接近 ``chunk_size`` 才停**（UP-03）。
 
         只合并 **同一位置上下文**（同 ``page`` 且同 ``heading_path``）的相邻块：
         跨标题或跨页合并会把两节内容缝在一起，且合并后的 ``page`` 无从取值，
         引用溯源就会指错地方。
+
+        ``docs/06`` §4.3 只规定了下限（低于 ``chunk_size × 0.3`` 的块 MUST 合并），
+        没规定上限从哪里来。此前实现把这个下限**当成了停止条件**，于是每块一累到
+        153 token 就停，有效块长被钉在配额的 34%、片数被放大 2.6 倍。
+        这里改成以 :attr:`merge_target_tokens`（≈ ``chunk_size``）为停止条件：
+        合并范围是那条 MUST 的**超集**，所以下限仍然被满足，而块长回到配置附近。
         """
         if not drafts:
             return []
-        floor = self.chunk_size * SHORT_CHUNK_RATIO
-        ceiling = self.max_chunk_tokens
+        target = self.merge_target_tokens
         out: list[ChunkDraft] = []
         for draft in drafts:
             previous = out[-1] if out else None
@@ -173,8 +213,9 @@ class ChunkingService:
                 previous is not None
                 and previous.page == draft.page
                 and previous.heading_path == draft.heading_path
-                and previous.token_count < floor
-                and previous.token_count + draft.token_count <= ceiling
+                # 还没填满 && 并进来也不会超配额（超了就让 draft 单独成块）
+                and previous.token_count < target
+                and previous.token_count + draft.token_count <= target
             ):
                 separator = self._joiner(previous.content, draft.content)
                 previous.content = f"{previous.content}{separator}{draft.content}"
@@ -204,6 +245,7 @@ def _is_cjk(char: str) -> bool:
 __all__ = [
     "ATOMIC_SPLIT_RATIO",
     "MAX_CHUNK_RATIO",
+    "MERGE_FILL_RATIO",
     "SEPARATORS",
     "SHORT_CHUNK_RATIO",
     "ChunkDraft",

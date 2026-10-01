@@ -21,7 +21,7 @@ from typing import Any
 
 import pytest
 
-from app.observability.metrics import (
+from app.infrastructure.observability.metrics import (
     CIRCUIT_VALUES,
     MCP_STATES,
     Metrics,
@@ -226,7 +226,7 @@ def test_has_metric_detects_counter_and_histogram() -> None:
 
 def test_get_metrics_falls_back_to_noop_instance() -> None:
     """未配置时返回共享的空操作实例（深层调用无需判空）。"""
-    import app.observability.metrics as module
+    import app.infrastructure.observability.metrics as module
 
     original = module._active
     try:
@@ -239,7 +239,7 @@ def test_get_metrics_falls_back_to_noop_instance() -> None:
 
 def test_configure_metrics_makes_instance_active() -> None:
     """``configure_metrics`` 之后 ``get_metrics()`` 就是它。"""
-    import app.observability.metrics as module
+    import app.infrastructure.observability.metrics as module
 
     original = module._active
     metrics = Metrics()

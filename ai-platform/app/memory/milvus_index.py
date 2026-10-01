@@ -21,8 +21,8 @@ import json
 from collections.abc import Sequence
 from typing import Any
 
-from app.config import Settings
-from app.core.errors import AppError, ErrorCode
+from app.core.config import Settings
+from app.core.exceptions import AppError, ErrorCode
 from app.core.logging import get_logger
 from app.memory.vector_index import MemoryHit
 

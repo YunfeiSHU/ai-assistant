@@ -46,6 +46,7 @@ async def test_search_scores_are_cosine_similarity() -> None:
 
 
 async def test_search_respects_top_k_and_is_sorted() -> None:
+    """命中按相似度**降序**返回，且条数不超过 ``top_k``（高分在前是引用编号的前提）。"""
     index = InMemoryMemoryVectorIndex(dim=DIM)
     await index.upsert("mem_low", "u_1", _unit(0.2, 1.0, 0.0, 0.0))
     await index.upsert("mem_high", "u_1", _unit(1.0, 0.1, 0.0, 0.0))
@@ -104,6 +105,7 @@ async def test_upsert_overwrites_existing_vector() -> None:
 
 
 async def test_delete_and_delete_all() -> None:
+    """单条 delete 只移除该条；``delete_all`` 只清指定用户，别的用户向量不受影响。"""
     index = InMemoryMemoryVectorIndex(dim=DIM)
     await index.upsert("mem_1", "u_1", _unit(1.0, 0.0, 0.0, 0.0))
     await index.upsert("mem_2", "u_1", _unit(0.0, 1.0, 0.0, 0.0))
@@ -118,6 +120,7 @@ async def test_delete_and_delete_all() -> None:
 
 
 async def test_delete_all_is_idempotent() -> None:
+    """对本来就没有向量的用户调用 ``delete_all`` 不报错（"清空"必须可重复执行）。"""
     index = InMemoryMemoryVectorIndex(dim=DIM)
     await index.delete_all("u_1")
     assert await index.count(user_id="u_1") == 0
@@ -137,5 +140,6 @@ async def test_upsert_rejects_dimension_mismatch() -> None:
 
 
 async def test_ensure_ready_is_a_noop_for_in_memory_index() -> None:
+    """内存实现没有远端集合要建，``ensure_ready`` 必须是可重复调用的空操作。"""
     index = InMemoryMemoryVectorIndex(dim=DIM)
     await index.ensure_ready()

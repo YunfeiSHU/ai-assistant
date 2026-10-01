@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 
-from app.core.errors import AppError, ErrorCode
+from app.core.exceptions import AppError, ErrorCode
 from app.tasks.models import Task, TaskType
 from app.tasks.runner import TaskHandler
 from app.tasks.service import TaskService
@@ -40,6 +40,7 @@ class TaskDispatcher:
         self._handlers[type_] = handler
 
     def register_many(self, handlers: dict[TaskType, TaskHandler]) -> None:
+        """批量注册（装配期用）。任一类型重复注册会由 :meth:`register` 直接抛出。"""
         for type_, handler in handlers.items():
             self.register(type_, handler)
 

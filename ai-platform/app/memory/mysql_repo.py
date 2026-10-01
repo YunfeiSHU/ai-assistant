@@ -1,10 +1,10 @@
 """长期记忆仓储的 MySQL 实现（``user_memory`` 表，``REQ-MEM-004/005/007``）。
 
-**为什么不复用** :mod:`app.storage.mysql` 的引擎与表定义：记忆不属于知识库域，
+**为什么不复用** :mod:`app.infrastructure.storage.mysql` 的引擎与表定义：记忆不属于知识库域，
 两张表之间没有任何引用；把 ``user_memory`` 塞进 RAG 的表元数据里会让
 「哪张表属于哪条链路」变得难以判断，而删除某条链路时就会漏掉另一半。
 
-真正需要共享的（引擎构造、时间戳格式、错误分类）在 :mod:`app.core.db`，
+真正需要共享的（引擎构造、时间戳格式、错误分类）在 :mod:`app.infrastructure.mysql.db`，
 两边都用它 —— 语义一致性靠**共用工具**而不是**共用容器**来保证。
 
 与 :class:`~app.memory.long_term.InMemoryMemoryRepo` 的逐条对齐：
@@ -45,8 +45,11 @@ from sqlalchemy import (
 )
 from sqlalchemy.exc import IntegrityError
 
-from app.config import Settings
-from app.core.db import (
+from app.core.config import Settings
+from app.core.exceptions import AppError, ErrorCode
+from app.core.logging import get_logger
+from app.core.pagination import decode_cursor
+from app.infrastructure.mysql.db import (
     FETCH_AHEAD,
     create_engine_from_settings,
     db_now,
@@ -55,9 +58,6 @@ from app.core.db import (
     reraise,
     to_db,
 )
-from app.core.errors import AppError, ErrorCode
-from app.core.logging import get_logger
-from app.core.pagination import decode_cursor
 from app.memory.long_term import (
     MemoryKind,
     MemoryRecord,
@@ -298,7 +298,7 @@ class MySqlMemoryRepo:
     async def save(self, record: MemoryRecord) -> MemoryRecord:
         table = user_memory_table
         values = _record_values(record)
-        # 主键与创建时间不可改（见 app/storage/mysql.py 的同名说明）
+        # 主键与创建时间不可改（见 app/infrastructure/storage/mysql.py 的同名说明）
         values.pop("id", None)
         values.pop("created_at", None)
         values["updated_at"] = db_now()

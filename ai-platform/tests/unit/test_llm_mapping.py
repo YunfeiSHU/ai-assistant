@@ -10,7 +10,7 @@ import httpx
 import openai
 import pytest
 
-from app.core.errors import ErrorCode
+from app.core.exceptions import ErrorCode
 from app.llm.base import map_llm_exception
 
 

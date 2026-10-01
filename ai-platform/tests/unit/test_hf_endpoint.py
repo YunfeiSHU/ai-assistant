@@ -20,7 +20,7 @@ from collections.abc import Callable, Iterator
 
 import pytest
 
-from app.config import Settings, apply_hf_endpoint
+from app.core.config import Settings, apply_hf_endpoint
 
 HF_ENDPOINT_ENV = "HF_ENDPOINT"
 MIRROR = "https://hf-mirror.com"

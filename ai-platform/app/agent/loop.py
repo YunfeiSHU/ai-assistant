@@ -32,11 +32,11 @@ from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from app.config import Settings
-from app.core.errors import AppError
+from app.core.config import Settings
+from app.core.exceptions import AppError
+from app.infrastructure.observability.metrics import get_metrics
+from app.infrastructure.observability.tracing import get_tracing
 from app.llm.base import LLMClient, LLMMessage, LLMToolCall, LLMUsage
-from app.observability.metrics import get_metrics
-from app.observability.tracing import get_tracing
 from app.rag.base import RetrievedChunk
 from app.tools.base import ToolContext, clip
 from app.tools.executor import (
@@ -51,7 +51,7 @@ from app.tools.registry import ToolRegistry
 
 logger = logging.getLogger("app.agent")
 
-#: 降级原因（与 ``app.services.chat.REASON_*`` 同一命名空间）
+#: 降级原因（与 ``app.application.chat.REASON_*`` 同一命名空间）
 REASON_TOOLS_FAILED = "tools_failed"
 REASON_AGENT_TIMEOUT = "agent_timeout"
 REASON_AGENT_MAX_STEPS = "max_steps"

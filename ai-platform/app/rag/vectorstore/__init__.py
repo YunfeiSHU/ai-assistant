@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.config import Settings
+from app.core.config import Settings
 from app.rag.vectorstore.base import VectorStore
 from app.rag.vectorstore.memory import InMemoryVectorStore
 from app.rag.vectorstore.milvus import MilvusVectorStore

@@ -13,7 +13,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.config import Settings
+from app.core.config import Settings
 
 ProbeFactory = Callable[..., tuple[FastAPI, Settings]]
 

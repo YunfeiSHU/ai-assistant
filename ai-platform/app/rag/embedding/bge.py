@@ -10,9 +10,10 @@ import logging
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
-from app.config import Settings
-from app.core.errors import AppError, ErrorCode
+from app.core.config import Settings
+from app.core.exceptions import AppError, ErrorCode
 from app.rag.embedding.base import l2_normalize
+from app.rag.torch_threads import apply_torch_num_threads
 
 if TYPE_CHECKING:  # 仅类型提示，运行时不导入重依赖
     from sentence_transformers import SentenceTransformer
@@ -28,6 +29,7 @@ class BgeEmbeddingProvider:
         self.dim = settings.embedding_dim
         self._device = settings.embedding_device
         self._batch_size = settings.embedding_batch_size
+        self._num_threads = settings.torch_num_threads
         self._model: SentenceTransformer | None = None
         self._loaded = False
 
@@ -48,6 +50,9 @@ class BgeEmbeddingProvider:
                 "embedding.loading",
                 extra={"model": self.model_name, "device": self._device},
             )
+            # 必须在构造模型**之前**收窄线程数：torch 默认按逻辑核数开线程，
+            # 一次 8MB 文档的向量化会把同机的 MySQL/Redis/网关一起拖慢。
+            apply_torch_num_threads(self._num_threads)
             self._model = SentenceTransformer(self.model_name, device=self._device)
             self._loaded = True
         return self._model

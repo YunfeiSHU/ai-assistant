@@ -21,9 +21,9 @@ from typing import Any
 
 import jwt
 
-from app.config import Settings
+from app.core.config import Settings
 from app.core.context import set_user_id
-from app.core.errors import AppError, ErrorCode
+from app.core.exceptions import AppError, ErrorCode
 from app.core.ids import is_safe_key_component
 
 #: 鉴权豁免路径（完全匹配或前缀匹配，见 §2.1）

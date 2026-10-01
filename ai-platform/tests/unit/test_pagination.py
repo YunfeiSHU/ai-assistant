@@ -16,7 +16,7 @@ from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
-from app.core.errors import AppError, ErrorCode
+from app.core.exceptions import AppError, ErrorCode
 from app.core.pagination import (
     cursor_position,
     decode_cursor,

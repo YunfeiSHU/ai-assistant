@@ -21,11 +21,11 @@ from app.core.context import (
     parse_traceparent,
     request_context,
 )
-from app.core.errors import AppError, ErrorCode
+from app.core.exceptions import AppError, ErrorCode
 from app.core.ids import new_id
 from app.core.logging import get_logger, hash_identifier
-from app.observability.metrics import Metrics, get_metrics
-from app.observability.tracing import Tracing, get_tracing
+from app.infrastructure.observability.metrics import Metrics, get_metrics
+from app.infrastructure.observability.tracing import Tracing, get_tracing
 
 logger = get_logger("app.access")
 

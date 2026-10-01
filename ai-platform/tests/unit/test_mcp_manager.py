@@ -24,13 +24,13 @@ import asyncio
 import pytest
 from tests.support.fake_mcp import FakeMcpServer
 
-from app.core.errors import AppError, ErrorCode
+from app.core.exceptions import AppError, ErrorCode
+from app.infrastructure.observability.circuit import CircuitRegistry
 from app.mcp import client as client_module
 from app.mcp.client import RECONNECT_DELAYS, McpClient
 from app.mcp.config import McpServerConfig, parse_server_config
 from app.mcp.manager import McpManager, make_mcp_check
 from app.mcp.session import McpCallResult, McpToolDef
-from app.observability.circuit import CircuitRegistry
 
 ECHO = McpToolDef(
     name="echo",

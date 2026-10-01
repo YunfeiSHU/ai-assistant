@@ -18,7 +18,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.core.context import get_trace_id
-from app.core.errors import ERROR_SPECS, AppError, ErrorCode
+from app.core.exceptions import ERROR_SPECS, AppError, ErrorCode
 from app.core.logging import get_logger
 
 logger = get_logger("app.errors")

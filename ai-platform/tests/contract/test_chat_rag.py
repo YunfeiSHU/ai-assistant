@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 from tests.support.fake_llm import FakeLLM
 from tests.support.rag import create_kb, ingest_text
 
-from app.services.chat import prune_out_of_range_citations
+from app.application.chat import prune_out_of_range_citations
 
 PREFIX = "/api/v1"
 CHAT = f"{PREFIX}/chat"
@@ -138,10 +138,10 @@ def test_chat_degrades_when_retrieval_fails(
     """检索不可用 → 对话仍成功，``degraded=true`` + ``rag_unavailable``（``REQ-RAG-006``）。"""
     from fastapi.testclient import TestClient as _Client
 
+    from app.application.chat import REASON_RAG_UNAVAILABLE, ChatService
+    from app.application.context import ContextAssembler
     from app.memory.context_store import InMemoryConversationStore
     from app.rag.base import NullRetriever
-    from app.services.chat import REASON_RAG_UNAVAILABLE, ChatService
-    from app.services.context import ContextAssembler
 
     application, settings = rag_app
     service = ChatService(
@@ -199,10 +199,10 @@ def test_stream_degrades_when_retrieval_fails(
     """流式路径同样降级：``meta.degraded=true``，且不推 ``reference`` 帧。"""
     from fastapi.testclient import TestClient as _Client
 
+    from app.application.chat import ChatService
+    from app.application.context import ContextAssembler
     from app.memory.context_store import InMemoryConversationStore
     from app.rag.base import NullRetriever
-    from app.services.chat import ChatService
-    from app.services.context import ContextAssembler
 
     application, settings = rag_app
     service = ChatService(

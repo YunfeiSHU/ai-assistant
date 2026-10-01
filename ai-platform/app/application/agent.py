@@ -1,6 +1,6 @@
 """Agent 用例编排（``docs/04`` §1 / §4.3）。
 
-与 :class:`app.services.chat.ChatService` 的分工：
+与 :class:`app.application.chat.ChatService` 的分工：
 
 * ``ChatService`` 负责「准备上下文 + 一次性/流式生成」，``use_tools=false`` 时
   RAG 是**前置固定步骤**。
@@ -27,8 +27,16 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.agent.loop import TOOL_RESULT_NOTE, AgentLoop, AgentResult
-from app.config import Settings
-from app.core.errors import AppError, ErrorCode
+from app.application.chat import (
+    REASON_MEMORY_UNAVAILABLE,
+    ChatStreamEvent,
+    _append_reason,
+    _finish_reason,
+    _references,
+)
+from app.application.context import AssembledContext, ContextAssembler
+from app.core.config import Settings
+from app.core.exceptions import AppError, ErrorCode
 from app.core.ids import new_id
 from app.core.sse import (
     EVENT_DONE,
@@ -54,14 +62,6 @@ from app.schemas.chat import (
     ToolCallTrace,
     Usage,
 )
-from app.services.chat import (
-    REASON_MEMORY_UNAVAILABLE,
-    ChatStreamEvent,
-    _append_reason,
-    _finish_reason,
-    _references,
-)
-from app.services.context import AssembledContext, ContextAssembler
 from app.tools.base import ToolContext
 from app.tools.executor import ToolCallRecord
 from app.tools.registry import ToolRegistry
@@ -215,6 +215,11 @@ class AgentService:
     # 非流式
     # ------------------------------------------------------------------
     async def run(self, request: AgentRunRequest, user_id: str) -> AgentRunResponse:
+        """执行一轮 Agent 编排并返回最终结果（``POST /agent/run`` 的入口，**非流式**）。
+
+        与 :meth:`stream` 共用 :meth:`prepare` 与同一条循环；这里等整轮结束一次性返回
+        （含 ``steps`` 与用量），因此不适合需要"边生成边下发"的场景。
+        """
         started = time.perf_counter()
         prepared = await self.prepare(request, user_id)
         try:
@@ -279,6 +284,7 @@ class AgentService:
     async def stream(
         self, request: AgentRunRequest, user_id: str
     ) -> AsyncGenerator[ChatStreamEvent, None]:
+        """流式版本：先 :meth:`prepare`，再由 :meth:`stream_prepared` 逐个产出事件。"""
         prepared = await self.prepare(request, user_id)
         async for event in self.stream_prepared(prepared, user_id):
             yield event

@@ -13,9 +13,9 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from app.config import Settings
+from app.application.memory import MemoryService
+from app.core.config import Settings
 from app.rag.base import Retriever
-from app.services.memory import MemoryService
 from app.tools.base import (
     DESCRIPTION_MAX_CHARS,
     TOOL_NAME_PATTERN,

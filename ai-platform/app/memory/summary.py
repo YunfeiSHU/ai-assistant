@@ -18,7 +18,7 @@ import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
-from app.config import Settings
+from app.core.config import Settings
 from app.core.tokens import count_tokens, truncate_to_tokens
 from app.llm.base import LLMClient, LLMMessage, map_llm_exception
 from app.memory.context_store import (

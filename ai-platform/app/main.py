@@ -29,13 +29,31 @@ from fastapi.middleware.cors import CORSMiddleware
 from app import __version__
 from app.agent.loop import AgentLoop
 from app.api.exception_handlers import register_exception_handlers
-from app.api.routes import api_router
-from app.config import Settings, apply_hf_endpoint, get_settings
-from app.core.db import aclose_all_engines, create_engine_from_settings, release_engine
-from app.core.errors import AppError
+from app.api.v1 import api_router
+from app.application.agent import AgentService
+from app.application.chat import ChatService
+from app.application.context import ContextAssembler
+from app.application.memory import MemoryService
+from app.core.config import Settings, apply_hf_endpoint, get_settings
+from app.core.exceptions import AppError
 from app.core.health import build_health_registry
 from app.core.logging import get_logger, setup_logging
 from app.core.middleware import install_middlewares
+from app.infrastructure.mysql.db import (
+    aclose_all_engines,
+    create_engine_from_settings,
+    release_engine,
+)
+from app.infrastructure.observability import (
+    CircuitRegistry,
+    Metrics,
+    MetricsServer,
+    configure_metrics,
+    configure_tracing,
+    setup_tracing,
+    shutdown_tracing,
+)
+from app.infrastructure.storage import build_object_store, build_repositories
 from app.llm.base import LLMClient
 from app.llm.openai_compat import OpenAICompatLLM
 from app.mcp import (
@@ -55,15 +73,6 @@ from app.memory.extractor import MemoryExtractor
 from app.memory.preferences import InMemoryMemoryPreferenceStore
 from app.memory.summary import SummaryBuilder
 from app.memory.tasks import MemoryTaskHandlers
-from app.observability import (
-    CircuitRegistry,
-    Metrics,
-    MetricsServer,
-    configure_metrics,
-    configure_tracing,
-    setup_tracing,
-    shutdown_tracing,
-)
 from app.rag.base import Retriever
 from app.rag.embedding import build_embedding_provider
 from app.rag.embedding.base import EmbeddingProvider
@@ -78,11 +87,6 @@ from app.rag.service import (
 )
 from app.rag.vectorstore import build_vector_store
 from app.rag.vectorstore.base import VectorStore
-from app.services.agent import AgentService
-from app.services.chat import ChatService
-from app.services.context import ContextAssembler
-from app.services.memory import MemoryService
-from app.storage import build_object_store, build_repositories
 from app.tasks.compensation import TaskCompensator
 from app.tasks.dispatch import TaskDispatcher
 from app.tasks.events import Publisher, build_task_event_bus, make_publisher
@@ -623,7 +627,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     await closer()
                 except Exception as exc:
                     logger.warning("app.task_shutdown_failed", extra={"error": str(exc)})
-            # 数据库连接池是**进程内共享且长驻**的（见 app/core/db.py 的引用计数）：
+            # 数据库连接池是**进程内共享且长驻**的（见 app/infrastructure/mysql/db.py 的引用计数）：
             # 不在这里断开，``--reload`` 每次重启都会给 MySQL 留一批半开连接，
             # 而 ``max_connections`` 只有 151 —— 开发期一天下来就能把库连满。
             # 放在所有业务组件之后：前面几个 closer 里的失败重试还要用连接。

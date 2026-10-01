@@ -12,7 +12,7 @@ import urllib.request
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.config import Settings
+from app.core.config import Settings
 
 #: 独立抓取端口在测试里由操作系统分配，因此必须从 ``app.state`` 读实际端口
 _URL = "http://127.0.0.1:{port}/metrics"

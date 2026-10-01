@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from bs4 import BeautifulSoup, NavigableString, Tag
 
-from app.core.errors import AppError, ErrorCode
+from app.core.exceptions import AppError, ErrorCode
 from app.core.text import decode_bytes, normalize_text
 from app.rag.parsers.base import BlockBuilder, ParsedDocument
 

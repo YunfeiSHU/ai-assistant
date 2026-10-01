@@ -18,7 +18,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from tests.support.fake_mcp import FakeMcpServer
 
-from app.config import Settings
+from app.core.config import Settings
 from app.mcp.session import McpToolDef
 
 SERVERS = "/api/v1/mcp/servers"

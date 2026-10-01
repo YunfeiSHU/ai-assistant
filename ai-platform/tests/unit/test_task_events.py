@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 from tests.conftest import build_settings
 
-from app.core.errors import AppError, ErrorCode
+from app.core.exceptions import AppError, ErrorCode
 from app.tasks.events import (
     CHANNEL_PREFIX,
     EVENT_DONE,
@@ -261,7 +261,7 @@ def test_redis_bus_raises_dependency_error_without_redis() -> None:
 
     if importlib.util.find_spec("redis") is not None:  # pragma: no cover - 装了就走真连接
         pytest.skip("本机装了 redis，无法测缺依赖路径")
-    from app.core.redis import RedisUnavailable
+    from app.infrastructure.redis.client import RedisUnavailable
 
     with pytest.raises(AppError) as excinfo:
         RedisTaskEventBus.from_settings(build_settings(infra_backend="real"))

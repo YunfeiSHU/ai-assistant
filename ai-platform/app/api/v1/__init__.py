@@ -11,7 +11,7 @@
 
 from fastapi import APIRouter
 
-from app.api.routes import (
+from app.api.v1 import (
     agent,
     chat,
     documents,

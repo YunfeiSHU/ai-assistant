@@ -23,7 +23,7 @@ from app.api.deps import (
     TaskServiceDep,
     UserId,
 )
-from app.core.errors import AppError, ErrorCode
+from app.core.exceptions import AppError, ErrorCode
 from app.core.sse import SSE_HEADERS, SSE_MEDIA_TYPE, frame_stream
 from app.schemas.task import TaskErrorOut, TaskList, TaskOut
 from app.tasks.models import Task, TaskStatus, TaskType
@@ -52,6 +52,8 @@ def task_out(task: Task) -> TaskOut:
         resource_id=task.resource_id,
         progress=task.progress,
         stage=task.stage,
+        chunks_total=task.chunks_total,
+        chunks_done=task.chunks_done,
         retry_count=task.retry_count,
         max_retries=task.max_retries,
         error=error,

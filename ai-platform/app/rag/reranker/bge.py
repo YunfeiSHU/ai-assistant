@@ -13,8 +13,9 @@ import logging
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
-from app.config import Settings
+from app.core.config import Settings
 from app.rag.reranker.base import RerankResult
+from app.rag.torch_threads import apply_torch_num_threads
 
 if TYPE_CHECKING:  # 仅类型提示
     from FlagEmbedding import FlagReranker
@@ -28,6 +29,7 @@ class BgeReranker:
     def __init__(self, settings: Settings) -> None:
         self.model_name = settings.reranker_model
         self._device = settings.reranker_device
+        self._num_threads = settings.torch_num_threads
         self._model: FlagReranker | None = None
 
     @property
@@ -36,6 +38,8 @@ class BgeReranker:
         if self._model is None:
             from FlagEmbedding import FlagReranker
 
+            # 与 embedding 用同一个线程数上限（同一进程、同一份核）
+            apply_torch_num_threads(self._num_threads)
             self._model = FlagReranker(
                 self.model_name,
                 use_fp16=self._device.startswith("cuda"),

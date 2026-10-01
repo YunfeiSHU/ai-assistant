@@ -8,12 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from app.config import Settings
-from app.core.errors import AppError, ErrorCode
-from app.core.tokens import count_tokens
-from app.llm.base import LLMMessage
-from app.rag.base import RetrievedChunk
-from app.services.context import (
+from app.application.context import (
     PART_HISTORY,
     PART_MEMORY,
     PART_QUERY,
@@ -23,6 +18,11 @@ from app.services.context import (
     ContextAssembler,
     MemoryItem,
 )
+from app.core.config import Settings
+from app.core.exceptions import AppError, ErrorCode
+from app.core.tokens import count_tokens
+from app.llm.base import LLMMessage
+from app.rag.base import RetrievedChunk
 
 
 def _chunk(index: int, text: str, score: float = 0.5) -> RetrievedChunk:

@@ -20,7 +20,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.config import Settings
+from app.core.config import Settings
 from app.core.logging import get_logger, redact
 
 logger = get_logger("app.health")

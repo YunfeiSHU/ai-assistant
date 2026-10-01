@@ -20,17 +20,11 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from app.config import Settings
-from app.core.errors import AppError, ErrorCode
+from app.core.config import Settings
+from app.core.exceptions import AppError, ErrorCode
 from app.core.ids import new_id
 from app.core.text import sha256_hex
-from app.rag.base import RetrievedChunk
-from app.rag.chunking import ChunkDraft, ChunkingService
-from app.rag.embedding.base import EmbeddingProvider, embed_texts
-from app.rag.parsers import detect_mime, get_parser, normalize_extension, parse_document
-from app.rag.retriever import RetrievalResult, Retriever
-from app.rag.vectorstore.base import VectorStore
-from app.storage.base import (
+from app.infrastructure.storage.base import (
     Chunk,
     Document,
     KnowledgeBase,
@@ -39,7 +33,13 @@ from app.storage.base import (
     build_object_key,
     sanitize_filename,
 )
-from app.storage.memory import encode_created_cursor
+from app.infrastructure.storage.memory import encode_created_cursor
+from app.rag.base import RetrievedChunk
+from app.rag.chunking import ChunkDraft, ChunkingService
+from app.rag.embedding.base import EmbeddingProvider, embed_texts
+from app.rag.parsers import detect_mime, get_parser, normalize_extension, parse_document
+from app.rag.retriever import RetrievalResult, Retriever
+from app.rag.vectorstore.base import VectorStore
 from app.tasks.models import ResourceType, Task, TaskType, now_iso
 from app.tasks.runner import TaskRunner
 from app.tasks.service import TaskService
@@ -299,6 +299,7 @@ class UploadResult:
     created_at: str
 
     def to_dict(self) -> dict[str, Any]:
+        """转成 ``POST /documents`` 的响应字段 —— **键名就是对外契约**，改这里等于改接口。"""
         return {
             "doc_id": self.doc_id,
             "task_id": self.task_id,
@@ -604,7 +605,12 @@ class IngestionService:
         await self._report(task, DOC_PARSING, 10)
 
         raw = await self._objects.get(document.object_key)
-        parsed = parse_document(document.doc_name, raw, min_chars=self._settings.min_doc_chars)
+        # 解析是**纯同步 CPU 函数**，必须甩进线程池。直接写在协程体里会占住事件循环：
+        # 8MB 文档要几十秒，这期间整个进程连 ``/health`` 都不应答 —— 网关的就绪探测
+        # 会把「正在解析」误判成「AI 挂了」，整轮验收跟着崩。
+        parsed = await asyncio.to_thread(
+            parse_document, document.doc_name, raw, min_chars=self._settings.min_doc_chars
+        )
         if parsed.page_count > self._settings.max_doc_pages:
             raise AppError(
                 ErrorCode.UNPROCESSABLE_DOCUMENT,
@@ -620,14 +626,18 @@ class IngestionService:
         chunker = ChunkingService(
             chunk_size=document.chunk_size, chunk_overlap=document.chunk_overlap
         )
-        drafts = chunker.split_blocks(parsed.blocks)
+        # 切分同样是同步 CPU（tiktoken 逐块计数，8MB 正文实测切出 1.7 万块），同一理由进线程池。
+        drafts = await asyncio.to_thread(chunker.split_blocks, parsed.blocks)
+        # 先记住**截断前**的总数：它就是 ``document.chunks_total``（UP-01）要暴露的那个数，
+        # 也是「要不要告诉调用方丢了多少」的判据。截断之后再取长度只剩实际入库数。
+        total_drafts = len(drafts)
         truncated = False
-        if len(drafts) > self._settings.max_doc_chunks:
+        if total_drafts > self._settings.max_doc_chunks:
             logger.warning(
                 "ingest.chunks_truncated",
                 extra={
                     "doc_id": doc_id,
-                    "total": len(drafts),
+                    "total": total_drafts,
                     "limit": self._settings.max_doc_chunks,
                 },
             )
@@ -639,11 +649,26 @@ class IngestionService:
                 "文档切分后无有效切片",
                 {"filename": document.doc_name},
             )
-        chunks = self._build_chunks(document, drafts)
+
+        # 截断事实**落库**（``docs/10`` UP-01）。只打一条 warning 的后果是「入库成功」为假：
+        # 8MB 测试正文实测切出 16,969 片、只入库 10,000 片（丢 41% 正文），而接口照旧 202。
+        # ``chunk_count`` 在下面由实际入库数赋值，两个字段并存才能让调用方
+        # 既有「本该有多少」也有「实际有多少」。
+        document.chunks_total = total_drafts
+        document.truncated = truncated
+        # 总数定下后立刻上报（``docs/10`` UP-02）：这是客户端算 ETA 的起点。
+        # 此处传的是**截断后**的待处理数（= 真正要跑的向量化量），与
+        # ``document.chunks_total``（截断前产出数）是两个不同的量，故意不混用：
+        # 进度条的分母必须是实际工作量，否则 ETA 永远算不准。
+        await self._report(task, DOC_CHUNKING, 35, chunks_total=len(drafts), chunks_done=0)
+        # 逐块 sha256 + 组装实体也是同步 CPU（每块一次哈希），一并进线程池。
+        chunks = await asyncio.to_thread(self._build_chunks, document, drafts)
 
         await self._check_cancel(task)
         await self._set_status(document, DOC_EMBEDDING)
-        await self._report(task, DOC_EMBEDDING, _EMBED_PROGRESS_START)
+        await self._report(
+            task, DOC_EMBEDDING, _EMBED_PROGRESS_START, chunks_total=len(chunks), chunks_done=0
+        )
 
         stored = await self._embed_and_upsert(task, chunks)
 
@@ -656,12 +681,15 @@ class IngestionService:
         document.error_message = None
         await self._set_status(document, DOC_INDEXED)
         await self._recount_kb(document.kb_id, failed=False)
-        await self._report(task, DOC_INDEXED, 98)
+        # 终帧也带上计数：这是客户端能看到的最后一帧进度，两个数相等且等于
+        # ``chunks_total`` 就是「全部切片都已入库」的自证（UP-02）。
+        await self._report(task, DOC_INDEXED, 98, chunks_total=len(chunks), chunks_done=len(chunks))
         logger.info(
             "ingest.completed",
             extra={
                 "doc_id": document.id,
                 "chunks": len(chunks),
+                "chunks_total": document.chunks_total,
                 "vectors": stored,
                 "pages": parsed.page_count,
                 "truncated": truncated,
@@ -669,22 +697,56 @@ class IngestionService:
         )
 
     async def _embed_and_upsert(self, task: Task, chunks: Sequence[Chunk]) -> int:
-        """分批向量化并 upsert，每批后上报进度（``docs/06`` §4.5）。"""
+        """分批向量化并 upsert，每批后上报进度（``docs/06`` §4.5）。
+
+        **为什么要按窗口并发（``INGEST_EMBED_WINDOW``）**：早期实现是
+        「交一批 → 等它返回 → 再交下一批」的严格串行。本地 BGE 时代这没问题
+        （算力是本机的，串行不浪费），但换成云端 provider 之后，**每次调用都是一次
+        网络往返**：串行就等于只维持一个请求在飞，provider 内部的并发池完全是空的。
+        实测（8MB / 5,821 片 / 硅基流动）：串行 **98.2s**，而同样的 provider 在
+        并发 8 下裸测是 379.6 片/s（约 15s）—— 差的 6 倍全在等待上。
+
+        窗口内并发、窗口内顺序 upsert：既拿回吞吐，又保留原有的
+        「逐批进度上报 + 逐批取消检查」语义（这两个是 ``docs/06`` §4.5 的硬要求）。
+        """
         batch_size = max(1, self._settings.embedding_batch_size)
+        window = max(1, self._settings.ingest_embed_window)
         total = len(chunks)
         stored = 0
-        for start in range(0, total, batch_size):
+        for window_start in range(0, total, batch_size * window):
             await self._check_cancel(task)
-            batch = chunks[start : start + batch_size]
-            vectors = await embed_texts(self._embedding, [chunk.content for chunk in batch])
-            # 按 chunk_id upsert：重跑任务不产生重复向量（AC-RAG-08）
-            stored += await self._vectors.upsert(
-                [_to_vector_payload(chunk) for chunk in batch], vectors
+            batches = [
+                chunks[start : start + batch_size]
+                for start in range(
+                    window_start, min(window_start + batch_size * window, total), batch_size
+                )
+            ]
+            vectors_per_batch = await asyncio.gather(
+                *(
+                    embed_texts(self._embedding, [chunk.content for chunk in batch])
+                    for batch in batches
+                )
             )
-            progress = _EMBED_PROGRESS_START + int(
-                _EMBED_PROGRESS_SPAN * min(1.0, (start + len(batch)) / total)
-            )
-            await self._report(task, DOC_EMBEDDING, min(progress, 95))
+            done = window_start
+            for batch, vectors in zip(batches, vectors_per_batch, strict=True):
+                # 按 chunk_id upsert：重跑任务不产生重复向量（AC-RAG-08）
+                stored += await self._vectors.upsert(
+                    [_to_vector_payload(chunk) for chunk in batch], vectors
+                )
+                done += len(batch)
+                progress = _EMBED_PROGRESS_START + int(
+                    _EMBED_PROGRESS_SPAN * min(1.0, done / total)
+                )
+                # 带上切片计数（UP-02）：``progress`` 会在 95 上饱和，之后只有
+                # ``chunks_done`` 继续走 —— 没有它，客户端在收尾阶段就只能看到
+                # 一个不动的进度条，分不出「在算」与「卡住」。
+                await self._report(
+                    task,
+                    DOC_EMBEDDING,
+                    min(progress, 95),
+                    chunks_done=done,
+                    chunks_total=total,
+                )
         return stored
 
     async def _delete_document(self, task: Task) -> None:
@@ -777,10 +839,24 @@ class IngestionService:
         await self._recount_kb(document.kb_id, failed=True)
         logger.warning("ingest.failed", extra={"doc_id": doc_id, "code": code, "error": str(exc)})
 
-    async def _report(self, task: Task, stage: str, progress: int) -> None:
-        """上报阶段与进度。"""
+    async def _report(
+        self,
+        task: Task,
+        stage: str,
+        progress: int,
+        *,
+        chunks_done: int | None = None,
+        chunks_total: int | None = None,
+    ) -> None:
+        """上报阶段、进度与切片计数（``docs/10`` UP-02）。"""
         try:
-            await self._tasks.report_progress(task.id, stage=stage, progress=progress)
+            await self._tasks.report_progress(
+                task.id,
+                stage=stage,
+                progress=progress,
+                chunks_done=chunks_done,
+                chunks_total=chunks_total,
+            )
         except AppError as exc:
             # 进度上报冲突不该让入库失败（真正的失败由状态机兜底）
             logger.debug("ingest.progress_skipped", extra={"error": str(exc)})

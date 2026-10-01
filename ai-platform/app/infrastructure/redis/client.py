@@ -8,7 +8,7 @@
 * ``create_redis_client`` **懒导入** ``redis``：它不在基础依赖里（``INFRA_BACKEND=memory``
   时根本用不到），缺失时给一条可执行的提示，而不是把 ``ModuleNotFoundError``
   抛到用户脸上；
-* ``RedisUnavailable`` 继承 :class:`~app.core.errors.AppError`（``503`` +
+* ``RedisUnavailable`` 继承 :class:`~app.core.exceptions.AppError`（``503`` +
   ``retryable``），于是「驱动缺失」与「连不上」对上层是同一件事 —— 都走各模块
   自己的降级分支（对话丢上下文 / 任务保持 PENDING 等补偿重投）。
 """
@@ -17,8 +17,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.config import Settings
-from app.core.errors import AppError, ErrorCode
+from app.core.config import Settings
+from app.core.exceptions import AppError, ErrorCode
 
 
 class RedisUnavailable(AppError):

@@ -23,10 +23,10 @@ from opentelemetry import trace
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from app.config import Settings
+from app.core.config import Settings
 from app.core.context import request_context
-from app.observability import tracing as tracing_module
-from app.observability.tracing import (
+from app.infrastructure.observability import tracing as tracing_module
+from app.infrastructure.observability.tracing import (
     Tracing,
     configure_tracing,
     get_tracing,
@@ -199,7 +199,7 @@ def test_shutdown_tracing_is_safe_without_ownership(
 
 def test_configure_and_get_tracing_never_return_none() -> None:
     """``get_tracing()`` 永远返回可用对象 —— 深层调用无需判空。"""
-    import app.observability.tracing as module
+    import app.infrastructure.observability.tracing as module
 
     original = module._active
     try:
@@ -212,7 +212,7 @@ def test_configure_and_get_tracing_never_return_none() -> None:
 
 def test_configure_tracing_makes_instance_active() -> None:
     """``configure_tracing`` 之后 ``get_tracing()`` 就是它。"""
-    import app.observability.tracing as module
+    import app.infrastructure.observability.tracing as module
 
     original = module._active
     instance = Tracing(enabled=False)

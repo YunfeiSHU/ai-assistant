@@ -23,7 +23,7 @@ import pytest
 from tests.conftest import build_settings
 from tests.support.fake_broker import FakeTaskConsumer, FakeTaskProducer
 
-from app.core.errors import AppError, ErrorCode
+from app.core.exceptions import AppError, ErrorCode
 from app.tasks.dispatch import TaskDispatcher
 from app.tasks.models import ResourceType, Task, TaskError, TaskStatus, TaskType
 from app.tasks.retry import InMemoryRetryQueue

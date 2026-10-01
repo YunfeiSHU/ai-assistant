@@ -23,7 +23,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from app.core.errors import AppError
+from app.core.exceptions import AppError
 from app.core.logging import get_logger, hash_identifier
 from app.mcp.client import McpClient
 from app.mcp.config import namespaced_name

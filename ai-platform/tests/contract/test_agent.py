@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 from tests.support.fake_llm import FakeLLM, tool_call
 
 from app.agent.loop import FINISH_MAX_STEPS
-from app.config import Settings
+from app.core.config import Settings
 from app.llm.base import LLMToolCall
 from app.tools import build_tool_registry
 from app.tools.registry import ToolRegistrationError
@@ -215,12 +215,14 @@ def test_tools_list_can_include_disabled(agent_client: TestClient) -> None:
 
 
 def test_tools_list_filters_by_source(agent_client: TestClient) -> None:
+    """``source=mcp`` 只回 MCP 来源的工具；没有配置 MCP 时列表为空（不混进内置工具）。"""
     response = agent_client.get(TOOLS, params={"source": "mcp"})
     assert response.status_code == 200
     assert response.json()["items"] == []
 
 
 def test_tools_list_rejects_bad_cursor(agent_client: TestClient) -> None:
+    """游标不是可解析的编码值 ⇒ 400 ``INVALID_ARGUMENT``，而不是当作首页静默忽略。"""
     response = agent_client.get(TOOLS, params={"cursor": "not-a-cursor"})
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "INVALID_ARGUMENT"
@@ -343,12 +345,14 @@ def test_tool_invoke_hidden_in_prod(make_settings: Any) -> None:
 
 
 def test_tool_invoke_unknown_tool_locally(agent_client: TestClient) -> None:
+    """不存在的工具名 ⇒ 404 ``TOOL_NOT_FOUND``（local 调试接口也不例外）。"""
     response = agent_client.post(f"{TOOLS}/nope/invoke", json={"arguments": {}})
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "TOOL_NOT_FOUND"
 
 
 def test_tool_invoke_reports_bad_arguments(agent_client: TestClient) -> None:
+    """参数没通过工具自己的校验（如表达式里塞 ``__import__``）⇒ 400，且不会执行。"""
     response = agent_client.post(
         f"{TOOLS}/calculator/invoke",
         json={"arguments": {"expression": "__import__('os')"}},
@@ -358,6 +362,7 @@ def test_tool_invoke_reports_bad_arguments(agent_client: TestClient) -> None:
 
 
 def test_tool_invoke_dry_run_skips_execution(agent_client: TestClient) -> None:
+    """``dry_run=true`` 只做参数校验：返回 ``ok`` 但 ``result`` 为空（没有真的执行）。"""
     response = agent_client.post(
         f"{TOOLS}/calculator/invoke",
         json={"arguments": {"expression": "1+1"}, "dry_run": True},
@@ -440,6 +445,7 @@ def test_agent_stream_rejects_empty_query(agent_client: TestClient) -> None:
 
 
 def test_agent_stream_unknown_tool_name_is_400(agent_client: TestClient) -> None:
+    """``allowed_tools`` 里出现未注册的工具名 ⇒ 开始 SSE **之前**就 400，不静默忽略该项。"""
     response = agent_client.post(AGENT_STREAM, json=_body(allowed_tools=["nope"]))
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "INVALID_ARGUMENT"
@@ -460,6 +466,7 @@ def test_agent_restricts_tools_to_allowlist(agent_client: TestClient, fake_llm: 
 
 
 def test_agent_denied_tools_override_allowlist(agent_client: TestClient, fake_llm: FakeLLM) -> None:
+    """同时出现在允许与拒绝列表里时以拒绝为准：``denied_tools`` 优先级高于``allowed_tools``。"""
     response = agent_client.post(
         AGENT,
         json=_body(allowed_tools=["calculator", "current_time"], denied_tools=["calculator"]),
@@ -504,6 +511,7 @@ def test_agent_call_outside_allowlist_is_rejected(
 
 @pytest.mark.parametrize("path", [TOOLS, AGENT, AGENT_STREAM])
 def test_agent_routes_require_auth(client: TestClient, path: str) -> None:
+    """工具列表、Agent 与流式三个路由都必须挂鉴权，无 token 一律 401。"""
     response = client.post(path, json=_body()) if path != TOOLS else client.get(path)
     assert response.status_code == 401
 
@@ -521,6 +529,7 @@ def test_agent_schemas_accept_chat_request_fields() -> None:
 
 
 def test_agent_request_rejects_bad_kb_id() -> None:
+    """``AgentRunRequest`` 沿用 ``ChatRequest`` 的 ``kb_ids`` 校验：非法 ID 直接被 pydantic 拒。"""
     from pydantic import ValidationError
 
     from app.schemas.agent import AgentRunRequest

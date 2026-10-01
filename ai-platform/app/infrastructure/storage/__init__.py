@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from app.config import Settings
-from app.core.errors import AppError
+from app.core.config import Settings
+from app.core.exceptions import AppError
 from app.core.logging import get_logger
-from app.storage.base import (
+from app.infrastructure.storage.base import (
     Chunk,
     ChunkRepo,
     Document,
@@ -17,7 +17,7 @@ from app.storage.base import (
     build_object_key,
     sanitize_filename,
 )
-from app.storage.memory import (
+from app.infrastructure.storage.memory import (
     InMemoryChunkRepo,
     InMemoryDocumentRepo,
     InMemoryKnowledgeBaseRepo,
@@ -25,15 +25,19 @@ from app.storage.memory import (
     encode_created_cursor,
     encode_index_cursor,
 )
-from app.storage.objectstore import InMemoryObjectStore, MinioObjectStore, build_object_store
-from app.storage.unavailable import (
+from app.infrastructure.storage.objectstore import (
+    InMemoryObjectStore,
+    MinioObjectStore,
+    build_object_store,
+)
+from app.infrastructure.storage.unavailable import (
     REASON,
     UnavailableChunkRepo,
     UnavailableDocumentRepo,
     UnavailableKnowledgeBaseRepo,
 )
 
-logger = get_logger("app.storage")
+logger = get_logger("app.infrastructure.storage")
 
 __all__ = [
     "REASON",
@@ -66,7 +70,7 @@ __all__ = [
 def build_repositories(settings: Settings) -> RagRepositories:
     """按 ``INFRA_BACKEND`` 构造三个仓储。
 
-    ``memory`` → 进程内实现（本地/测试）；``real`` → :class:`~app.storage.mysql.MySqlRagRepository`
+    ``memory`` → 进程内实现（本地/测试）；``real`` → :class:`~app.infrastructure.storage.mysql.MySqlRagRepository`
     （KB / 文档 / 切片三张表，见 ``docs/09``）。
 
     ``real`` 下**初始化就失败**（没装 ``sqlalchemy`` / DSN 不可解析）时返回明确报
@@ -77,10 +81,10 @@ def build_repositories(settings: Settings) -> RagRepositories:
     注意**连接能建不代表表在**：引擎是惰性的，真正的可达性检查在
     ``app/main.py`` 的启动自检里（与向量库的 ``ensure_ready`` 同一策略：只告警、
     不阻断）。表不存在时请求会拿到 ``503`` 并提示先执行
-    ``deploy/mysql/001_init_schema.sql``（见 :func:`app.core.db.classify_db_error`）。
+    ``deploy/mysql/001_init_schema.sql``（见 :func:`app.infrastructure.mysql.db.classify_db_error`）。
     """
     if settings.infra_backend == "real":
-        from app.storage.mysql import MySqlRagRepository
+        from app.infrastructure.storage.mysql import MySqlRagRepository
 
         try:
             facade = MySqlRagRepository(settings)

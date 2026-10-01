@@ -14,9 +14,9 @@ import asyncio
 
 import pytest
 
-from app.observability import server as server_module
-from app.observability.metrics import Metrics
-from app.observability.server import MAX_HEADER_BYTES, MetricsServer
+from app.infrastructure.observability import server as server_module
+from app.infrastructure.observability.metrics import Metrics
+from app.infrastructure.observability.server import MAX_HEADER_BYTES, MetricsServer
 
 
 async def _request(port: int, raw: bytes) -> bytes:

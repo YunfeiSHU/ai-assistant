@@ -1,4 +1,4 @@
-"""``app/core/db.py`` 的单测：时间戳转换、错误分类、引擎共享。
+"""``app/infrastructure/mysql/db.py`` 的单测：时间戳转换、错误分类、引擎共享。
 
 这三件事都属于「写错了不会报错，只会表现成别的问题」的那一类：
 
@@ -16,7 +16,8 @@ from datetime import UTC, datetime, timedelta, timezone
 import pytest
 from tests.conftest import build_settings
 
-from app.core.db import (
+from app.core.exceptions import AppError, ErrorCode
+from app.infrastructure.mysql.db import (
     aclose_all_engines,
     classify_db_error,
     create_engine_from_settings,
@@ -26,7 +27,6 @@ from app.core.db import (
     reraise,
     to_db,
 )
-from app.core.errors import AppError, ErrorCode
 
 
 def _integrity(message: str, errno: int = 1062) -> Exception:
@@ -95,12 +95,14 @@ def test_db_now_is_naive_utc_with_millis() -> None:
 
 
 def test_duplicate_kb_name_maps_to_conflict() -> None:
+    """同一用户下 KB 重名（``uk_kb_user_name``）要映射成 ``KB_NAME_CONFLICT`` 而不是 500。"""
     mapped = classify_db_error(_integrity("Duplicate entry 'k' for key 'uk_kb_user_name'"))
     assert mapped is not None
     assert mapped.code is ErrorCode.KB_NAME_CONFLICT
 
 
 def test_duplicate_document_maps_to_duplicate() -> None:
+    """命中 ``uk_doc_dedupe``（同 KB 同内容）要映射成 ``DOCUMENT_DUPLICATE``。"""
     mapped = classify_db_error(_integrity("Duplicate entry 'x' for key 'document.uk_doc_dedupe'"))
     assert mapped is not None
     assert mapped.code is ErrorCode.DOCUMENT_DUPLICATE
@@ -125,6 +127,7 @@ def test_missing_schema_errnos_are_503(errno: int) -> None:
 
 @pytest.mark.parametrize("errno", [2002, 2003, 2006, 2013, 1045])
 def test_unavailable_errnos_are_503(errno: int) -> None:
+    """连不上 / 握手失败 / 连接被断 / 认证失败都归 ``DEPENDENCY_UNAVAILABLE`` 且标出 mysql。"""
     mapped = classify_db_error(_operational(errno, "Can't connect"))
     assert mapped is not None
     assert mapped.code is ErrorCode.DEPENDENCY_UNAVAILABLE
@@ -138,6 +141,7 @@ def test_unknown_error_is_not_classified() -> None:
 
 
 def test_reraise_keeps_unclassified_original() -> None:
+    """``reraise`` 只转换已分类的错误；认不出来的必须原样抛出，保住 500 与原始堆栈。"""
     original = RuntimeError("boom")
     with pytest.raises(RuntimeError):
         reraise(original)

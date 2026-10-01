@@ -23,7 +23,7 @@ from typing import Any
 import pytest
 from tests.conftest import build_settings
 
-from app.core.errors import AppError, ErrorCode
+from app.core.exceptions import AppError, ErrorCode
 from app.memory.context_store import ConversationSummary, StoredMessage
 from app.memory.redis_store import (
     LOCK_TTL_SECONDS,
@@ -144,6 +144,7 @@ def redis_store(redis_client: FakeRedis) -> RedisConversationStore:
 async def test_ensure_creates_owner_with_nx_and_ttl(
     redis_client: FakeRedis, redis_store: RedisConversationStore
 ) -> None:
+    """建会话用 ``SET NX`` + TTL 写 owner 键：占位只能成功一次，且到期自动释放。"""
     await redis_store.ensure("cv_1", "u_1")
     calls = redis_client.commands("set")
     assert calls[0][1] == "ctx:owner:cv_1"
@@ -155,6 +156,7 @@ async def test_ensure_creates_owner_with_nx_and_ttl(
 async def test_ensure_is_idempotent_for_same_owner(
     redis_client: FakeRedis, redis_store: RedisConversationStore
 ) -> None:
+    """同 owner 重复 ``ensure`` 不报错，但**不得**裸 set 覆盖 owner（否则会话可被认领）。"""
     await redis_store.ensure("cv_1", "u_1")
     redis_client.calls.clear()
     await redis_store.ensure("cv_1", "u_1")
@@ -167,6 +169,7 @@ async def test_ensure_is_idempotent_for_same_owner(
 async def test_ensure_rejects_foreign_owner(
     redis_store: RedisConversationStore, redis_client: FakeRedis
 ) -> None:
+    """别人已占用的 ``conversation_id`` 必须拒；错误码与「不存在」同码，不泄露存在性。"""
     await redis_store.ensure("cv_1", "u_1")
     with pytest.raises(AppError) as excinfo:
         await redis_store.ensure("cv_1", "u_2")
@@ -175,6 +178,7 @@ async def test_ensure_rejects_foreign_owner(
 
 
 async def test_reads_and_writes_require_ownership(redis_store: RedisConversationStore) -> None:
+    """读、清空、写摘要全部先校验归属：不属于自己的会话一律拒绝访问。"""
     with pytest.raises(AppError):
         await redis_store.recent("cv_missing", "u_1", turns=3)
     with pytest.raises(AppError):
@@ -193,6 +197,7 @@ async def test_reads_and_writes_require_ownership(redis_store: RedisConversation
 async def test_append_writes_trims_and_refreshes_both_ttls(
     redis_client: FakeRedis, redis_store: RedisConversationStore
 ) -> None:
+    """一次 append = RPUSH + LTRIM + 给 **两个** 键续期；漏掉 owner 键会让活会话「换主」。"""
     settings = build_settings(memory_max_messages=4, memory_ttl_days=7)
     store = RedisConversationStore(redis_client, settings)
     await store.ensure("cv_1", "u_1")
@@ -218,6 +223,7 @@ async def test_append_writes_trims_and_refreshes_both_ttls(
 async def test_append_trims_to_max_messages(
     redis_client: FakeRedis, redis_store: RedisConversationStore
 ) -> None:
+    """超过 ``memory_max_messages`` 时只保留**最近** N 条，旧的被裁掉。"""
     await redis_store.ensure("cv_1", "u_1")
     for index in range(6):
         await redis_store.append("cv_1", "u_1", [_message(index)])
@@ -234,6 +240,7 @@ async def test_append_trims_to_max_messages(
 async def test_append_without_messages_is_noop(
     redis_client: FakeRedis, redis_store: RedisConversationStore
 ) -> None:
+    """空消息列表直接返回：不建会话、不加锁、不发任何 Redis 命令。"""
     await redis_store.ensure("cv_1", "u_1")
     redis_client.calls.clear()
     await redis_store.append("cv_1", "u_1", [])
@@ -252,6 +259,7 @@ async def test_append_creates_session_implicitly(
 async def test_append_takes_lock_with_ttl(
     redis_client: FakeRedis, redis_store: RedisConversationStore
 ) -> None:
+    """append 必须在 ``lock:ctx:<id>`` 上取带 TTL 的锁，并用 Lua 比 token 后释放。"""
     await redis_store.ensure("cv_1", "u_1")
     redis_client.calls.clear()
     await redis_store.append("cv_1", "u_1", [_message(0)])
@@ -271,6 +279,7 @@ async def test_append_takes_lock_with_ttl(
 async def test_recent_returns_last_n_turns(
     redis_client: FakeRedis, redis_store: RedisConversationStore
 ) -> None:
+    """``turns`` 按**轮**折算条数取最近的一段，且保持原时间顺序（不是倒序返回）。"""
     await redis_store.ensure("cv_1", "u_1")
     for index in range(6):
         await redis_store.append("cv_1", "u_1", [_message(index)])
@@ -301,6 +310,7 @@ async def test_recent_skips_messages_covered_by_summary(
 async def test_recent_drops_blank_content(
     redis_client: FakeRedis, redis_store: RedisConversationStore
 ) -> None:
+    """全空白的消息不进上下文（会被上游当作空 content 报错）。"""
     await redis_store.ensure("cv_1", "u_1")
     await redis_store.append("cv_1", "u_1", [_message(0, content="   "), _message(1)])
     messages = await redis_store.recent("cv_1", "u_1", turns=5)
@@ -324,6 +334,7 @@ async def test_corrupted_element_is_skipped_not_fatal(
 
 
 async def test_summary_roundtrip(redis_store: RedisConversationStore) -> None:
+    """摘要读写往返：没写过是 ``None``，写过之后四个字段都必须原样回来。"""
     await redis_store.ensure("cv_1", "u_1")
     assert await redis_store.summary("cv_1", "u_1") is None
 
@@ -348,6 +359,7 @@ async def test_summary_roundtrip(redis_store: RedisConversationStore) -> None:
 async def test_corrupted_summary_returns_none(
     redis_client: FakeRedis, redis_store: RedisConversationStore
 ) -> None:
+    """摘要不是合法 JSON ⇒ 当作「没有摘要」，而不是抛异常打断整轮对话。"""
     await redis_store.ensure("cv_1", "u_1")
     redis_client.strings["ctx:summary:cv_1"] = "not-json"
     assert await redis_store.summary("cv_1", "u_1") is None
@@ -393,6 +405,7 @@ async def test_clear_removes_context_but_keeps_ownership(
 # 锁
 # ---------------------------------------------------------------------------
 async def test_lock_release_uses_compare_and_delete(redis_client: FakeRedis) -> None:
+    """释放锁必须用「比 token 再删」的 Lua 脚本，并带上自己获取时的 token。"""
     lock = RedisLock(redis_client, "lock:ctx:cv_1")
     async with lock:
         assert redis_client.strings["lock:ctx:cv_1"] != ""
@@ -444,6 +457,7 @@ async def test_lock_times_out_when_contended(
 
 
 async def test_lock_token_is_unique_per_acquisition(redis_client: FakeRedis) -> None:
+    """每次获取锁都生成新 token —— 否则同名的两次获取无法区分，会误删他人的锁。"""
     first = RedisLock(redis_client, "lock:ctx:cv_1")
     async with first:
         token_a = redis_client.strings["lock:ctx:cv_1"]
@@ -469,6 +483,7 @@ def test_create_redis_commands_reports_missing_dependency() -> None:
 
 
 def test_redis_unavailable_is_apperror() -> None:
+    """``RedisUnavailable`` 是 ``AppError`` 子类且固定 ``DEPENDENCY_UNAVAILABLE``，细节原样透传。"""
     error = RedisUnavailable("挂了", {"key": "k"})
     assert isinstance(error, AppError)
     assert error.code is ErrorCode.DEPENDENCY_UNAVAILABLE

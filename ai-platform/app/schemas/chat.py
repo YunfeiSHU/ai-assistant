@@ -6,7 +6,7 @@
 * 流式事件的负载也定义在这里，保证 SSE 帧与 OpenAPI 描述同源，不会出现
   「文档一个字段名、代码另一个」的漂移。
 * 校验器只做**语法级**校验；语义级错误（空 query、``stream=true`` 等）由 service /
-  路由层抛 :class:`~app.core.errors.AppError`，这样才能返回文档要求的专属错误码
+  路由层抛 :class:`~app.core.exceptions.AppError`，这样才能返回文档要求的专属错误码
   （``QUERY_EMPTY`` / ``INVALID_ARGUMENT``）。
 """
 

@@ -18,8 +18,9 @@ from collections.abc import Callable
 import pytest
 from tests.support.fake_mcp import FakeMcpServer
 
-from app.config import Settings
-from app.core.errors import AppError, ErrorCode
+from app.core.config import Settings
+from app.core.exceptions import AppError, ErrorCode
+from app.infrastructure.observability.metrics import Metrics, configure_metrics, get_metrics
 from app.llm.base import LLMToolCall
 from app.mcp.client import McpClient
 from app.mcp.config import parse_server_config
@@ -33,7 +34,6 @@ from app.mcp.session import (
     normalize_tools,
 )
 from app.mcp.tools import McpTool, build_mcp_tools, sync_mcp_tools
-from app.observability.metrics import Metrics, configure_metrics, get_metrics
 from app.tools import ToolRegistry
 from app.tools.base import ToolArgumentError, ToolContext
 from app.tools.executor import ToolExecutor

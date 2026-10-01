@@ -14,7 +14,7 @@ from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.core.errors import AppError, ErrorCode
+from app.core.exceptions import AppError, ErrorCode
 from app.llm.base import LLMDelta, LLMMessage, LLMResponse, LLMToolCall, LLMUsage
 
 

@@ -16,13 +16,13 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from tests.support.fake_llm import FakeLLM
 
-from app.config import Settings
+from app.application.chat import ChatService
+from app.application.context import ContextAssembler
+from app.core.config import Settings
 from app.core.sse import frame_stream
 from app.memory.context_store import InMemoryConversationStore
 from app.rag.base import RetrievedChunk
 from app.schemas.chat import ChatRequest
-from app.services.chat import ChatService
-from app.services.context import ContextAssembler
 
 STREAM = "/api/v1/chat/stream"
 
@@ -107,6 +107,7 @@ def test_meta_carries_conversation_and_message_ids(
     chat_headers: dict[str, str],
     fake_llm: FakeLLM,
 ) -> None:
+    """``meta`` 帧必须带齐 ``conversation_id``/``message_id``/``model``/``created_at`` 四个标识。"""
     application, _ = make_chat_app(llm=fake_llm)
 
     with TestClient(application) as client:
