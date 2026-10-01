@@ -33,6 +33,17 @@ uv sync
 # 2. 准备环境变量
 Copy-Item .env.example .env
 # 然后编辑 .env，至少填入真实的 OPENAI_API_KEY（默认用 DeepSeek，见下方说明）
+# 注意 .env.example 的 EMBEDDING_PROVIDER=siliconflow：向量化走硅基流动云端（需填 SILICONFLOW_API_KEY），
+#   不占本机 CPU/内存。不想联网 ⇒ 改成 hash（词法向量，零下载）；想用本地权重 ⇒ bge。
+
+# ⚠ .env.example 的出厂档是「隔离档」：TASK_RUNNER=kafka + INFRA_BACKEND=real，
+#   即任务由独立 Worker 进程消费（大文件不拖垮在线请求），代价是需要 Redis + Kafka，
+#   而且要能看到文档「上传后入库完成」还得另开一个终端跑 Worker（见下方 §异步任务）。
+#   只想起一个进程就把接口跑通 → 在 .env 里改成下面这一组（零外部依赖）：
+#     INFRA_BACKEND=memory
+#     TASK_RUNNER=inline
+#   代价说清楚：inline 下 8MB 文档的解析/切分/向量化跑在 API 进程里，
+#   期间同机所有请求一起变慢（实测 49MB 会直接把 /health 拖到不应答）。
 
 # 3. 启动开发服务器（热重载）
 uv run uvicorn app.main:app --reload
@@ -43,10 +54,10 @@ uv run uvicorn app.main:app --reload
 #    健康检查   : http://127.0.0.1:8000/api/v1/health
 ```
 
-可选（M7 异步任务用）：把可选依赖与本地基础设施起来，就能跑「API 投递 → Worker 消费」的真形态：
+要跑「API 投递 → 独立 Worker 消费」的真形态（也是 `.env.example` 的默认档）：
 
 ```powershell
-# Redis / Kafka 驱动属于可选依赖，默认不装（装了他们，默认的 memory + inline 依然照旧工作）
+# Redis / Kafka 驱动属于可选依赖（`uv sync` 不带 --extra 时不会装）
 uv sync --extra redis --extra kafka
 
 # 只起 Redis（任务进度 / 幂等键 / 退避重试 ZSET 都在这里）
@@ -56,7 +67,7 @@ docker compose -f deploy/infra/compose.yml up -d redis
 docker compose -f deploy/infra/compose.yml --profile kafka up -d
 
 # 然后另开一个终端跑独立 Worker（它自己会拒绝在 INFRA_BACKEND != real 下启动）
-$env:INFRA_BACKEND="real"; $env:TASK_RUNNER="kafka"; uv run python -m app.worker
+uv run python -m app.worker     # 与 API 共用同一份 .env，不需要再传 --env
 ```
 
 ## 目录结构
@@ -85,9 +96,9 @@ ai-platform/
 │   └── integration/        # 真基础设施（当前：真 Redis）；不可达时 1 秒内 skip
 └── app/
     ├── main.py             # FastAPI 入口（create_app + lifespan）
-    ├── config.py           # pydantic-settings 全局配置（唯一事实来源）
-    ├── core/               # 与框架无关的基础设施
-    │   ├── errors.py       # 错误码枚举 + 规格表 + AppError
+    ├── core/               # 与框架无关的基础能力（叶子层，不 import 上层）
+    │   ├── config.py       # pydantic-settings 全局配置（唯一事实来源）
+    │   ├── exceptions.py   # 错误码枚举 + 规格表 + AppError
     │   ├── ids.py          # ULID 资源 ID（同毫秒单调）
     │   ├── context.py      # trace_id / span_id / request_id 上下文
     │   ├── logging.py      # 结构化日志 + 敏感字段脱敏
@@ -100,10 +111,10 @@ ai-platform/
     ├── api/
     │   ├── deps.py         # 依赖注入（配置 / 当前用户 / 分页 / 服务）
     │   ├── exception_handlers.py
-    │   └── routes/         # 路由，统一挂到 api_router
+    │   └── v1/             # v1 路由，统一挂到 api_router
+    ├── application/        # 应用层：用例编排（context 装配 / chat / agent / memory）
     ├── schemas/            # Pydantic 请求 / 响应模型（逐条对齐 SRS）
     ├── llm/                # LLM 协议 + OpenAI 兼容适配器 + 异常映射
-    ├── services/           # 业务编排层（context 装配 / chat 编排 / agent 编排）
     ├── tools/
     │   ├── base.py         # ToolSpec / ToolContext / ToolOutcome / BuiltinTool
     │   ├── registry.py     # 工具注册表（重名 fail-fast、白/黑名单过滤）
@@ -119,7 +130,6 @@ ai-platform/
     │   ├── extractor.py    # 抽取：候选解析 + 敏感/疑问句/推测过滤
     │   ├── preferences.py  # 用户级开关与 top_n、清空冷静期
     │   └── tasks.py        # summary_build / memory_extract 处理器
-    ├── storage/            # 知识库/文档/切片仓储（memory 实现 + real 的 503 占位）
     ├── tasks/              # 异步任务：状态机 + 仓储 + 投递器 + 按类型分派的分发器
     │   ├── models.py       # Task 领域模型 + 状态机（唯一事实来源）
     │   ├── store.py        # 进程内实现；redis_store.py 为跨进程实现
@@ -147,7 +157,11 @@ ai-platform/
     │   ├── loop.py         # Agent Loop：推理 → 工具调用 → 回注（三重护栅）
     │   └── graph/          # LangGraph 状态图占位（retrieve → generate，未接入）
     ├── mcp/                # MCP 客户端：配置校验 / 两种传输 / 单 Server 状态机 / 多 Server 编排 / 工具适配
-    └── observability/      # 可观测：指标门面 / OTel 链路 / 熔断器 / 独立指标端口服务
+    └── infrastructure/     # 基础设施适配层：外部依赖的具体实现（最下层）
+        ├── mysql/db.py     # 引擎按 DSN 进程内复用 + 时间戳转换 + DB 错误分类
+        ├── redis/client.py # Redis 连接构造（懒导入驱动）+ 取值兼容
+        ├── storage/        # 知识库/文档/切片仓储（memory 实现 + real 的 503 占位）
+        └── observability/  # 可观测：指标门面 / OTel 链路 / 熔断器 / 独立指标端口服务
 ```
 
 > `app/mcp` 与站点包 `mcp` 同名但不冲突：Python 3 使用绝对导入，`import mcp` 指向已安装的 SDK。
@@ -246,15 +260,15 @@ uv run mypy app              # 类型检查
 
 ## 配置说明
 
-配置全部集中在 `app/config.py` 的 `Settings` 类，字段可用同名环境变量覆盖（不区分大小写）。
+配置全部集中在 `app/core/config.py` 的 `Settings` 类，字段可用同名环境变量覆盖（不区分大小写）。
 关键项：
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `OPENAI_API_KEY` / `OPENAI_BASE_URL` | 空 / `https://api.deepseek.com/v1` | **OpenAI 兼容协议**，默认已接 DeepSeek |
 | `LLM_MODEL` | `deepseek-flash` | DeepSeek 官方模型：`deepseek-flash`（默认）/ `deepseek-v4-pro` |
-| `EMBEDDING_MODEL` | `BAAI/bge-m3` | 1024 维、多语言，对应 `EMBEDDING_DIM` |
-| `RERANKER_MODEL` | `BAAI/bge-reranker-v2-m3` | BGE 交叉编码器重排模型 |
+| `EMBEDDING_MODEL` | `Qwen/Qwen3-Embedding-0.6B` | 云端、**1024 维**、端点支持**真批量**（本地档 `BAAI/bge-m3` 也是 1024 维但向量空间不同）；换模型必须换集合名 |
+| `RERANKER_MODEL` | `Qwen/Qwen3-Reranker-0.6B` | 云端重排（20 条候选实测 320ms）；`RERANKER_PROVIDER=bge` 可切本地交叉编码器 |
 | `*_DEVICE` | `cpu` | 有 GPU 时改为 `cuda`（会自动启用 fp16） |
 | `MILVUS_URI` | `http://localhost:19530` | 有 `MILVUS_TOKEN` 时优先用 Token 鉴权 |
 | `CORS_ORIGINS` | `["*"]` | JSON 数组格式 |
@@ -312,11 +326,14 @@ curl.exe -s -X POST http://127.0.0.1:8000/api/v1/mcp/servers/fs/reload -H "Conte
 | 阿里百炼 | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-plus` |
 | 本地 vLLM / Ollama | `http://localhost:8000/v1` | 本地部署的模型名（key 随便填） |
 
-> ⚠️ **Embedding 不能这样换**：DeepSeek 不提供 embedding 接口，向量化仍由本地 BGE 模型完成，
-> 因此 `EMBEDDING_MODEL` 必须保持为可下载的 HuggingFace 模型名。
+> ⚠️ **Embedding 的换法与 LLM 不同**：DeepSeek 不提供 embedding，本项目默认走
+> **硅基流动云端向量化**（`EMBEDDING_PROVIDER=siliconflow`，需 `SILICONFLOW_API_KEY`：真批量 N 进 N 出、
+> 按 `SILICONFLOW_EMBEDDING_CONCURRENCY` 分批并发，语义见 `docs/10-§7.3.2`）；
+> 也可切回本地权重（`bge`，需下载模型名可解析的 HuggingFace 仓库）或零依赖的 `hash`。
 
-模型加载是**惰性**的：只有第一次真正调用 `embed` / `rerank` 时才会下载权重，
-应用启动不会拉取模型。国内网络可在 `.env` 中打开 `HF_ENDPOINT=https://hf-mirror.com` 加速。
+模型加载是**惰性**的，而且**只有本地档才会加载模型**（`EMBEDDING_PROVIDER=bge` 或 `RERANKER_PROVIDER=bge`）：
+只有第一次真正调用 `embed` / `rerank` 时才会下载权重，应用启动不会拉取 —— 出厂档（两个都走云端）**不下载任何权重**。
+国内网络可在 `.env` 中打开 `HF_ENDPOINT=https://hf-mirror.com` 加速。
 
 ## Milvus
 
@@ -345,12 +362,12 @@ mysql --default-character-set=utf8mb4 -u root -p -e "source deploy/mysql/002_ali
 # 3. 仅「已存在旧库」需要：给 document_chunk 补 metadata JSON 列（M8 固化切分参数）
 mysql --default-character-set=utf8mb4 -u root -p -e "source deploy/mysql/003_add_chunk_metadata.sql"
 
-# 4. 网关独占的 6 张表（脚本在 go-services 仓库目录下，仍打在同一个库）
-mysql --default-character-set=utf8mb4 -u root -p -e "source ../go-services/deploy/mysql/001_gateway_tables.sql"
+# 4. 网关独占的 6 张表（脚本在 ai-platform-go 仓库目录下，仍打在同一个库）
+mysql --default-character-set=utf8mb4 -u root -p -e "source ../ai-platform-go/deploy/mysql/001_gateway_tables.sql"
 
 # 5. 两侧自检：断言值应依次为 1/0/1/1/0/1/4/4 与 6/15/1/0/0/1/2/0/1/0/0/1/0/4/0/1
 mysql --default-character-set=utf8mb4 -u root -p -e "source deploy/mysql/verify_schema.sql"
-mysql --default-character-set=utf8mb4 -u root -p -e "source ../go-services/deploy/mysql/verify_schema.sql"
+mysql --default-character-set=utf8mb4 -u root -p -e "source ../ai-platform-go/deploy/mysql/verify_schema.sql"
 ```
 
 > `idempotency_record` 与 `audit_log` 是**两个服务共享**的表：同库同名只能有一张表，
@@ -365,14 +382,14 @@ mysql --default-character-set=utf8mb4 -u root -p -e "source ../go-services/deplo
 `user_memory.source`），原因见 `docs/09-§2.9` 与 `docs/12-§10`。
 
 > 默认 `INFRA_BACKEND=memory` 时不连 MySQL。切到 `real` 后，仓储由
-> `app/storage/mysql.py`（知识库/文档/切片）与 `app/memory/mysql_repo.py`（长期记忆）
+> `app/infrastructure/storage/mysql.py`（知识库/文档/切片）与 `app/memory/mysql_repo.py`（长期记忆）
 > 用 **SQLAlchemy Core** 实现，另有一份 `app/memory/milvus_index.py` 负责长期记忆的向量索引。
 > 依赖装在可选依赖组里：`uv sync --extra mysql --extra minio --extra redis --extra kafka`。
 >
 > **任一依赖初始化失败都不会让服务起不来**：仓储退化为 `Unavailable*`（写接口答
 > `503 DEPENDENCY_UNAVAILABLE`），启动期自检只记日志；连接池按 DSN 进程内共享并引用计数，
-> 关停时统一 dispose（见 `app/core/db.py`）。
-> （当前由 `app/storage/unavailable.py` 返回 `503 DEPENDENCY_UNAVAILABLE`）——
+> 关停时统一 dispose（见 `app/infrastructure/mysql/db.py`）。
+> （当前由 `app/infrastructure/storage/unavailable.py` 返回 `503 DEPENDENCY_UNAVAILABLE`）——
 > 表先建好，是为了让仓储实现能直接开工。注意这一项**不属于 M6/M7**
 > （`docs/01-§7` 定义 M6 = MCP + 可观测、M7 = 异步任务），而是后续工作量。
 
@@ -405,13 +422,13 @@ mysql --default-character-set=utf8mb4 -u root -p -e "source ../go-services/deplo
       `deploy/infra/compose.yml` 一键起 Redis / Kafka；真机验证：真 Kafka + 两个真进程跑通
       （`tools/kafka_e2e_check.py`）
 - [x] **M8 真实基础设施落地**：
-      MySQL 仓储（`app/storage/mysql.py` + `app/memory/mysql_repo.py`，SQLAlchemy Core，
+      MySQL 仓储（`app/infrastructure/storage/mysql.py` + `app/memory/mysql_repo.py`，SQLAlchemy Core，
       按 DSN 共享连接池 + 引用计数、唯一键冲突映射成领域错误、原子 `hit_count + 1`、
       行值游标分页）、MinIO 对象存储（原文档字节落桶）、
       Milvus 长期记忆集合（`ai_platform_memories`：HNSW/COSINE + `user_id`/`kind`
       **倒排索引**，没有标量索引就会静默丢召回）、
       `document_chunk.metadata` 迁移（`deploy/mysql/003_add_chunk_metadata.sql`）、
-      启动期 MySQL 建表自检、依赖故障统一分类成 `503`（`app/core/db.py`）；
+      启动期 MySQL 建表自检、依赖故障统一分类成 `503`（`app/infrastructure/mysql/db.py`）；
       真机验证：`INFRA_BACKEND=real` 下全部 **42 个「路径 + 方法」组合 / 45 次请求**
       的一键 curl 冒烟（`tools/curl_e2e.ps1`：39 个 2xx + 6 个白名单内的正确负例，
       0 个非预期失败，退出码表示结论）+ 5 个真依赖集成测试文件
@@ -452,15 +469,19 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/curl_e2e.ps1
 | `TASK_RUNNER` | 谁在跑 | 任务存储要求 | 适用 |
 | --- | --- | --- | --- |
 | `none` | 只建任务不执行 | 任意 | 契约测试 / 演示「排队」 |
-| `inline` | API 进程自己跑 | 任意 | 单进程开发（默认） |
-| `kafka` | **独立 Worker 进程** | 必须 `INFRA_BACKEND=real` | 生产形态 |
+| `inline` | API 进程自己跑 | 任意 | 单进程开发（大文件会拖垮在线请求） |
+| `kafka` | **独立 Worker 进程** | 必须 `INFRA_BACKEND=real` | 生产形态 / **`.env.example` 出厂默认** |
+
+> `app/core/config.py` 里的**库内默认**仍是 `inline`（测试与单进程开发零依赖），
+> 而 `.env.example`（也就是 `Copy-Item` 出来的那份 `.env`）给的是 **`kafka` + `real`**：
+> 隔离档是推荐形态，`inline` 是明确的降级选择而不是起点。
 
 ```powershell
 # 1. 起基础设施
 docker compose -f deploy/infra/compose.yml up -d redis            # 任务仓储/总线/重试都在 Redis
 docker compose -f deploy/infra/compose.yml --profile kafka up -d   # 再加单节点 Kafka
 
-# 2. API（投递方）
+# 2. API（投递方）—— .env 已是 kafka + real；若不是，临时覆盖也行：
 $env:INFRA_BACKEND="real"; $env:TASK_RUNNER="kafka"
 uv run uvicorn app.main:app --reload
 

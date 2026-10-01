@@ -6,6 +6,13 @@
 >
 > 本文给出**每一个对外接口**的可直接执行 curl 命令，并附上**在本机真实依赖下实测的响应**。
 > 实测脚本：[`tools/curl_e2e.ps1`](../tools/curl_e2e.ps1)。
+>
+> ⚠️ **响应样例的采集口径**：下文的实测响应采集于 `EMBEDDING_PROVIDER=bge`（本地
+> `BAAI/bge-m3`，**1024 维**）时期的配置，因此 `embedding` 健康检查与知识库详情里会看到
+> `"dim":1024` / `"embedding_dim":1024`。当前出厂档是 `siliconflow`（云端
+> `Qwen/Qwen3-Embedding-0.6B`，**同样是 1024 维**），因此这些字段的**数值恰好一致** ——
+> 但**向量空间完全不同**：换档位必须换 Milvus 集合名（现在是 `*_v3`）并重新入库，
+> 绝不能因为"维度一样"就复用旧集合，原因见 [10-§7.3.2](./10-非功能需求与可观测性.md)。
 
 ## 1. 为什么要有这份文档
 
@@ -25,7 +32,7 @@
 | --- | --- | --- |
 | MySQL 8.0 | `127.0.0.1:3306`，库 `ai_platform` | 15 张表（AI 独占 7 + 共享 2 + 网关独占 6） |
 | Redis 7.4 | `127.0.0.1:6379` | 任务仓储 / 事件总线 / 会话上下文 |
-| Kafka | `127.0.0.1:9092` | 仅 `TASK_RUNNER=kafka` 需要（本文用 `inline`） |
+| Kafka | `127.0.0.1:9092` | `.env.example` 的出厂档要用它（`TASK_RUNNER=kafka` ⇒ 任务由独立 Worker 消费）；**本文的示例用 `inline`**，以便每个接口都能「调一次就看到结果」而不必等 Worker |
 | Milvus | `http://127.0.0.1:19530` | 2 个集合：`ai_platform_chunks`、`ai_platform_memories` |
 | MinIO | `localhost:9000` | 文档原文对象存储 |
 
@@ -44,7 +51,7 @@ uv sync --extra mysql --extra minio --extra redis --extra kafka --extra local   
 mysql --default-character-set=utf8mb4 -u root -p -e "source deploy/mysql/001_init_schema.sql"
 mysql --default-character-set=utf8mb4 -u root -p -e "source deploy/mysql/002_align_shared_tables.sql"
 mysql --default-character-set=utf8mb4 -u root -p -e "source deploy/mysql/003_add_chunk_metadata.sql"
-mysql --default-character-set=utf8mb4 -u root -p -e "source ../go-services/deploy/mysql/001_gateway_tables.sql"
+mysql --default-character-set=utf8mb4 -u root -p -e "source ../ai-platform-go/deploy/mysql/001_gateway_tables.sql"
 ```
 
 > `003_add_chunk_metadata.sql` 是 M8 新增：给 `document_chunk` 补 `metadata JSON` 列。
@@ -55,14 +62,15 @@ mysql --default-character-set=utf8mb4 -u root -p -e "source ../go-services/deplo
 
 ```ini
 INFRA_BACKEND=real                 # memory = 进程内实现；real = MySQL/Milvus/Redis/MinIO
-TASK_RUNNER=inline                 # none / inline / kafka
+TASK_RUNNER=inline                 # 出厂档是 kafka（独立 Worker 消费，大文件不拖垮在线请求）；
+                                   # 本文用 inline 是为了「调一次就看到入库结果」，需要另起 Worker 的场景见 README
 MYSQL_DSN=mysql+asyncmy://root:20050613@localhost:3306/ai_platform
 REDIS_URL=redis://localhost:6379/0
 MILVUS_URI=http://localhost:19530
 MINIO_ENDPOINT=localhost:9000
-EMBEDDING_PROVIDER=bge             # bge = 真实语义向量（需预下载 BAAI/bge-m3）；hash = 词法向量
+EMBEDDING_PROVIDER=siliconflow     # siliconflow = 硅基流动云端（需 SILICONFLOW_API_KEY）；ark/bge/hash 亦可
 RERANKER_ENABLED=true
-RERANKER_MODEL=BAAI/bge-reranker-v2-m3
+RERANKER_PROVIDER=siliconflow
 HF_ENDPOINT=https://hf-mirror.com  # 国内加速；应用会同步进 os.environ（见 §9）
 AUTH_ENABLED=false                 # 本地联调；生产必须 true 并提供 JWT_SECRET
 METRICS_PORT=9105                  # 独立指标端口（9100 常被 node-exporter 占用）
@@ -865,9 +873,9 @@ collections: ['ai_platform_chunks', 'ai_platform_memories']
 
 | # | 事项 | 说明 |
 | --- | --- | --- |
-| 1 | **重排/嵌入模型需预下载** | `BAAI/bge-m3`（2.12 GB，只有 `pytorch_model.bin`）与 `BAAI/bge-reranker-v2-m3`（2.29 GB）。未缓存且连不上 HF 时，首次调用会先跑 5 次重试（约 9 分钟）再降级 |
-| 2 | **`HF_ENDPOINT` 必须在 import 前生效** | `huggingface_hub` 在**导入期**把 `HF_ENDPOINT` 固化进 `constants.ENDPOINT` / `HUGGINGFACE_CO_URL_TEMPLATE`，而 `import app.main` 期间 `langchain_text_splitters → transformers` 会提前把它拉进来。只写 `.env` 是**静默失效**的；`app.config.apply_hf_endpoint()` 会同时改写环境变量与已导入的常量（详见 `docs/12-§13.1`） |
-| 3 | **`EMBEDDING_PROVIDER=hash` 也能跑通全流程** | 那是确定性的词法向量，用来让「检索链路」可以被机械断言。它**不代表语义检索质量**，做 RAG 效果评估必须切 `bge` |
+| 1 | **本地档才需要预下载权重，而出厂档已不再需要任何权重** | 出厂档 embedding 与 rerank 都走硅基流动云端；本机 HF 缓存里的 `BAAI/bge-m3` 与 `BAAI/bge-reranker-v2-m3`（共 **8.5 GB**）已按"不再使用"清理。切回 `EMBEDDING_PROVIDER=bge` / `RERANKER_PROVIDER=bge` 时会重新下载；未缓存且连不上 HF 时首次调用会先重试约 9 分钟再降级 |
+| 2 | **`HF_ENDPOINT` 必须在 import 前生效** | `huggingface_hub` 在**导入期**把 `HF_ENDPOINT` 固化进 `constants.ENDPOINT` / `HUGGINGFACE_CO_URL_TEMPLATE`，而 `import app.main` 期间 `langchain_text_splitters → transformers` 会提前把它拉进来。只写 `.env` 是**静默失效**的；`app.core.config.apply_hf_endpoint()` 会同时改写环境变量与已导入的常量（详见 `docs/12-§13.1`） |
+| 3 | **`EMBEDDING_PROVIDER=hash` 也能跑通全流程** | 那是确定性的词法向量，用来让「检索链路」可以被机械断言。它**不代表语义检索质量**，做 RAG 效果评估必须切 `ark`（云端）或 `bge`（本地） |
 | 4 | **SSE 必须 `curl -N` + `--max-time`** | 缺 `-N` 会缓冲；缺 `--max-time` 会一直挂 |
 | 5 | **`metrics` 不在主应用端口** | 指标在独立的 `METRICS_PORT`（本文实测 9105；9100 常被 node-exporter 占用），主应用**不**暴露 `/metrics` |
 | 6 | **`ai_platform_memories` 是启动期懒建** | 由 `memory["index"].ensure_ready()` 创建；Milvus 不可用时只告警不阻断启动，此时记忆检索会降级 |
