@@ -12,7 +12,7 @@ flowchart LR
         MS --> P["解析<br/>PDF/MD/TXT/DOCX/HTML"]
         P --> CL["清洗<br/>去页眉页脚/空白/控制符"]
         CL --> CH["Chunk<br/>recursive + 中文标点边界"]
-        CH --> EM["Embedding<br/>BAAI/bge-m3 (1024d)"]
+        CH --> EM["Embedding<br/>硅基流动 Qwen3 / bge-m3（默认 1024d）"]
         EM --> MV[("Milvus<br/>ai_platform_chunks")]
         CH --> DB[("MySQL<br/>document / document_chunk")]
     end
@@ -151,7 +151,7 @@ flowchart LR
 | 默认 `chunk_size` / `chunk_overlap` | 512 / 64 |
 | 句边界规则 | MUST NOT 在中文句号/问号/叹号**之前**断开；断开点只能在标点之后 |
 | 表格/代码块 | MUST 作为整体保留，不跨块切分；单块超 `chunk_size × 2` 时才允许内部切分 |
-| 短块合并 | 相邻 chunk < `chunk_size × 0.3` 时 MUST 与后一块合并（避免碎片） |
+| 短块合并 | 相邻 chunk < `chunk_size × 0.3` 时 MUST 与后一块合并（避免碎片）。**这条是下限，不是停止条件**（UP-03）：合并会一直继续到「再加一块就超 `chunk_size`」为止，合并结果既不超 `chunk_size`（比 `AC-RAG-07` 的 1.5 倍更严）、也**不跨页/跨标题**（跨了会让引用指错位置）。旧实现把 0.3 当停止条件，碎段文档的有效块长被钉在配额的 34%、片数放大 2.6 倍（8MB：16,969 → 6,056 片） |
 | 元数据 | 每个 chunk MUST 带：`chunk_id`,`doc_id`,`kb_id`,`user_id`,`chunk_index`,`content`,`content_sha256`,`char_start`,`char_end`,`page?`,`heading_path?`,`created_at` |
 | 切分参数固化 | `chunk_size`/`chunk_overlap` 写入 chunk 元数据，供后续排障复现 |
 
@@ -161,9 +161,9 @@ flowchart LR
 
 | 项 | 约定 |
 | --- | --- |
-| 模型 | `BAAI/bge-m3`（1024 维，多语言） |
+| 模型 | 默认 **`Qwen/Qwen3-Embedding-0.6B`（硅基流动云端，1024 维，真批量 N 进 N 出）**；本地档为 `BAAI/bge-m3`（1024 维），方舟档见 [10-§7.3.1](./10-非功能需求与可观测性.md)。语义与实现见 [10-§7.3.2](./10-非功能需求与可观测性.md) |
 | 归一化 | MUST `normalize_embeddings=True`，度量用 COSINE |
-| 批量 | `embedding_batch_size` 默认 16；单批超时 120s |
+| 批量 | `embedding_batch_size` 默认 16（**调用粒度**）；云端档每条文本一次 HTTP、按 `ARK_EMBEDDING_CONCURRENCY` 并发；单批超时 120s |
 | 空文本 | MUST NOT 送入模型；空白 chunk 在切分阶段丢弃 |
 | 缓存 | 相同 `content_sha256` 的文本 SHOULD 命中 Redis 缓存（TTL 24h），避免重复计算 |
 | 失败 | 单 chunk 失败重试 2 次（间隔 1s/3s），仍失败则任务失败 |
