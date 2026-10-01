@@ -1,19 +1,14 @@
 """Agent 用例编排（``docs/04`` §1 / §4.3）。
 
-与 :class:`app.application.chat.ChatService` 的分工：
+与 :class:`app.application.chat.ChatService` 的分工：``ChatService`` 负责「准备上下文 +
+一次性/流式生成」，``use_tools=false`` 时 RAG 是前置固定步骤；``AgentService`` 负责
+「准备上下文 + 循环调用工具」，RAG 由模型通过 ``kb_retrieve`` 自主决定。
 
-* ``ChatService`` 负责「准备上下文 + 一次性/流式生成」，``use_tools=false`` 时
-  RAG 是**前置固定步骤**。
-* ``AgentService`` 负责「准备上下文 + 循环调用工具」，RAG 由模型通过
-  ``kb_retrieve`` **自主决定**。
+两者共用 ``ContextAssembler`` / ``ConversationStore`` / 引用编号规则，所以 ``/chat`` 与
+``/agent/run`` 的引用编号方式完全一致。
 
-两者共用 ``ContextAssembler`` / ``ConversationStore`` / 引用编号规则，所以
-``/chat`` 与 ``/agent/run`` 的引用编号方式完全一致（都是全局顺序编号）。
-
-**刻意不做的一件事**：不在 prepare 阶段做事前检索。文档 §1.2 明确要求
-「``use_tools=true`` 且 ``use_rag=true`` 时只把 ``kb_retrieve`` 作为工具提供、
-不做事前检索」——事前检索 + 把 ``kb_retrieve`` 也放进工具列表会让同一次提问检索
-两次，引用还会重复编号。
+刻意不做的一件事：不在 prepare 阶段做事前检索。事前检索 + 把 ``kb_retrieve`` 也放进工具
+列表会让同一次提问检索两次，引用还会重复编号（``docs/04`` §1.2）。
 """
 
 from __future__ import annotations
@@ -165,11 +160,10 @@ class AgentService:
     def _resolve_tools(self, request: AgentRunRequest) -> list[str]:
         """计算本次开放的工具集合。
 
-        文档 §1.2 的规则在这里落地：``use_rag=true`` 时**不做事前检索**，检索能力
-        完全交给模型通过 ``kb_retrieve`` 工具触发。这里与文档字面表述的唯一差异是
-        「只提供 ``kb_retrieve``」被理解为「RAG 只通过 ``kb_retrieve`` 提供」而非
-        「禁用 calculator 等其它工具」——否则 ``use_rag`` 默认为 true 会让
-        ``AC-AGENT-01``（模型调用 calculator）在默认请求下不可能通过。
+        ``docs/04`` §1.2：``use_rag=true`` 时不做事前检索，检索能力完全交给模型通过
+        ``kb_retrieve`` 工具触发。这里与文档字面表述的唯一差异是「只提供 ``kb_retrieve``」
+        被理解为「RAG 只通过 ``kb_retrieve`` 提供」而非「禁用 calculator 等其它工具」——
+        否则 ``use_rag`` 默认为 true 会让 ``AC-AGENT-01`` 在默认请求下不可能通过。
         """
         self._assert_known(request.allowed_tools, request.denied_tools)
         names = self._registry.filter_names(
@@ -186,10 +180,7 @@ class AgentService:
         return names
 
     def _assert_known(self, allowed: Sequence[str] | None, denied: Sequence[str]) -> None:
-        """白/黑名单里出现未注册工具名即 ``400``。
-
-        静默忽略是最坏的选择：调用方以为限制生效了，实际没有。
-        """
+        """白/黑名单里出现未注册工具名即 ``400``。静默忽略是最坏的选择：调用方以为限制生效了，实际没有。"""
         known = set(self._registry.names())
         requested = set(allowed) if allowed is not None else set()
         unknown = sorted((requested | set(denied)) - known)
@@ -215,10 +206,10 @@ class AgentService:
     # 非流式
     # ------------------------------------------------------------------
     async def run(self, request: AgentRunRequest, user_id: str) -> AgentRunResponse:
-        """执行一轮 Agent 编排并返回最终结果（``POST /agent/run`` 的入口，**非流式**）。
+        """执行一轮 Agent 编排并返回最终结果（``POST /agent/run`` 的入口，非流式）。
 
         与 :meth:`stream` 共用 :meth:`prepare` 与同一条循环；这里等整轮结束一次性返回
-        （含 ``steps`` 与用量），因此不适合需要"边生成边下发"的场景。
+        （含 ``steps`` 与用量），因此不适合需要「边生成边下发」的场景。
         """
         started = time.perf_counter()
         prepared = await self.prepare(request, user_id)
@@ -294,10 +285,10 @@ class AgentService:
     ) -> AsyncGenerator[ChatStreamEvent, None]:
         """按 ``meta → (tool_call → tool_result → reference*) * → token* → usage → done``。
 
-        引用帧紧跟在**产生它的** ``tool_result`` 之后：Agent 场景下引用可能来自第 3 轮
-        工具调用，等最后才发会让用户在看答案时没法对应页码；Early 到 ``tool_call``
-        之前又会引用一个尚未回流的工具结果。后续轮次新增的引用再补发（协议允许
-        ``reference`` 帧多次出现，见 ``docs/02`` §6）。
+        引用帧紧跟在产生它的 ``tool_result`` 之后：Agent 场景下引用可能来自第 3 轮工具调用，
+        等最后才发会让用户在看答案时没法对应页码；早到 ``tool_call`` 之前又会引用一个尚未回流
+        的工具结果。后续轮次新增的引用再补发（协议允许 ``reference`` 帧多次出现，
+        见 ``docs/02`` §6）。
         """
         started = time.perf_counter()
         yield ChatStreamEvent(
@@ -345,7 +336,7 @@ class AgentService:
                     if fresh:
                         seen.update(chunk.chunk_id for chunk in fresh)
                         collected.extend(fresh)
-                        # 每次重发**全部**引用：``reference`` 帧的语义是「本轮引用集合」，
+                        # 每次重发全部引用：``reference`` 帧的语义是「本轮引用集合」，
                         # 只发增量会让客户端的 ``[n]`` 编号错位。
                         yield ChatStreamEvent(
                             EVENT_REFERENCE, StreamReferences(references=_references(collected))
@@ -409,7 +400,7 @@ class AgentService:
 
         只落这两条：工具调用的中间消息不落库。``ConversationStore`` 的 role 只有
         user/assistant/system，而且把检索片段重新拼进下一轮历史会让历史膨胀，
-        还会带上**上一轮的**检索结果（对已经变化的知识库是错的）。
+        还会带上上一轮的检索结果（对已经变化的知识库是错的）。
         """
         if result is None:  # pragma: no cover - 取消时通常已有部分结果
             return

@@ -1,14 +1,12 @@
 """AI 侧的 gRPC 服务：Go 网关的 ``Chat`` 调用落点（docs/04 §2，接缝 J1/J2/J3/J9）。
 
-**为什么复用 ``create_app()`` 而不是另起一套装配**：编排链路的每一环
-（检索、记忆、Agent、限流、指标）都挂在 ``app.state`` 上，由 ``create_app``
-统一构造。gRPC 入口若自己装配一遍，就会出现「HTTP 通道有记忆、gRPC 通道没有」
-这种两边行为不一致的问题 —— 而这正是本里程碑要消灭的东西。
+**为什么复用 ``create_app()`` 而不是另起一套装配**：编排链路的每一环（检索、记忆、Agent、限流、
+指标）都挂在 ``app.state`` 上，由 ``create_app`` 统一构造。gRPC 入口若自己装配一遍，就会出现
+「HTTP 通道有记忆、gRPC 通道没有」这种两边行为不一致的问题。
 
-**为什么手工跑 lifespan**：``create_app()`` 是同步的（测试要靠它构造实例），
-真正的启动动作（配置校验、向量库建表、MySQL 自检、MCP 连接）都在
-``lifespan`` 里。gRPC 进程不走 uvicorn，所以要自己进
-``app.router.lifespan_context(app)``，否则会得到一个「连上了但什么都没初始化」
+**为什么手工跑 lifespan**：``create_app()`` 是同步的（测试要靠它构造实例），真正的启动动作
+（配置校验、向量库建表、MySQL 自检、MCP 连接）都在 ``lifespan`` 里。gRPC 进程不走 uvicorn，
+所以要自己进 ``app.router.lifespan_context(app)``，否则会得到一个「连上了但什么都没初始化」
 的服务，表现为第一次调用报一堆莫名其妙的错。
 """
 
@@ -63,9 +61,8 @@ META_TRACE_ID = "x-trace-id"
 META_REQUEST_ID = "x-request-id"
 #: 用户凭据（``Bearer <jwt>``）。**必须**由网关原样转发，不允许网关自造身份。
 META_AUTHORIZATION = "authorization"
-#: 无鉴权模式（``AUTH_ENABLED=false``）下的兜底用户，与 HTTP 通道的
-#: ``X-Debug-User-Id`` 请求头同义。仅本地开发可用：生产 ``validate_for_startup``
-#: 会强制 ``auth_required``。
+#: 无鉴权模式（``AUTH_ENABLED=false``）下的兜底用户，与 HTTP 通道的 ``X-Debug-User-Id``
+#: 请求头同义。仅本地开发可用：生产 ``validate_for_startup`` 会强制 ``auth_required``。
 META_DEBUG_USER_ID = "x-debug-user-id"
 #: 服务间凭据（网关后台任务用，接缝 J9）。
 META_INTERNAL_TOKEN = "x-internal-service-token"
@@ -112,8 +109,8 @@ class ChatServicer(chat_pb2_grpc.AiPlatformServicer):
     ) -> chat_pb2.ChatResponse:
         """gRPC 一元对话：与 HTTP ``POST /chat`` 共用同一套服务层，只是传输形态不同。
 
-        先鉴权，再把 protobuf 入参装配成契约对象；**只有**"入参 → 契约对象"这一步的校验
-        失败才归为参数错误，其余错误走统一的错误码映射。
+        先鉴权，再把 protobuf 入参装配成契约对象；**只有**「入参 → 契约对象」这一步的校验失败
+        才归为参数错误，其余错误走统一的错误码映射。
         """
         meta = _metadata_map(context)
         trace_id = (meta.get(META_TRACE_ID) or "").strip() or new_trace_id()
@@ -126,10 +123,9 @@ class ChatServicer(chat_pb2_grpc.AiPlatformServicer):
                 try:
                     body = _to_chat_request(request)
                 except ValidationError as exc:
-                    # **只有**「入参 → 契约对象」这一步的校验失败才是 400。
-                    # 把它扩大到整个调用的话，服务内部的 ``ValidationError``
-                    # （比如上游返回的数据不符合 schema）会被报成
-                    # 「调用方参数不合法」——排查方向从一开始就指错了。
+                    # **只有**「入参 → 契约对象」这一步的校验失败才是 400。把它扩大到整个调用
+                    # 的话，服务内部的 ``ValidationError``（比如上游返回的数据不符合 schema）
+                    # 会被报成「调用方参数不合法」—— 排查方向从一开始就指错了。
                     raise _validation_error(exc) from exc
                 result = await self._dispatch(body, user_id)
             except AppError as exc:
@@ -151,27 +147,18 @@ class ChatServicer(chat_pb2_grpc.AiPlatformServicer):
     ) -> AsyncGenerator[chat_pb2.ChatEvent, None]:
         """``AiPlatform.ChatStream``：把编排事件映射成 ``ChatEvent``。
 
-        与 ``POST /api/v1/chat/stream`` **行为等价**：同一套 ``prepare`` /
-        ``stream_prepared``，同一套事件顺序，差别只在传输层。
+        与 ``POST /api/v1/chat/stream`` **行为等价**：同一套 ``prepare`` / ``stream_prepared``，
+        同一套事件顺序，差别只在传输层。三个不显然的地方：
 
-        三个不显然的地方：
-
-        1. **准备阶段必须在第一个 ``yield`` 之前完成。**
-           与 HTTP 通道必须「先完成 prepare 再返回 StreamingResponse」是同一条理由：
-           一旦开始推事件，能用的报错手段就只剩 ``error`` 帧了（HTTP 状态码 / gRPC
-           status 都已经发出去了）。所以 ``prepare`` 抛的 ``AppError`` 走
-           ``abort``，客户端拿到的是完整信封，而不是「流中间冒出来一个 error 帧」。
-        2. **不加心跳帧。** ``event: ping`` 是 SSE 传输层的东西
-           （``app/core/sse.py`` 的 ``frame_stream`` 负责），gRPC 有自己的
-           keepalive。docs/04 §2.3 的映射表里 ``ping`` 一栏正是「*不映射*」——
-           这里也**不**把 ping 包成 ``unknown`` 事件，否则网关会把它当成一个
-           需要透传的未知事件发下去，客户端就会收到两路心跳。
-        3. **取消必须穿透到 LLM。** 网关断连时 grpc.aio 会把 ``CancelledError``
-           抛进本生成器的挂起点，也就是 ``stream_prepared`` 内部 ——
-           它自带 ``aclosing`` 与 ``except CancelledError``（记指标 + 落 partial +
-           re-raise），所以上游生成器会被显式关闭（即停止计费的 LLM 调用）。
-           本方法 **不捕获** ``CancelledError``，也不在 ``finally`` 里吞任何异常：
-           捕获它就等于把「停止上游」这件事弄丢。
+        1. **准备阶段必须在第一个 ``yield`` 之前完成。** 与 HTTP 通道「先完成 prepare 再返回
+           StreamingResponse」是同一条理由：一旦开始推事件，能用的报错手段就只剩 ``error`` 帧了。
+           所以 ``prepare`` 抛的 ``AppError`` 走 ``abort``。
+        2. **不加心跳帧。** ``event: ping`` 是 SSE 传输层的东西，gRPC 有自己的 keepalive；
+           把它包成 ``unknown`` 会让客户端收到两路心跳。
+        3. **取消必须穿透到 LLM。** 网关断连时 grpc.aio 会把 ``CancelledError`` 抛进本生成器的
+           挂起点，也就是 ``stream_prepared`` 内部 —— 它自带 ``aclosing`` 与
+           ``except CancelledError``。本方法**不捕获** ``CancelledError``，捕获它就等于把
+           「停止计费」这件事弄丢。
         """
         meta = _metadata_map(context)
         trace_id = (meta.get(META_TRACE_ID) or "").strip() or new_trace_id()
@@ -185,10 +172,8 @@ class ChatServicer(chat_pb2_grpc.AiPlatformServicer):
                     body = _to_chat_request(request)
                 except ValidationError as exc:
                     raise _validation_error(exc) from exc
-                # 返回 (事件流, 降级原因)。降级原因必须**在这里**取到：
-                # ``meta`` 事件里只有布尔值，而网关要把原因落进
-                # ``assistant.degraded_reasons``（docs/04 §9），所以连着
-                # ``prepared.degraded_reasons`` 一起带出去。
+                # 返回 (事件流, 降级原因)。降级原因必须**在这里**取到：``meta`` 事件里只有布尔值，
+                # 而网关要把原因落进 ``assistant.degraded_reasons``（docs/04 §9）。
                 events, degraded_reasons = await self._prepare_stream(body, user_id)
             except AppError as exc:
                 await _abort_with_app_error(context, exc, trace_id)
@@ -201,8 +186,7 @@ class ChatServicer(chat_pb2_grpc.AiPlatformServicer):
                 await _abort_with_app_error(context, AppError(ErrorCode.INTERNAL_ERROR), trace_id)
                 return
 
-            # 成功路径也回传 trace id（与 ``Chat`` 一致）：两条路用同一个通道，
-            # 客户端只有一处实现。
+            # 成功路径也回传 trace id（与 ``Chat`` 一致）：两条路用同一个通道，客户端只有一处实现。
             context.set_trailing_metadata(((META_TRACE_ID, trace_id),))
             cursor = _StreamCursor(degraded_reasons)
             async for event in events:
@@ -216,8 +200,8 @@ class ChatServicer(chat_pb2_grpc.AiPlatformServicer):
     ) -> tuple[AsyncGenerator[ChatStreamEvent, None], list[str]]:
         """完成准备阶段并返回事件流与降级原因。
 
-        返回的是**尚未开始迭代**的异步生成器：``prepare`` 已经执行完
-        （它的异常在这里抛出，交给调用方 ``abort``），而流还没吐第一个事件。
+        返回的是**尚未开始迭代**的异步生成器：``prepare`` 已经执行完（它的异常在这里抛出，
+        交给调用方 ``abort``），而流还没吐第一个事件。
         """
         if body.use_tools:
             agents = self._app.state.agent_service
@@ -231,12 +215,10 @@ class ChatServicer(chat_pb2_grpc.AiPlatformServicer):
         )
 
     def _authenticate(self, meta: dict[str, str]) -> str:
-        """解析身份。与 HTTP 的 ``get_current_user`` 依赖走**同一个**
-        :func:`authenticate`，只是把请求头换成元数据。
+        """解析身份。与 HTTP 的 ``get_current_user`` 依赖走**同一个** ``authenticate``。
 
-        两边共用同一个函数是刻意的：``authenticate`` 里那段
-        「``auth_required=false`` 时优先用 debug 身份」的分支如果在这里
-        重写一遍，两条通道的鉴权行为就会各自演化 —— 而这类差异极难被测试发现。
+        两边共用同一个函数是刻意的：``authenticate`` 里那段「``auth_required=false`` 时优先用
+        debug 身份」的分支如果在这里重写一遍，两条通道的鉴权行为就会各自演化。
         """
         settings = cast(Settings, self._app.state.settings)
         internal_token = (meta.get(META_INTERNAL_TOKEN) or "").strip()
@@ -247,8 +229,7 @@ class ChatServicer(chat_pb2_grpc.AiPlatformServicer):
             and internal_token == settings.internal_service_token
         ):
             # 服务间凭据能证明「调用方是网关」，但证明不了「代表哪个用户」——
-            # ``ChatRequest`` 里刻意没有 user_id（网关不许自造身份）。
-            # 所以这里如实拒绝，而不是随便挑一个身份放行。
+            # ``ChatRequest`` 里刻意没有 user_id（网关不许自造身份）。所以这里如实拒绝。
             raise AppError(
                 ErrorCode.UNAUTHENTICATED,
                 "会话接口需要用户凭据，服务间凭据不足以确定用户",
@@ -265,9 +246,8 @@ class ChatServicer(chat_pb2_grpc.AiPlatformServicer):
         """按 ``use_tools`` 分流，与 ``POST /chat`` 的分支完全一致。"""
         if body.use_tools:
             agents = self._app.state.agent_service
-            # 必须 await：漏掉之后返回值是一个「永不执行的协程」对象，
-            # 报错现场是序列化时的 ``'coroutine' object has no attribute ...``，
-            # 与真正的原因（少了 await）距离很远。
+            # 必须 await：漏掉之后返回值是一个「永不执行的协程」对象，报错现场是序列化时的
+            # ``'coroutine' object has no attribute ...``，与真正的原因（少了 await）距离很远。
             result: ChatResponse = await agents.run(_as_agent_request(body), user_id)
             return result
         service = self._app.state.chat_service
@@ -277,9 +257,9 @@ class ChatServicer(chat_pb2_grpc.AiPlatformServicer):
 def _as_agent_request(body: ChatRequest) -> AgentRunRequest:
     """``ChatRequest`` → ``AgentRunRequest``（``use_tools`` 强制为 true）。
 
-    与 ``app/api/v1/chat.py`` 里的同名私有函数是同一行逻辑。**没有直接 import
-    是为了不让「传输层」依赖「HTTP 路由层」**（路由层会随 HTTP 契约变动）；
-    两条实现的一致性由 ``tests/test_grpc_server.py`` 里的对照用例保证。
+    与 ``app/api/v1/chat.py`` 里的同名私有函数是同一行逻辑。**没有直接 import 是为了不让
+    「传输层」依赖「HTTP 路由层」**（路由层会随 HTTP 契约变动）；两条实现的一致性由
+    ``tests/test_grpc_server.py`` 里的对照用例保证。
     """
     return AgentRunRequest(**{**body.model_dump(), "use_tools": True})
 
@@ -288,9 +268,8 @@ def _as_agent_request(body: ChatRequest) -> AgentRunRequest:
 def _metadata_map(context: grpc.aio.ServicerContext) -> dict[str, str]:
     """把调用元数据收成小写键的字典。
 
-    gRPC 的键在传输中一律小写，但**不同实现的回读大小写不一致**，
-    所以这里统一 ``lower()``：不统一的话 ``x-debug-user-id`` 在某个客户端下
-    会取不到，表现为「本地开发突然 401」。
+    gRPC 的键在传输中一律小写，但**不同实现的回读大小写不一致**，所以这里统一 ``lower()``：
+    不统一的话 ``x-debug-user-id`` 在某个客户端下会取不到，表现为「本地开发突然 401」。
     """
     out: dict[str, str] = {}
     for item in context.invocation_metadata():
@@ -323,11 +302,10 @@ async def _abort_with_app_error(
 ) -> NoReturn:
     """把 ``AppError`` 作为富错误状态回给网关。
 
-    细节：``google.rpc.Status`` 必须放在 ``grpc-status-details-bin`` 尾随元数据里，
-    否则 gRPC 只传得过去一个粗粒度的码，客户端拿不到业务码。
-    ``trailing_metadata`` 同时显式传进 ``abort``（而不是先调
-    ``set_trailing_metadata``）：``abort`` 的参数是**取代**语义，
-    显式传参不依赖「之前设的还在不在」这个实现细节。
+    ``google.rpc.Status`` 必须放在 ``grpc-status-details-bin`` 尾随元数据里，否则 gRPC 只传得
+    过去一个粗粒度的码，客户端拿不到业务码。``trailing_metadata`` 同时显式传进 ``abort``
+    （而不是先调 ``set_trailing_metadata``）：``abort`` 的参数是**取代**语义，显式传参不依赖
+    「之前设的还在不在」这个实现细节。
     """
     status = grpc_errors.to_rpc_status(exc, trace_id)
     trailer = (
@@ -345,23 +323,21 @@ async def _abort_with_app_error(
     )
     await context.abort(
         _grpc_status_code(grpc_errors.grpc_code_for(exc)),
-        # message 放业务码而不是人类文案：网关只读 detail 里的 AiError，
-        # 但 grpcurl 之类只看 status 的工具能一眼看到 ``KB_NOT_FOUND``。
+        # message 放业务码而不是人类文案：网关只读 detail 里的 AiError，但 grpcurl 之类
+        # 只看 status 的工具能一眼看到 ``KB_NOT_FOUND``。
         str(exc.code),
         trailing_metadata=trailer,
     )
-    # grpc.aio 把 ``abort`` 的类型标成返回 ``None``，实际运行时它抛异常终止 handler。
-    # 补一行显式 raise：既让上面的 ``-> NoReturn`` 自洽（否则 mypy 报 Implicit return），
-    # 也把「abort 之后不可达」这件事写给读代码的人。真实 context 下永不执行到这里。
+    # grpc.aio 把 ``abort`` 的类型标成返回 ``None``，实际运行时它抛异常终止 handler。补一行显式
+    # raise：既让上面的 ``-> NoReturn`` 自洽，也把「abort 之后不可达」写给读代码的人。
     raise AssertionError("unreachable: context.abort() 不应返回")
 
 
 def _grpc_status_code(code: int) -> grpc.StatusCode:
     """``google.rpc.Code`` 数值 → ``grpc.StatusCode``。
 
-    经**名字**转，而不是比数值：两边的枚举数值并不一一对应，
-    而名字（``NOT_FOUND`` / ``RESOURCE_EXHAUSTED`` …）是一样的。
-    按数值硬挤会在某个码上静默得到另一个语义的状态。
+    经**名字**转，而不是比数值：两边的枚举数值并不一一对应，而名字（``NOT_FOUND`` /
+    ``RESOURCE_EXHAUSTED`` …）是一样的。按数值硬挤会在某个码上静默得到另一个语义的状态。
     """
     try:
         name = code_pb2.Code.Name(int(code))
@@ -374,14 +350,12 @@ def _grpc_status_code(code: int) -> grpc.StatusCode:
 def _to_chat_request(request: chat_pb2.ChatRequest) -> ChatRequest:
     """proto → Pydantic。
 
-    ``use_rag`` / ``use_memory`` / ``use_tools`` 在 proto 里是**无 presence 的
-    bool**（proto3 语义：不设与 ``false`` 不可区分），所以这里不做
-    「缺省则用 Pydantic 默认值」的猜测 —— ``false`` 就是 ``false``。
-    Go 网关每次都显式下发这三个开关，因此不存在「默认值被静默翻转」。
+    ``use_rag`` / ``use_memory`` / ``use_tools`` 在 proto 里是**无 presence 的 bool**（proto3
+    语义：不设与 ``false`` 不可区分），所以这里不做「缺省则用 Pydantic 默认值」的猜测 ——
+    ``false`` 就是 ``false``。Go 网关每次都显式下发这三个开关。
 
-    ``conversation_id`` / ``model`` 等 ``optional`` 字段用 ``HasField`` 判存在，
-    而不是 ``or None``：``temperature=0``（贪心的合法取值）与「没传」
-    必须区分开。
+    ``conversation_id`` / ``model`` 等 ``optional`` 字段用 ``HasField`` 判存在，而不是
+    ``or None``：``temperature=0``（贪心的合法取值）与「没传」必须区分开。
     """
     kwargs: dict[str, Any] = {
         "query": request.query,
@@ -440,18 +414,16 @@ def _to_proto_response(result: ChatResponse) -> chat_pb2.ChatResponse:
     response.usage.prompt_tokens = usage.prompt_tokens
     response.usage.completion_tokens = usage.completion_tokens
     response.usage.total_tokens = usage.total_tokens
-    # trace_id 走**尾随元数据**而不进响应体：这样成功与失败两条路径
-    # 用的是同一个通道，客户端只有一处实现（否则一条从 body 取、
-    # 一条从 trailer 取，极容易漏一边）。
+    # trace_id 走**尾随元数据**而不进响应体：这样成功与失败两条路径用的是同一个通道，
+    # 客户端只有一处实现。
     return response
 
 
 def _fill_reference(item: chat_pb2.Reference, ref: Reference) -> None:
     """把一条引用写进 proto（非流式与流式**共用**）。
 
-    抽出来是因为它有 ``optional`` 字段的处理：两条路各写一遍的话，
-    某一天加一个 optional 字段就只会加到其中一条上，而症状是
-    「同一份引用在流式下少一个字段」—— 只能靠对比两份实现才能发现。
+    抽出来是因为它有 ``optional`` 字段的处理：两条路各写一遍的话，某一天加一个 optional 字段
+    就只会加到其中一条上，而症状是「同一份引用在流式下少一个字段」。
     """
     item.index = ref.index
     item.chunk_id = ref.chunk_id
@@ -461,8 +433,7 @@ def _fill_reference(item: chat_pb2.Reference, ref: Reference) -> None:
     item.score = ref.score
     item.snippet = ref.snippet
     item.content_sha256 = ref.content_sha256
-    # ``optional`` 不设时为「无」，与 0 / "" 区分（页码 0 不是合法值，
-    # 但 ``score``/``elapsed_ms`` 的 0 是，所以只有真正 optional 的才判空）。
+    # ``optional`` 不设时为「无」，与 0 / "" 区分。
     if ref.page is not None:
         item.page = ref.page
     if ref.heading_path:
@@ -472,13 +443,12 @@ def _fill_reference(item: chat_pb2.Reference, ref: Reference) -> None:
 class _StreamCursor:
     """``ChatStreamEvent`` → ``ChatEvent`` 的有状态映射。
 
-    「有状态」只为一件事：把 ``prepared.degraded_reasons`` 补进 ``meta`` 事件。
-    那一帧的 ``degraded`` 只是个布尔（``bool(degraded_reasons)``），
-    而网关需要原因才能落 ``assistant.degraded_reasons``（docs/04 §9）。
+    「有状态」只为一件事：把 ``prepared.degraded_reasons`` 补进 ``meta`` 事件（那一帧的
+    ``degraded`` 只是个布尔，而网关需要原因才能落 ``assistant.degraded_reasons``）。
 
-    事件名不认识时**不报错**：包成 ``unknown`` 原样透传（docs/04 §4.1
-    要求未知事件 MUST 透传）。这条分支不是「防御性代码」而是契约的一部分 ——
-    以后加了新事件类型，老网关也应当能把帧转发下去，而不是把整条流弄断。
+    事件名不认识时**不报错**：包成 ``unknown`` 原样透传（docs/04 §4.1 要求未知事件 MUST
+    透传）。这条分支不是「防御性代码」而是契约的一部分 —— 以后加了新事件类型，老网关也应当能把
+    帧转发下去，而不是把整条流弄断。
     """
 
     __slots__ = ("_degraded_reasons",)
@@ -491,8 +461,7 @@ class _StreamCursor:
         kind, data = event.event, event.data
 
         if kind == EVENT_PING:
-            # docs/04 §2.3 的映射表：``ping`` 一栏是「*不映射*」。
-            # gRPC 有自己的 keepalive，把它发下去只会让客户端收到两路心跳。
+            # docs/04 §2.3 的映射表：``ping`` 一栏是「*不映射*」。gRPC 有自己的 keepalive。
             return None
 
         if kind == EVENT_META:
@@ -563,9 +532,8 @@ class _StreamCursor:
                 )
             )
 
-        # 未知事件：原样透传。``data_json`` 用 bytes 而不是 str，
-        # 避免在 protobuf 层做一次 UTF-8 校验 —— 网关那边是**原样转发**，
-        # 它不需要认识这段 JSON。
+        # 未知事件：原样透传。``data_json`` 用 bytes 而不是 str，避免在 protobuf 层做一次
+        # UTF-8 校验 —— 网关那边是**原样转发**，它不需要认识这段 JSON。
         try:
             raw = json.dumps(_jsonable(data), ensure_ascii=False).encode("utf-8")
         except (TypeError, ValueError):  # pragma: no cover - 只有负载不可序列化时
@@ -596,9 +564,8 @@ async def serve(
 ) -> int:
     """在应用 lifespan 内启动 gRPC 服务并阻塞到终止。
 
-    返回实际绑定的端口（``options.port == 0`` 时由系统分配，测试用得上）。
-    ``ready`` 会在端口绑定之后被 set，供外部（测试/进程管理）等待就绪，
-    而不是靠 sleep 猜。
+    返回实际绑定的端口（``options.port == 0`` 时由系统分配，测试用得上）。``ready`` 会在端口
+    绑定之后被 set，供外部（测试/进程管理）等待就绪，而不是靠 sleep 猜。
     """
     server = build_grpc_server(application, options)
     port = server.add_insecure_port(options.address)
@@ -627,14 +594,12 @@ async def serve(
 def _install_signal_handlers(loop: asyncio.AbstractEventLoop, server: grpc.aio.Server) -> None:
     """把 SIGINT/SIGTERM 接到优雅停机。
 
-    Windows 的事件循环不支持 ``add_signal_handler``，所以这里**必须**容错：
-    真让它在 Windows 上抛 ``NotImplementedError``，本地开发就没法用这个入口。
-    退化成「由 KeyboardInterrupt 冒泡到 ``asyncio.run``」同样能停，
-    只是少了 SIGTERM 支持。
+    Windows 的事件循环不支持 ``add_signal_handler``，所以这里**必须**容错：真让它在 Windows 上
+    抛 ``NotImplementedError``，本地开发就没法用这个入口。退化成「由 KeyboardInterrupt 冒泡到
+    ``asyncio.run``」同样能停，只是少了 SIGTERM 支持。
     """
-    # 停机任务必须留住引用：``ensure_future`` 的返回值没人引用时，
-    # 事件循环只持弱引用，任务可能在 ``server.stop()`` 执行完之前被 GC ——
-    # 表现为「收到信号但服务没停」。
+    # 停机任务必须留住引用：``ensure_future`` 的返回值没人引用时，事件循环只持弱引用，
+    # 任务可能在 ``server.stop()`` 执行完之前被 GC —— 表现为「收到信号但服务没停」。
     pending: set[asyncio.Task[None]] = set()
 
     def _on_signal() -> None:

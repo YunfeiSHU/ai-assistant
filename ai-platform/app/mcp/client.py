@@ -1,20 +1,18 @@
 """单个 MCP Server 的连接管理（``REQ-MCP-002`` / ``REQ-MCP-004``，契约见 ``docs/05`` §3）。
 
-一个 :class:`McpClient` 负责一个 Server 的**全生命周期**：建连 → 列表 → 调用 →
-懒重连 → 关闭。管理器只负责「按名字找客户端」和「统一注册工具」，不碰连接细节。
+一个 :class:`McpClient` 负责一个 Server 的全生命周期：建连 → 列表 → 调用 → 懒重连 → 关闭。
+管理器只负责「按名字找客户端」和「统一注册工具」，不碰连接细节。
 
 三处刻意的设计：
 
 1. **连接是「一次性上下文」，不是「长连接对象」**。用 :class:`~contextlib.AsyncExitStack`
-   持有 ``open_session`` 的上下文，关闭时必须走 ``aclose()`` —— 否则 stdio 子进程会成为
-   僵尸（``docs/05`` §3 明确要求显式关停，否则 ``uvicorn --reload`` 会不断堆积）。
-2. **握手超时交给 transport，外层只是兜底**。``AsyncExitStack.enter_async_context``
-   在 ``__aenter__`` 返回后才登记上下文管理器：如果在 ``__aenter__`` 中途被取消，
-   半建好的子进程不会被回收。所以主超时放在 transport 内部（包住 ``initialize()``），
-   外层超时只在极端情况下生效并尽力 ``aclose()``。
-3. **失败要落到状态上**。``docs/05`` §3.1 的四种状态是**对外可见**的
-   （``/mcp/servers``、``/health/ready``），所以每一次连接失败都要更新
-   ``state`` + ``last_error``，不能只写日志。
+   持有 ``open_session`` 的上下文，关闭时必须走 ``aclose()``，否则 stdio 子进程会成为僵尸
+   （``uvicorn --reload`` 下会不断堆积）。
+2. **握手超时交给 transport，外层只是兜底**：``AsyncExitStack.enter_async_context`` 在
+   ``__aenter__`` 返回后才登记上下文管理器，所以中途被取消时半建好的子进程不会被回收。
+   主超时放在 transport 内部（包住 ``initialize()``），外层超时只在极端情况下生效。
+3. **失败要落到状态上**：``docs/05`` §3.1 的四种状态是对外可见的（``/mcp/servers``、
+   ``/health/ready``），所以每次连接失败都要更新 ``state`` + ``last_error``，不能只写日志。
 """
 
 from __future__ import annotations
@@ -233,10 +231,9 @@ class McpClient:
     def mark_unavailable(self, reason: str) -> None:
         """由管理器在外部中断（启动超时 / 关机）时强制标记状态。
 
-        存在的理由：``connect()`` 被外层超时取消后，客户端自己**没有机会**
-        知道自己已经不在连接流程里了（取消点可能在任意 await 上），
-        状态会永远停在 ``connecting`` —— 而 ``connecting`` 对 ``/health/ready``
-        是「未就绪」，会让健康检查永久 503。
+        存在的理由：``connect()`` 被外层超时取消后，客户端自己**没有机会**知道自己已经不在
+        连接流程里了（取消点可能在任意 await 上），状态会永远停在 ``connecting`` —— 而它对
+        ``/health/ready`` 是「未就绪」，会让健康检查永久 503。
         """
         if self.config.enabled and self._state != "unavailable":
             self._set_state("unavailable", error=reason)
@@ -291,10 +288,9 @@ class McpClient:
                         self._set_state("unavailable", error="circuit_open")
                 raise
             # 注意：这里**不能**写成 ``try/except/else`` 里的 ``return``。
-            # ``else`` 子句只在 try 块「自然落到末尾」时才执行，而 ``return`` 是
-            # 直接开始栈展开 —— 也就是说 ``try: return await ...`` 会让 ``else``
-            # **永远不执行**。后果是熔断器只记得住失败、记不住成功：一旦打开，
-            # 半开试探成功后永远回不到 closed，该 Server 就永久不可用了。
+            # ``else`` 子句只在 try 块「自然落到末尾」时才执行，而 ``return`` 是直接开始栈展开
+            # —— 也就是说 ``try: return await ...`` 会让 ``else`` **永远不执行**。后果是熔断器
+            # 只记得住失败、记不住成功：一旦打开，半开试探成功后永远回不到 closed。
             if self._breaker is not None:
                 self._breaker.record_success()
             return result

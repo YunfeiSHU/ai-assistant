@@ -1,10 +1,8 @@
-"""全局异常处理器：把任何失败都收敛为统一错误信封。
+"""全局异常处理器：把任何失败都收敛为统一错误信封（契约见 ``docs/02`` §3.3 / §4）。
 
-契约见 ``docs/02-接口规范与错误码.md`` §3.3 / §4。三条纪律：
-
-1. **不泄漏实现细节** —— 500 只给通用文案，堆栈只进日志（``REQ-NFR-009``）；
-2. **参数校验失败也是 400** —— FastAPI 默认的 422 与我们的契约冲突，这里统一改写；
-3. **可重试性显式表达** —— ``retryable`` / ``retry_after`` 必须如实填写，客户端据此退避。
+三条纪律：不泄漏实现细节（500 只给通用文案，堆栈只进日志，``REQ-NFR-009``）；
+参数校验失败也返回 400（FastAPI 默认的 422 与契约冲突，这里统一改写）；
+``retryable`` / ``retry_after`` 必须如实填写，客户端据此退避。
 """
 
 from __future__ import annotations
@@ -110,10 +108,9 @@ async def handle_unexpected(_: Request, exc: Exception) -> JSONResponse:
 def register_exception_handlers(app: FastAPI) -> None:
     """注册全部异常处理器。
 
-    .. note::
-       ``Exception`` 的处理器由 Starlette 的 ``ServerErrorMiddleware`` 承接，
-       因此即使是「处理器自身抛异常」也有兜底；但它**不会**捕获
-       ``BaseException``（如 ``CancelledError``），这是刻意的。
+    ``Exception`` 的处理器由 Starlette 的 ``ServerErrorMiddleware`` 承接，因此即使是
+    处理器自身抛异常也有兜底；但它不会捕获 ``BaseException``（如 ``CancelledError``），
+    这是刻意的。
     """
     app.add_exception_handler(AppError, handle_app_error)
     app.add_exception_handler(RequestValidationError, handle_validation_error)

@@ -1,12 +1,11 @@
 """长期记忆与摘要的请求 / 响应契约（``docs/07-Memory.md`` §6）。
 
-两处刻意与「通用做法」不同：
+两处刻意与通用做法不同：
 
-1. **``DELETE /memories`` 必须显式带 ``all=true``**（``AC-MEM-10``）。缺参数一律
-   ``400``：把「清空全部记忆」做成无参可调用，等于让一次误点或一次客户端重试
-   直接抹掉用户数据。
-2. **``GET /context`` 返回 ``budget``**。这个字段对用户无用，但它是唯一能回答
-   「模型为什么没看到某条信息」的东西 —— 排障时不必去翻服务端日志。
+1. ``DELETE /memories`` 必须显式带 ``all=true``（``AC-MEM-10``），缺参一律 400：
+   做成无参可调用等于让一次误点或重试直接抹掉用户数据。
+2. ``GET /context`` 返回 ``budget``：对用户无用，但它是唯一能回答「模型为什么没看到
+   某条信息」的东西，排障时不必翻服务端日志。
 """
 
 from __future__ import annotations
@@ -46,8 +45,8 @@ class MemoryList(StrictModel):
 class MemoryCreate(StrictModel):
     """``POST /memories`` 请求体。
 
-    长度上限这里只做**宽松**兜底（挡住明显异常的巨型请求体），真正的 ``5..500``
-    由服务层按配置校验 —— 否则「配置改了但 Schema 没改」会让边界在两个地方不一致。
+    长度上限这里只做宽松兜底（挡住明显异常的巨型请求体），真正的 ``5..500`` 由服务层
+    按配置校验 —— 否则「配置改了但 Schema 没改」会让边界在两处不一致。
     """
 
     content: str = Field(min_length=1, max_length=2000)
@@ -68,9 +67,8 @@ class MemoryCreate(StrictModel):
 class MemoryUpdate(StrictModel):
     """``PATCH /memories/{mem_id}`` 请求体（字段全可选，只改传了的）。
 
-    ``expires_at`` 的「不改」与「清空」用手写法区分：路由层检查
-    ``"expires_at" in body.model_fields_set``。``Optional`` 字段的默认 ``None``
-    天然无法区分这两种意图，用一个额外的 ``clear_expiry`` 开关反而更容易用错。
+    ``expires_at`` 的「不改」与「清空」靠路由层检查 ``"expires_at" in
+    body.model_fields_set`` 区分：``Optional`` 的默认 ``None`` 天然无法区分这两种意图。
     """
 
     content: str | None = Field(default=None, min_length=1, max_length=2000)

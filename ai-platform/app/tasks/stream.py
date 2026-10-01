@@ -1,19 +1,15 @@
 """任务进度流（``GET /tasks/{id}/events`` 的核心，``docs/08`` §4.5）。
 
-**为什么把它从路由里拆出来**：这段逻辑有三处容易写错、而且错了不一定报错的地方
-（订阅与快照的先后、重复帧去重、超时不能取消上游订阅），写成纯异步生成器就能
-逐条单测，而不必去驱动一个真实的 HTTP 流。
+从路由里拆出来是为了可测：这段逻辑有三处容易写错、错了还不一定报错（订阅与快照的先后、
+重复帧去重、超时不能取消上游订阅），写成纯异步生成器就能逐条单测。
 
-三处约定：
-
-1. **先订阅、后读快照**。反过来的话，「读快照」与「开始订阅」之间发布的事件会
-   永久丢失 —— 表现是进度卡在某个阶段不动，而任务其实早已成功。
-2. **快照是权威，增量是尽力而为**。总线可能丢帧（慢消费者被丢最旧帧），
-   所以首帧一定来自任务表；客户端断线重连也是同一套语义（重连即重读快照）。
-3. **超时不能 ``wait_for(anext(...))``**。``wait_for`` 超时会**取消**那个
-   ``__anext__``，取消信号被抛进异步生成器内部，生成器随即终结，之后永远拿不
-   到后续事件 —— 与 ``app/core/sse.py::frame_stream`` 里踩过的是同一个坑。
-   这里用「竞速但不取消生产者」的写法，只有在**准备结束流**时才取消。
+1. **先订阅、后读快照**。反过来的话，两者之间发布的事件会永久丢失 —— 表现是进度卡在
+   某个阶段不动，而任务其实早已成功。
+2. **快照是权威，增量是尽力而为**。总线可能丢帧（慢消费者被丢最旧帧），首帧一定来自任务表；
+   客户端断线重连也是同一套语义（重连即重读快照）。
+3. **超时不能 ``wait_for(anext(...))``**。``wait_for`` 超时会取消那个 ``__anext__``，取消信号
+   抛进生成器内部使其终结，之后永远拿不到后续事件 —— 与 ``app/core/sse.py::frame_stream``
+   是同一个坑。这里用「竞速但不取消生产者」的写法，只在准备结束流时才取消。
 """
 
 from __future__ import annotations
@@ -44,11 +40,10 @@ DEFAULT_MAX_SECONDS = 1860.0
 def _snapshot_events(task: Task) -> list[TaskEvent]:
     """把任务快照转成首帧序列。
 
-    * 终态（``SUCCEEDED`` / ``CANCELED``）→ 只发 ``done``：``docs/08`` §4.5 要求
-      「订阅前已是终态 → 立即推送 ``done`` 并关闭」；
-    * ``FAILED`` → 只发 ``error``：**不关闭连接**，因为它可能自动重试回 ``QUEUED``
-      （``docs/08`` §2 的 ``FAILED --> QUEUED``），关掉会让客户端错过后续进度；
-    * 其余状态 → 发 ``progress``，客户端据此画出进度条的第一格。
+    终态（``SUCCEEDED`` / ``CANCELED``）只发 ``done``（``docs/08`` §4.5 要求「订阅前已是
+    终态 → 立即推 ``done`` 并关闭」）；``FAILED`` 只发 ``error`` 但**不关连接**，因为它可能
+    自动重试回 ``QUEUED``（``docs/08`` §2 的 ``FAILED --> QUEUED``），关掉会让客户端错过后续进度；
+    其余状态发 ``progress``，客户端据此画出进度条的第一格。
     """
     if task.status in CLOSING_STATUSES:
         return [TaskEvent.done(status=str(task.status), finished_at=task.finished_at)]
@@ -89,10 +84,9 @@ async def stream_task_events(
     deadline = clock() + max(0.0, max_seconds)
     primed: asyncio.Future[TaskEvent] | None = None
     try:
-        # **必须预热一次**：异步生成器的函数体是在第一次 ``__anext__`` 时才执行的，
-        # 「建出迭代器对象」并不等于「订阅已生效」。不预热的话，下面 ``tasks.get``
-        # 那一次真实往返期间发布的事件会直接掉在地上 —— 而那个窗口正是
-        # 「先订阅、后读快照」这条规则想消灭的东西（Redis 实现里
+        # **必须预热一次**：异步生成器的函数体在第一次 ``__anext__`` 时才执行，「建出迭代器
+        # 对象」不等于「订阅已生效」。不预热的话，下面 ``tasks.get`` 那次真实往返期间发布的事件
+        # 会直接掉在地上 —— 而那个窗口正是「先订阅、后读快照」想消灭的东西（Redis 实现的
         # ``SUBSCRIBE`` 本身也要一次往返，预热让它与快照读取重叠）。
         primed = asyncio.ensure_future(anext(subscription))
         await asyncio.sleep(0)
@@ -102,13 +96,10 @@ async def stream_task_events(
         if task.status in CLOSING_STATUSES:
             return
 
-        # 订阅与快照之间可能已经推过同一帧（进度是单调的），首帧之后做一次去重。
-        #
-        # 去重键**必须带上** ``chunks_done``：embedding 阶段的 ``progress`` 会在 95
-        # 上饱和，之后每批只涨 ``chunks_done``。只比 ``(stage, progress)`` 会把饱和
-        # 之后的增量帧全部当成重复丢掉 —— 客户端看到进度条停住不动，而任务其实在推进。
-        # 两侧都归一成 ``None``（而不是 0）才能对称：事件的 ``chunks_done``
-        # 在计数为 0 时是**不下发**的，拿 ``None`` 与 ``0`` 比永远不会相等。
+        # 去重键**必须带上** ``chunks_done``：embedding 阶段的 ``progress`` 会在 95 上饱和，
+        # 之后每批只涨 ``chunks_done``。只比 ``(stage, progress)`` 会把饱和之后的增量帧全部
+        # 当成重复丢掉 —— 客户端看到进度条停住不动，而任务其实在推进。两侧都归一成 ``None``
+        # （而不是 0）才能对称：事件的 ``chunks_done`` 在计数为 0 时是不下发的。
         last: tuple[Any, Any, Any] | None = (task.stage, task.progress, task.chunks_done or None)
         while True:
             event = await _next_event(subscription, deadline, clock, pending=primed)
@@ -154,13 +145,12 @@ async def _next_event(
 ) -> TaskEvent | None:
     """取下一个事件；超过 ``deadline`` 返回 ``None``。
 
-    **竞速但不取消生产者**：先算好剩余时间，用一个 ``sleep`` 与 ``anext`` 竞速。
-    只有超时这条路径才会取消 ``anext`` —— 而那条路径上我们马上要结束整个流，
-    所以「生成器被取消」是期望行为（见模块 docstring）。
+    **竞速但不取消生产者**：先算好剩余时间，用一个 ``sleep`` 与 ``anext`` 竞速。只有超时这条
+    路径才取消 ``anext`` —— 而那条路径上我们马上要结束整个流，所以「生成器被取消」是期望行为。
 
     Args:
-        pending: 已发出的那次 ``__anext__``（见 ``stream_task_events`` 的预热）。
-            给它时**不做截止时间判定**：事件已经拿到手了，丢掉它才是真的丢数据。
+        pending: 已发出的那次 ``__anext__``（见 ``stream_task_events`` 的预热）。给了它时
+            **不做截止时间判定**：事件已经拿到手了，丢掉它才是真的丢数据。
     """
     if pending is None:
         remaining = deadline - clock()
@@ -181,9 +171,9 @@ async def _next_event(
             # 总线自己结束了（关闭连接等）：当作「没有更多事件」
             return None
     pending.cancel()
-    # **必须等到它真的结束**：``cancel()`` 只是投递取消，此刻生成器仍处于
-    # 「运行中」，紧接着的 ``aclose()`` 会抛 ``RuntimeError: aclose(): asynchronous
-    # generator is already running`` —— 超时这条路径同样会走到 ``finally``。
+    # **必须等到它真的结束**：``cancel()`` 只是投递取消，此刻生成器仍处于「运行中」，
+    # 紧接着的 ``aclose()`` 会抛 ``RuntimeError: aclose(): asynchronous generator is
+    # already running`` —— 超时这条路径同样会走到 ``finally``。
     with contextlib.suppress(asyncio.CancelledError, StopAsyncIteration):
         await pending
     return None

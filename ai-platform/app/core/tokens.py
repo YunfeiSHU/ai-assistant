@@ -1,9 +1,8 @@
 """Token 计数与按 token 截断。
 
 docs/10 §7.2 要求「Token 计数 MUST 使用与目标模型一致的 tokenizer，不可用字符数粗估」。
-实际可达的最优选择是 ``tiktoken``（DeepSeek 未公开官方 tokenizer 的 Python 实现），
-它比字符数估计准确得多；若 tiktoken 不可用或模型编码缺失，退化为**按字符类别加权**
-的启发式（中文 1 字 ≈ 1 token，西文 ≈ 4 字符 / token），并明确记录退化来源。
+实际可达的最优选择是 ``tiktoken``（DeepSeek 未公开官方 tokenizer 的 Python 实现）；
+不可用或模型编码缺失时退化为按字符类别加权的启发式（中文 1 字 ≈ 1 token，西文 ≈ 4 字符 / token）。
 
 .. warning::
    估算偏差会直接影响上下文预算裁剪的准确性。生产环境请确保 tiktoken 可用。

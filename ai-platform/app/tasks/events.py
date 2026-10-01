@@ -1,21 +1,16 @@
 """任务进度事件总线（``docs/08`` §4.5 的 SSE 事件来源）。
 
-**为什么需要一层总线，而不是「SSE 路由直接轮询任务表」**：
-``docs/08`` §5.4 要求 Worker 是**独立进程**。进程内的事件队列在跨进程时形同虚设
-（API 进程永远收不到 Worker 发的事件），于是 SSE 会退化成「连上了但一直不推
-进度」——比不提供更糟。所以这里定义一个端口，两种实现：
+要一层总线而不是「SSE 路由直接轮询任务表」，是因为 ``docs/08`` §5.4 要求 Worker 是**独立进程**：
+进程内队列在跨进程时形同虚设（API 进程永远收不到 Worker 发的事件），SSE 会退化成「连上了但一直
+不推进度」，比不提供更糟。所以这里定义一个端口，两种实现：:class:`InMemoryTaskEventBus`（进程内
+广播，``inline`` 执行器 / 测试）与 :class:`RedisTaskEventBus`（Redis pub/sub，跨进程）。
 
-* :class:`InMemoryTaskEventBus` —— 进程内广播（``inline`` 执行器 / 测试）；
-* :class:`RedisTaskEventBus` —— Redis pub/sub（``INFRA_BACKEND=real``，跨进程）。
+**丢事件比阻塞重要**：慢消费者（网络卡住的浏览器）MUST NOT 阻塞 Worker 上报进度，否则一个卡住的
+SSE 连接会把整条入库流水线拖住。所以订阅端队列有上限，满了丢**最旧**的进度帧 —— 进度单调，
+丢中间态不影响最终一致。
 
-**丢事件比阻塞重要**：慢消费者（网络卡住的浏览器）MUST NOT 阻塞 Worker 上报
-进度，否则一个卡住的 SSE 连接会把整条入库流水线拖住。所以订阅端队列有上限，
-满了丢**最旧**的进度帧 —— 进度是单调的，丢中间态不影响最终一致（客户端只要
-看到最新值就能画出进度条）。
-
-**事件不可信也就不重放**：总线只做「尽力而为」的增量推送；断线重连的正确姿势是
-先 ``GET /tasks/{id}`` 拿权威快照，再订阅增量。SSE 路由正是这么写的（见
-``app/api/v1/tasks.py``）：**先订阅、后读快照**，两者之间无缝隙。
+**事件不可信也就不重放**：总线只做尽力而为的增量推送；断线重连的正确姿势是先
+``GET /tasks/{id}`` 拿权威快照再订阅增量（``app/api/v1/tasks.py`` 正是这么写的）。
 """
 
 from __future__ import annotations
@@ -49,9 +44,9 @@ SUBSCRIBER_QUEUE_SIZE = 64
 class TaskEvent:
     """一条任务事件。
 
-    字段名刻意是 ``event`` / ``data``：``app/core/sse.py::frame_stream`` 按鸭子类型
-    取值，于是任务 SSE 与对话 SSE 能复用**同一段**帧构造与心跳逻辑，
-    不必为任务再写一份（写两份必然出现「一个有心跳、一个没有」这类不一致）。
+    字段名刻意是 ``event`` / ``data``：``app/core/sse.py::frame_stream`` 按鸭子类型取值，
+    于是任务 SSE 与对话 SSE 能复用同一段帧构造与心跳逻辑（写两份必然出现「一个有心跳、
+    一个没有」这类不一致）。
     """
 
     event: str
@@ -93,9 +88,9 @@ class TaskEvent:
     ) -> TaskEvent:
         """``progress``：阶段与进度（``docs/10`` UP-02 起多了两个切片计数）。
 
-        新字段是**追加**的：旧的消费者按 ``{stage, progress}`` 取值的代码不受影响，
-        而需要 ETA 的客户端能从 ``chunks_done`` / ``chunks_total`` 算出来。
-        计数为 ``None``（非入库类任务）时不下发，避免出现「0/0」这种看上去像卡住的帧。
+        新字段是**追加**的：只按 ``{stage, progress}`` 取值的旧消费者不受影响，而需要 ETA 的
+        客户端能从 ``chunks_done`` / ``chunks_total`` 算出来。计数为 ``None``（非入库类任务）
+        时不下发，避免出现「0/0」这种看上去像卡住的帧。
         """
         data: dict[str, Any] = {"stage": stage, "progress": int(progress)}
         if chunks_total is not None:
@@ -126,10 +121,9 @@ class TaskEventBus(Protocol):
     def subscribe(self, task_id: str) -> AsyncGenerator[TaskEvent, None]:
         """订阅某任务的事件流。
 
-        刻意声明为**同步函数返回异步迭代器**（而不是 ``async def`` 直接返回
-        ``AsyncIterator``）：这样它就是一个原生异步生成器，
-        ``frame_stream`` 里的 ``aclose()`` 能真正触达 ``finally`` 做退订，
-        而不是留下一个永远订阅着的连接。
+        刻意声明为**同步函数返回异步迭代器**（而不是 ``async def`` 直接返回 ``AsyncIterator``）：
+        这样它就是一个原生异步生成器，``frame_stream`` 里的 ``aclose()`` 能真正触达 ``finally``
+        做退订，而不是留下一个永远订阅着的连接。
         """
         ...
 
@@ -188,9 +182,9 @@ class InMemoryTaskEventBus:
 class RedisTaskEventBus:
     """Redis pub/sub 事件总线（``INFRA_BACKEND=real``，跨进程）。
 
-    **pub/sub 而不是 Stream/List**：进度事件是「过期即无用」的增量，
-    没有重放需求（重连请先读任务快照）。用 Stream 反而要处理消费组与
-    ``XACK``/``XTRIM`` 一整串生命周期，收益为零。
+    用 pub/sub 而不是 Stream/List：进度事件是「过期即无用」的增量，没有重放需求
+    （重连请先读任务快照）。用 Stream 反而要处理消费组与 ``XACK``/``XTRIM``
+    一整串生命周期，收益为零。
     """
 
     def __init__(
@@ -285,9 +279,9 @@ class RedisTaskEventBus:
 def build_task_event_bus(settings: Settings) -> TaskEventBus:
     """按 ``INFRA_BACKEND`` 选择事件总线。
 
-    ``real`` 下若 Redis 依赖缺失/连不上，**不让应用起不来**：退化成进程内总线并
-    告警（与 ``app/memory`` 对 Redis 的口径一致）。代价是跨进程推事件失效，
-    表现是 SSE 只推首帧 —— 这比「整个服务不可用」好得多，而且日志里能看见原因。
+    ``real`` 下若 Redis 依赖缺失/连不上，**不让应用起不来**：退化成进程内总线并告警
+    （与 ``app/memory`` 对 Redis 的口径一致）。代价是跨进程推事件失效、SSE 只推首帧，
+    这比整个服务不可用好，而且日志里能看见原因。
     """
     if not settings.uses_shared_task_store:
         return InMemoryTaskEventBus()
@@ -305,9 +299,9 @@ Publisher = Callable[[str, TaskEvent], Awaitable[None]]
 def make_publisher(bus: TaskEventBus | None) -> Publisher | None:
     """把总线包成「永不抛异常」的发布函数。
 
-    ``TaskService`` 的状态变更路径上不允许出现「推事件失败导致状态没落库」，
-    所以这里统一吞异常并记日志（`docs/10` §3.1：**写路径宁可失败也不要静默丢弃**，
-    但「推事件」不是写路径的一部分 —— 权威状态在任务表里）。
+    ``TaskService`` 的状态变更路径上不允许出现「推事件失败导致状态没落库」，所以这里统一
+    吞异常并记日志（``docs/10`` §3.1：写路径宁可失败也不要静默丢弃，但「推事件」不是写路径的
+    一部分 —— 权威状态在任务表里）。
     """
     if bus is None:
         return None

@@ -1,15 +1,14 @@
 """会话上下文的读写（``REQ-MEM-001``，存储结构见 ``docs/07`` §2）。
 
-M2 阶段实现的是**进程内**版本（文档里 M2 出口标准即「最短上下文（内存态）」）；
-Redis 版本的结构与 Key 约定完全一致（``ctx:{conversation_id}`` 列表 + ``LTRIM`` +
-``lock:ctx:{id}``），M5 接入时替换实现即可，上层代码不动。
+M2 实现的是进程内版本；Redis 版本的结构与 Key 约定完全一致
+（``ctx:{conversation_id}`` 列表 + ``LTRIM`` + ``lock:ctx:{id}``）。
 
 两个容易做错、这里显式处理的点：
 
-* **归属校验**：``conversation_id`` 属于别人时返回 ``404 CONVERSATION_NOT_FOUND``，
-  而不是 403 —— 403 等于告诉调用方「这个 ID 是存在的」。
-* **同会话写串行化**：用会话级锁串行化追加，否则并发两轮对话的
-  user/assistant 消息会交错（Redis 版靠分布式锁解决同一个问题）。
+* 归属校验：``conversation_id`` 属于别人时返回 ``404 CONVERSATION_NOT_FOUND`` 而不是
+  403 —— 403 等于告诉调用方「这个 ID 是存在的」。
+* 同会话写串行化：用会话级锁串行化追加，否则并发两轮对话的 user/assistant 消息会交错
+  （Redis 版靠分布式锁解决同一个问题）。
 """
 
 from __future__ import annotations
@@ -82,9 +81,8 @@ class ConversationStore(Protocol):
     async def all_messages(self, conversation_id: str, user_id: str) -> list[StoredMessage]:
         """取全部原文（摘要生成与 ``GET /context`` 需要看到完整历史）。
 
-        刻意与 :meth:`recent` 分开：``recent`` 是「给模型看的」（已被摘要覆盖的部分
-        会被过滤掉），而摘要器必须看到**包含已摘要部分在内**的全量，否则增量合并
-        上一版摘要这件事就无从谈起。
+        刻意与 :meth:`recent` 分开：``recent`` 是「给模型看的」（已被摘要覆盖的部分会被
+        过滤掉），而摘要器必须看到包含已摘要部分在内的全量，否则增量合并无从谈起。
         """
         ...
 
@@ -178,11 +176,10 @@ class InMemoryConversationStore:
 class UnavailableConversationStore:
     """Redis 不可用时的占位实现（``INFRA_BACKEND=real`` 且驱动缺失/连不上）。
 
-    与 :class:`~app.infrastructure.storage.unavailable.UnavailableKnowledgeBaseRepo` 同一个取舍：
-    **在调用点报 503，而不是在构造期抛异常**。prod 强制 ``real``，构造期抛会让
-    「对话 / 鉴权 / 健康检查」一起不可用；占位实现把故障限制在真正需要 Redis 的
-    调用上，且 :class:`~app.application.chat.ChatService` 会把读取失败降级为
-    ``memory_unavailable``（对话照常进行，只是没带上下文）。
+    与 :class:`~app.infrastructure.storage.unavailable.UnavailableKnowledgeBaseRepo` 同一个
+    取舍：在调用点报 503，而不是在构造期抛异常。prod 强制 ``real``，构造期抛会让
+    「对话 / 鉴权 / 健康检查」一起不可用；占位实现把故障限制在真正需要 Redis 的调用上，
+    且 ChatService 会把读取失败降级为 ``memory_unavailable``。
     """
 
     #: 记入日志与 ``details`` 的原因（排障时一眼看出是「没接」而不是「挂了」）

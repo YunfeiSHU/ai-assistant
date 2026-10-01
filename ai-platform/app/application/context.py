@@ -1,13 +1,11 @@
 """上下文装配与 token 预算裁剪（``REQ-CHAT-004`` / ``REQ-CHAT-005`` / ``REQ-MEM-002``）。
 
-契约有两处是**逐字规定**的，不能自由发挥：
+两处契约是逐字规定的：片段顺序固定 ``system → memory → summary → history → rag → query``；
+超预算时裁剪顺序固定 ``历史 → RAG → 记忆 → 摘要`` 且不允许随机（随机裁剪会让
+「同一个请求两次结果不同」根本无法复现）。
 
-1. 片段顺序固定为 ``system → memory → summary → history → rag → query``；
-2. 超预算时的裁剪顺序固定为 ``历史 → RAG → 记忆 → 摘要``，且**不允许随机**
-   （随机裁剪会让「同一个请求两次结果不同」这种问题根本无法复现）。
-
-因此这里不用「尽量塞满」的贪心，而是：**先按每个片段的独立配额裁剪，再按固定顺序
-逐项丢**。裁剪结果记进日志，排障时能直接看到到底丢了什么。
+因此不用「尽量塞满」的贪心，而是先按每个片段的独立配额裁剪、再按固定顺序逐项丢。
+裁剪结果记进日志，排障时能直接看到丢了什么。
 """
 
 from __future__ import annotations
@@ -55,9 +53,8 @@ RAG_FOOTER = "请优先依据以上资料作答，并在引用处标注对应序
 class MemoryItem:
     """一条长期记忆（检索结果形态）。
 
-    ``content`` / ``score`` 供上下文装配使用；``mem_id`` / ``kind`` 是
-    ``memory_search`` 工具的对外字段（``docs/04`` §3 要求返回
-    ``{mem_id, content, kind, score}``），装配时忽略。
+    ``content`` / ``score`` 供上下文装配使用；``mem_id`` / ``kind`` 是 ``memory_search``
+    工具的对外字段（``docs/04`` §3 要求返回 ``{mem_id, content, kind, score}``），装配时忽略。
     """
 
     content: str

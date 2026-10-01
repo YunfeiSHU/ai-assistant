@@ -1,6 +1,4 @@
-// Package server 装配 HTTP 引擎与生命周期（代码生成规范.md §三.5）。
-//
-// 三块职责：
+// Package server 装配 HTTP 引擎与生命周期（代码生成规范.md §三.5）：
 //
 //	http.go       路由装配（本文件）
 //	server.go     Server 包装与优雅退出
@@ -39,7 +37,7 @@ type Deps struct {
 	// Upload 转发文档上传（流式，不经内存；M5）。
 	Upload *service.UploadHandler
 
-	// RateLimit 是限流服务（M5）。为 nil 时不挂任何限流中间件 ——
+	// RateLimit 是限流服务（M5）。为 nil 时不挂限流中间件 ——
 	// 但降级与打点仍在 biz/data 内部，因而不存在「半套限流」。
 	RateLimit *biz.RateLimitService
 	// Metrics 是 Prometheus 指标集（M6）。为 nil 时指标中间件退化为 no-op。
@@ -49,17 +47,15 @@ type Deps struct {
 
 	Conversations *service.ConversationHandler
 	Messages      *service.MessageHandler
-	// Proxy 负责对 ai-platform 的透传（KB / 文档 / 检索 / 任务 / 上下文与摘要）。
-	// 为 nil 时不注册这些路由（保持「依赖缺失就不挂路由」的一贯做法）。
+	// Proxy 负责对 ai-platform 的透传（KB / 文档 / 检索 / 任务 / 上下文与摘要）；
+	// 为 nil 时不注册这些路由（「依赖缺失就不挂路由」）。
 	Proxy *service.ProxyHandler
 
 	// IdemStore 是幂等记录仓储；为 nil 时两个写接口退化为「不做幂等」。
 	IdemStore biz.IdempotencyStore
 
 	// Extra 是后续阶段（编排、配额…）注册路由的钩子。
-	//
-	// 参数依次为：带 /api/v1 前缀的公开组、需要鉴权的组、以及关闭 CORS
-	// 与 BodyLimit 的「裸」组（SSE 与上传需要）。
+	// 参数依次为：带 /api/v1 前缀的公开组、需鉴权的组、以及关闭 CORS 与 BodyLimit 的「裸」组。
 	Extra func(public, authed, raw *gin.RouterGroup)
 }
 
@@ -72,11 +68,11 @@ func NewEngine(d Deps) *gin.Engine {
 	}
 
 	// 用 gin.New 而不是 gin.Default：后者的 Logger 会往 stdout 打非结构化文本，
-	// 与 slog 的 JSON 流混在一起（采集侧会解析失败）。
+	// 与 slog 的 JSON 流混在一起。
 	engine := gin.New()
 
-	// 关闭尾斜杠重定向：契约里的路径是精确的（`/conversations` vs `/conversations/`），
-	// 自动 301 会让客户端的 POST 变成 GET（重定向不保留方法），症状极难排查。
+	// 关闭尾斜杠重定向：契约里的路径是精确的，自动 301 会让客户端的
+	// POST 变成 GET（重定向不保留方法），症状极难排查。
 	engine.RedirectTrailingSlash = false
 	engine.RedirectFixedPath = false
 	// 不启用 405：契约里没有 405 错误码，统一归到 404 更一致。
@@ -85,10 +81,9 @@ func NewEngine(d Deps) *gin.Engine {
 	engine.Use(middleware.Recovery(d.Log))
 	engine.Use(middleware.WithRequestID())
 	engine.Use(middleware.WithTrace())
-	// OTel span 必须紧跟在 WithTrace 之后：它把 WithTrace 解析出的
-	// trace_id/span_id **反向构造**成远程父上下文（而不是自己再解析一遍
-	// traceparent），否则两处对「非法 traceparent」的宽容度差异会让
-	// 响应头 X-Trace-Id 与 Jaeger 里的 trace_id 对不上（S8 明确断言两者一致）。
+	// OTel span 必须紧跟在 WithTrace 之后：它把 WithTrace 解析出的 trace_id/span_id 反向构造成
+	// 远程父上下文（而不是自己再解析一遍 traceparent），否则两处对「非法 traceparent」的宽容度
+	// 差异会让响应头 X-Trace-Id 与 Jaeger 里的 trace_id 对不上（S8 断言两者一致）。
 	engine.Use(middleware.Trace(d.Trace))
 	// 指标放在 Trace 之后：route 标签要用 `c.FullPath()`，取值时机与 span 相同。
 	engine.Use(middleware.Metrics(d.Metrics))
@@ -100,15 +95,13 @@ func NewEngine(d Deps) *gin.Engine {
 
 	// 幂等键头（docs/02-§7）：只做「提取并放进 context」，回放逻辑由写接口按需挂。
 	//
-	// MUST 在**任何 `Group()` 调用之前**注册。gin 的 `RouterGroup` 在
-	// `Group()` 的那一刻就把当前的中间件链**拷贝**走了（`combineHandlers`），
-	// 之后再 `engine.Use(...)` 不会补到已存在的组上 —— 于是
-	// 「幂等键提取中间件注册了」与「/api/v1 下的路由拿不到键」同时成立：
-	// 幂等**永远不生效**，且没有任何报错（`Idempotency` 见 key 为空即放行）。
+	// MUST 在任何 `Group()` 调用之前注册：gin 的 `RouterGroup` 在 `Group()` 那一刻就把
+	// 当前的中间件链拷贝走了（`combineHandlers`），之后再 `engine.Use(...)` 不会补到
+	// 已存在的组上 —— 于是「中间件注册了」与「/api/v1 下的路由拿不到键」同时成立，
+	// 幂等永远不生效且没有任何报错。
 	engine.Use(IdempotencyKey())
 
-	// 健康检查同时挂在根路径与版本前缀下：
-	// 根路径供 LB/K8s 探活（不随 API 版本变化），前缀下的供契约测试统一访问。
+	// 健康检查同时挂在根路径与版本前缀下：根路径供 LB/K8s 探活，前缀下的供契约测试统一访问。
 	if d.Health != nil {
 		registerHealth(engine.Group("/health"), d.Health)
 	}
@@ -132,20 +125,16 @@ func NewEngine(d Deps) *gin.Engine {
 			WithDetail("method", c.Request.Method))
 	})
 
-	// 路由注册全部完成后再预热指标：此时 `engine.Routes()` 是**最终**路由表。
-	//
-	// 放在 `NoRoute` 之后而不是 `NewEngine` 开头，是因为预热要以「注册结果」
-	// 为准而不是以「我们以为注册了什么」为准 —— 前者能发现漏注册
-	// （面板上少一条曲线的成因里，这个最难查）。
+	// 路由注册全部完成后再预热指标：此时 `engine.Routes()` 是最终路由表。
+	// 放在 `NoRoute` 之后而不是 `NewEngine` 开头，是因为预热要以「注册结果」为准 ——
+	// 那能发现漏注册（面板上少一条曲线的成因里，这个最难查）。
 	d.Metrics.WarmRoutes(routeTemplates(engine))
 	return engine
 }
 
 // routeTemplates 抽出 gin 注册表里的路由模板（去重，保持稳定顺序）。
-//
-// 只取 `FullPath` 模板、不取真实路径：真实路径进标签就是高基数
-// （docs/06-§5.2 明令禁止），而这里的输入直接来自 gin 的注册表，
-// 天然就是模板形式。
+// 只取模板不取真实路径：真实路径进标签就是高基数（docs/06-§5.2 明令禁止），
+// 而这里的输入直接来自 gin 的注册表，天然是模板形式。
 func routeTemplates(engine *gin.Engine) []string {
 	routes := engine.Routes()
 	seen := make(map[string]struct{}, len(routes))
@@ -176,11 +165,9 @@ func registerPublic(api *gin.RouterGroup, d Deps) {
 	}
 	auth := api.Group("/auth")
 	auth.POST("/register", d.Auth.Register)
-	// 登录两级限流（docs/02-§5.3）：单 IP 10/分钟 + 单账号 20/小时。
-	//
-	// 两个维度**都要**：只按 IP 挡不住分布式撞库（换 IP 很便宜），
-	// 只按账号会让攻击者用「一个 IP 扫很多账号」把每个账号的计数分开累加。
-	// 顺序是先 IP 后账号：IP 那一级便宜（不读 body），能拦的先拦。
+	// 登录两级限流（docs/02-§5.3）：单 IP 10/分钟 + 单账号 20/小时，两个维度都要 ——
+	// 只按 IP 挡不住分布式撞库，只按账号会被「一个 IP 扫很多账号」绕开。
+	// 顺序先 IP 后账号：IP 那一级便宜（不读 body）。
 	if d.RateLimit != nil {
 		auth.POST("/login",
 			middleware.RateLimitByIP(d.RateLimit, biz.RateScopeLoginIP),
@@ -218,12 +205,12 @@ func registerConversations(authed *gin.RouterGroup, d Deps) {
 	if d.Conversations == nil {
 		return
 	}
-	// 幂等只挂在「创建会话」上：读接口天然幂等，归档/删除是幂等的
-	// 状态转移，给它们记一份响应摘要只会白白撑大 idempotency_record。
+	// 幂等只挂在「创建会话」上：读接口天然幂等，归档/删除是幂等的状态转移，
+	// 给它们记一份响应摘要只会白白撑大 idempotency_record。
 	create := []gin.HandlerFunc{Idempotency(d.IdemStore, d.Log), d.Conversations.Create}
 	if d.RateLimit != nil {
-		// 会话创建限流（单用户 30/分钟，docs/02-§5.3）。
-		// 插在幂等之后：重放同一个 `Idempotency-Key` 不应该再消耗一次名额。
+		// 会话创建限流（单用户 30/分钟，docs/02-§5.3）。插在幂等之后：
+		// 重放同一个 `Idempotency-Key` 不应该再消耗一次名额。
 		create = []gin.HandlerFunc{
 			Idempotency(d.IdemStore, d.Log),
 			middleware.RateLimitByUser(d.RateLimit, biz.RateScopeConversation),
@@ -241,23 +228,14 @@ func registerConversations(authed *gin.RouterGroup, d Deps) {
 	convs.DELETE("/:conversation_id", d.Conversations.Delete)
 }
 
-// registerMessages 注册消息台账接口（docs/03-§4.3）。
+// registerMessages 注册消息台账接口（docs/03-§4.3）。任务的 `.../events`（SSE）尚未注册。
 //
-// 暂时未注册的还有任务的 `.../events`（SSE，M4 之后的阶段）。
+// 流式接口挂在鉴权组而不是 `Deps.Extra` 的 `raw` 组（那个组关了 CORS 与 BodyLimit）：
+// `BodyLimit` 只包请求体而流式请求体是一小段 JSON（需要 `raw` 的是上传）；
+// `CORS` 则是必需的 —— 浏览器的 `EventSource` 受同源策略约束，少了 CORS 头跨域前端连不上；
+// `raw` 组是 `engine.Group("")`，没有 `/api/v1` 前缀也没有鉴权，用它得在调用点手工补这两样。
 //
-// 流式接口 `POST .../messages/stream` 挂在**鉴权组**下而不是 `Deps.Extra` 的
-// `raw` 组（那个组刻意关掉了 CORS 与 BodyLimit）：
-//
-//   - `BodyLimit` 只包请求体（`http.MaxBytesReader`），而流式请求体是一小段 JSON，
-//     所以它在这里没有坏处 —— 需要 `raw` 的是**上传**（请求体可能几百 MB）；
-//   - `CORS` 反而是**必需**的：浏览器的 `EventSource` 受同源策略约束，
-//     少了 CORS 头会让跨域的前端直接连不上（而 `raw` 组没有这个中间件）；
-//   - `raw` 组是 `engine.Group("")`，没有 `/api/v1` 前缀也没有鉴权中间件，
-//     用它就得在调用点手工补两样东西 —— 而这两样正好是这里的两个需求。
-//
-// 幂等中间件**不挂**在这个路由上：重放一个已经推了一半的流，客户端会把
-// 正文再拼一遍（docs/02-§7 的适用范围不含流式接口）。`Idempotency-Key`
-// 头即使带了也不会生效。
+// 幂等中间件不挂在这个路由上：重放一个已经推了一半的流，客户端会把正文再拼一遍（docs/02-§7）。
 func registerMessages(authed *gin.RouterGroup, d Deps) {
 	if d.Messages == nil {
 		return
@@ -276,8 +254,7 @@ func registerMessages(authed *gin.RouterGroup, d Deps) {
 	convs.GET("/:conversation_id/messages", d.Messages.List)
 	convs.POST("/:conversation_id/messages", send...)
 	// 流式发消息一直挂在鉴权组下（见上面的注释）：CORS 必须要有。
-	// 限流同样要：流式请求是最贵的一种，限流器不能因为它不走 `send`
-	// 就被绕过。
+	// 限流同样要：流式请求是最贵的一种，限流器不能因为它不走 `send` 就被绕过。
 	stream := []gin.HandlerFunc{d.Messages.Stream}
 	if d.RateLimit != nil {
 		stream = []gin.HandlerFunc{
@@ -292,18 +269,14 @@ func registerMessages(authed *gin.RouterGroup, d Deps) {
 	msgs.DELETE("/:message_id", d.Messages.Delete)
 }
 
-// registerPassthrough 注册对 ai-platform 的透传路由（docs/04-§7）。
+// registerPassthrough 注册对 ai-platform 的透传路由（docs/04-§7）。三条通用规则：
 //
-// 三条通用规则：
-//
-//  1. **路径同名**：网关把**收到的原始路径**原样转给 AI（见 service.ProxyHandler.upstreamPath），
-//     所以这里注册的路径必须与 AI 的路径一致（AI 侧的权威定义是它的 OpenAPI）。
-//     不一致时症状是「网关 404」（AI 的 NoRoute）或「转发到了另一个接口」，
-//     两种都不会静默成功，所以同名是可以验收的性质。
-//  2. **超时按档位**：元数据类 8s / 非流式对话 70s / 上传建任务 120s（docs/04-§3.3），
+//  1. 路径同名：网关把收到的原始路径原样转给 AI（见 service.ProxyHandler.upstreamPath），
+//     所以这里注册的路径必须与 AI 的 OpenAPI 一致。不一致的症状是 404 或转发到了另一个接口。
+//  2. 超时按档位：元数据 8s / 非流式对话 70s / 上传建任务 120s（docs/04-§3.3），
 //     全部走 `middleware.AIProxyTimeout*`，不在每个路由上写裸时长。
-//  3. **只在会话资源上校验归属**：其余资源的属主由 AI 保证（其 `REQ-RAG-011`
-//     要求跨用户 404），网关重复校验只会多一次查库。
+//  3. 只在会话资源上校验归属：其余资源的属主由 AI 保证（`REQ-RAG-011` 要求跳用户 404），
+//     网关重复校验只会多一次查库。
 func registerPassthrough(authed *gin.RouterGroup, d Deps) {
 	if d.Proxy == nil {
 		return

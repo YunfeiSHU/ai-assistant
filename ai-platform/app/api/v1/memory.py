@@ -1,16 +1,12 @@
 """记忆路由（``docs/07`` §6）。
 
-这个文件承载三组路径：``/memories``、``/memory-settings``、
-``/conversations/{id}/context|summary``。它们放同一个文件而不是各起一个模块，
-是因为它们共用同一份「记忆能力是否对该用户开启」的判断 —— 拆开后那段判断
+承载三组路径：``/memories``、``/memory-settings``、``/conversations/{id}/context|summary``。
+放同一个文件是因为它们共用同一份「记忆能力是否对该用户开启」的判断 —— 拆开后那段判断
 会在三处各写一遍，而「一处漏判」的后果是隐私需求（``REQ-MEM-007``）静默失效。
 
-两处刻意与「通用做法」不同：
-
-* ``DELETE /memories`` 必须显式 ``?all=true``（``AC-MEM-10``）：清空全部记忆不
-  提供无参形式，防误删。
-* ``GET /memory-settings`` 与 ``GET /memories`` 在能力关闭时返回 ``409`` 而不是
-  空列表：空列表会让「关闭了记忆」和「记忆里确实什么都没有」看起来一模一样。
+两处刻意与通用做法不同：``DELETE /memories`` 必须显式 ``?all=true``（``AC-MEM-10``）
+防误删；``GET /memory-settings`` 与 ``GET /memories`` 在能力关闭时返回 ``409`` 而不是空
+列表 —— 空列表会让「关闭了记忆」和「记忆里确实什么都没有」看起来一模一样。
 """
 
 from __future__ import annotations
@@ -61,8 +57,7 @@ def _out(record: MemoryRecord) -> MemoryOut:
 async def _ensure_enabled(service: MemoryService, user_id: str) -> None:
     """能力关闭时拒绝读写长期记忆（``docs/07`` §5.4）。
 
-    用 ``409`` 而不是 ``403``：这不是权限问题，而是**当前状态**不允许该操作，
-    改一下设置就能重试。
+    用 ``409`` 而不是 ``403``：这不是权限问题，而是当前状态不允许该操作，改一下设置即可重试。
     """
     if not await service.is_enabled(user_id):
         raise AppError(
@@ -117,8 +112,8 @@ async def create_memory(
         confidence=body.confidence,
         expires_at=body.expires_at,
         # 用户显式调接口写入 → ``manual``（落到 ``user_memory.source`` 列）。
-        # 与轮末抽取/``memory_save`` 工具的 ``auto`` 区分开，排查
-        # 「为什么模型记得这个」时才有依据（``REQ-MEM-007``）。
+        # 与轮末抽取/``memory_save`` 工具的 ``auto`` 区分开，排查「为什么模型记得这个」
+        # 时才有依据（``REQ-MEM-007``）。
         source="manual",
     )
     return _out(result.record)
@@ -223,8 +218,8 @@ async def get_conversation_context(
                 role=item.role,
                 message_id=item.message_id,
                 content=item.content,
-                # ``tokens`` 现算：落库时不存它，避免「换了 tokenizer 之后历史值
-                # 全是错的」这种没法修的存量数据
+                # ``tokens`` 现算：落库时不存它，避免「换了 tokenizer 之后历史值全是错的」
+                # 这种没法修的存量数据
                 tokens=count_tokens(item.content),
                 created_at=item.created_at,
                 partial=item.partial,
@@ -296,8 +291,8 @@ async def rebuild_conversation_summary(
     """异步重建摘要，返回 ``task_id``（``docs/07`` §6）。
 
     先 ``ensure`` 一次会话归属：不校验的话，任何登录用户都能凭一个猜到的
-    ``conversation_id`` 建出一堆摘要任务（虽然它们最终会因为读不到消息而空转，
-    但「能给别人建任务」本身就不该成立）。
+    ``conversation_id`` 建出一堆摘要任务 —— 虽然它们最终会因为读不到消息而空转，
+    但「能给别人建任务」本身就不该成立。
     """
     await service.store.ensure(conversation_id, user_id)
     task, created = await tasks.create(

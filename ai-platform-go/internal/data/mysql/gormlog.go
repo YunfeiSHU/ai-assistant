@@ -11,13 +11,11 @@ import (
 	gormlogger "gorm.io/gorm/logger"
 )
 
-// gormSlogLogger 把 GORM 的日志接到 slog，并做两件事：
+// gormSlogLogger 把 GORM 的日志接到 slog，并做两件事：超过 slow 记 WARN（docs/05-§5：> 200ms）；
+// 把 SQL 指纹化，日志里只留结构、不留参数值（REQ-NFR-005）。
 //
-//  1. **慢查询阈值**：超过 slow 记 WARN（docs/05-§5：> 200ms）；
-//  2. **SQL 指纹化**：日志里只留结构、不留参数值（REQ-NFR-005）。
-//
-// 第 2 点是必须的：GORM 默认 logger 走 `ExplainSQL`，把参数插值回 SQL 串，
-// 于是用户邮箱、消息正文会直接进日志 —— 那正是 docs/06-§4.4 明令禁止的。
+// 第二点是必须的：GORM 默认 logger 走 `ExplainSQL` 把参数插值回 SQL 串，
+// 用户邮箱、消息正文会直接进日志 —— 那正是 docs/06-§4.4 明令禁止的。
 type gormSlogLogger struct {
 	log  *slog.Logger
 	slow time.Duration
@@ -33,8 +31,7 @@ func newGormLogger(log *slog.Logger, slow time.Duration) gormlogger.Interface {
 	return &gormSlogLogger{log: log, slow: slow}
 }
 
-// LogMode 实现 gormlogger.Interface（本项目不使用 GORM 的级别机制，
-// 日志级别完全由 slog 控制，因此原样返回）。
+// LogMode 实现 gormlogger.Interface（本项目日志级别完全由 slog 控制，因此原样返回）。
 func (g *gormSlogLogger) LogMode(gormlogger.LogLevel) gormlogger.Interface { return g }
 
 // Info 实现 gormlogger.Interface。

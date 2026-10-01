@@ -1,13 +1,13 @@
 """工具执行器（``REQ-AGENT-006`` / ``REQ-AGENT-007``）。
 
-**执行器从不向上层抛业务异常。** 工具不存在、参数非法、执行失败、超时，全部变成
-一次带 ``status`` 的 :class:`ToolCallRecord`，由 Agent Loop 回注给模型让它自行修正
-或放弃（``docs/04`` §5）。只有调试接口 ``POST /tools/{name}/invoke`` 会把失败
-映射成 HTTP 错误码——那里没有模型可以「自行修正」。
+**执行器从不向上层抛业务异常**：工具不存在、参数非法、执行失败、超时，全部变成一次带
+``status`` 的 :class:`ToolCallRecord`，由 Agent Loop 回注给模型让它自行修正或放弃
+（``docs/04`` §5）。只有调试接口 ``POST /tools/{name}/invoke`` 会把失败映射成 HTTP 错误码
+—— 那里没有模型可以「自行修正」。
 
-并发规则（``REQ-AGENT-007``）：全部是 ``read`` 时用 ``asyncio.gather`` 并发；
-只要含一个 ``write``，**整体串行**。刻意不做「读先并发、写再串行」的精细调度：
-两次调用之间的可见性会有微妙差异，而收益只有几十毫秒。
+并发规则（``REQ-AGENT-007``）：全部是 ``read`` 时用 ``asyncio.gather`` 并发；只要含一个
+``write``，**整体串行**。刻意不做「读先并发、写再串行」的精细调度：两次调用之间的可见性会
+有微妙差异，而收益只有几十毫秒。
 """
 
 from __future__ import annotations
@@ -80,8 +80,8 @@ def parse_arguments(raw: str | dict[str, object] | None) -> tuple[dict[str, obje
         ``(参数, 错误码)``；解析失败时参数为空 dict 且错误码为
         :data:`ERROR_INVALID_ARGUMENTS`。
 
-    上游有三种传法都要能接住：JSON 文本（OpenAI 规范）、已经是 dict（部分网关）、
-    空（无参数工具）。只认 JSON 文本会让「无参数工具」被误判成参数非法。
+    上游三种传法都要能接住：JSON 文本（OpenAI 规范）、已经是 dict（部分网关）、空
+    （无参数工具）。只认 JSON 文本会让「无参数工具」被误判成参数非法。
     """
     if raw is None or raw == "":
         return {}, ""
@@ -107,9 +107,8 @@ class ToolExecutor:
     def _span(self, name: str, tool_name: str, *, source: str, side_effect: str = "read"):
         """工具调用 span（``docs/10`` §5.1：``tool.call``）。
 
-        除了规范里要求的 ``tool_name`` / ``source`` / ``status``，这里额外带上
-        ``side_effect``：排障时「这个慢调用是不是写操作（要等恢复）」是第一个要问的问题，
-        而它只在注册表里，不在请求里。
+        除了规范要求的 ``tool_name`` / ``source`` / ``status``，这里额外带上 ``side_effect``：
+        排障时「这个慢调用是不是写操作」是第一个要问的问题，而它只在注册表里，不在请求里。
         """
         return get_tracing().span(
             name, {"tool_name": tool_name, "source": source, "side_effect": side_effect}
@@ -178,8 +177,8 @@ class ToolExecutor:
                 {"allowed": self._registry.filter_names()},
             )
         if not tool.spec.enabled:
-            # 未启用的工具对外**不可见**：返回 403 而不是 404，因为调用方是
-            # 运维/开发（有鉴权），告诉他「存在但被关掉」比假装不存在更有用。
+            # 未启用的工具对外不可见：返回 403 而不是 404，因为调用方是运维/开发（有鉴权），
+            # 告诉他「存在但被关掉」比假装不存在更有用。
             raise AppError(
                 ErrorCode.TOOL_FORBIDDEN,
                 f"工具已禁用：{name}",
@@ -228,9 +227,8 @@ class ToolExecutor:
     ) -> ToolCallRecord:
         """调用一次工具，并记录 ``ai_tool_calls_total``。
 
-        指标放在这层薄包装而不是 ``_execute`` 的各个 return 处：``_fail`` 有 7 个
-        出口，每次改动都要记得补一个计数 —— 一定会漏。包装一层后，“成功”与
-        “失败但被降级成工具结果”天然都走同一条记录路径。
+        指标放在这层薄包装而不是 ``_execute_one`` 的各个 return 处：``_fail`` 有 7 个出口，
+        每次改动都要记得补一个计数 —— 一定会漏。
         """
         record = await self._execute_one(
             call, arguments, parse_error, tool, ctx=ctx, already=already
@@ -339,8 +337,8 @@ class ToolExecutor:
 def _signature(name: str, arguments: dict[str, object]) -> str:
     """调用的规范化签名（重复调用检测用）。
 
-    用 ``sort_keys`` 而不是原文本：``{"a":1,"b":2}`` 与 ``{"b":2,"a":1}``
-    是同一个调用，按原文本比较会漏判。
+    用 ``sort_keys`` 而不是原文本：``{"a":1,"b":2}`` 与 ``{"b":2,"a":1}`` 是同一个调用，
+    按原文本比较会漏判。
     """
     return f"{name}:{json.dumps(arguments, sort_keys=True, ensure_ascii=False, default=str)}"
 
@@ -353,8 +351,8 @@ def signature_of(name: str, arguments: dict[str, object]) -> str:
 def duplicate_record(call: LLMToolCall, arguments: dict[str, object]) -> ToolCallRecord:
     """构造「重复调用」的伪记录（**不执行**，只把原因回注给模型）。
 
-    执行器与 Agent Loop 共用这一个构造：同一错误原因在两条路径上必须长得一样，
-    否则模型看到的 payload 会随「谁先发现了重复」而变化。
+    执行器与 Agent Loop 共用这一个构造：同一错误原因在两条路径上必须长得一样，否则模型看到
+    的 payload 会随「谁先发现了重复」而变化。
     """
     message = "该调用已执行过，请换一种方式或直接回答"
     return ToolCallRecord(
@@ -429,8 +427,8 @@ _ERROR_TO_CODE = {
 def _as_app_error(record: ToolCallRecord, name: str) -> AppError:
     """把失败记录映射成调试接口的 HTTP 错误码。
 
-    优先看 ``record.error``（能区分「参数错」与「执行错」），只有拿不到
-    已知原因时才用 ``status`` 兜底。
+    优先看 ``record.error``（能区分「参数错」与「执行错」），只有拿不到已知原因时才用
+    ``status`` 兜底。
     """
     code = _ERROR_TO_CODE.get(
         record.error, _STATUS_TO_CODE.get(record.status, ErrorCode.TOOL_EXECUTION_FAILED)

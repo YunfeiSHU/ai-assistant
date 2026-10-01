@@ -6,21 +6,15 @@ import (
 	"errors"
 )
 
-// 本文件是**流式编排的接缝**（docs/04-§2.2 的 `ChatStream`，M4）。
+// 本文件是流式编排的接缝（docs/04-§2.2 的 `ChatStream`，M4）。
 //
-// 与 `chat.go` 的关系：`ChatOrchestrator` 是「一问一答」，本文件是「一问、边答边收」。
-// 两者共用 `ChatRequest`（请求侧没有区别）与 `MessageUsage`，但**事件流过不了
-// 同一个接口** —— 让 `Chat` 也返回一个流，非流式路径就得自己把流收完再拼，
-// 反而多一层没人需要的抽象。
-//
-// 事件名（`meta` / `token` / …）在这里作为契约常量定义，而不是散在传输层与
-// service 层：docs/04-§2.3 的映射表是**两侧共同遵守的契约**，
-// 网关侧只有一处引用才可能有「一处改了另一处忘」之外的第二种结果。
+// 与 chat.go 的关系：`ChatOrchestrator` 是一问一答，本文件是一问边答边收，
+// 共用 `ChatRequest`/`MessageUsage`，但事件流不走同一接口 ——
+// 让 `Chat` 也返回流会让非流式路径自己把流收完再拼，多一层没人需要的抽象。
+// 事件名作为契约常量集中在这里，docs/04-§2.3 的映射表两侧都要遵守。
 
-// 流式事件名（docs/04-§2.3 的事件映射表）。
-//
-// 与 AI 侧 `app/core/sse.py` 的 `EVENT_*` 常量逐字对应；改这里必须同时改那里
-// （两侧各有一条常量一致性断言：Go 见本包的测试，Python 见其 `test_sse_frames.py`）。
+// 流式事件名（docs/04-§2.3 的事件映射表），与 AI 侧 `app/core/sse.py` 的 `EVENT_*` 逐字对应。
+// 改这里必须同时改那里（两侧各有一条常量一致性断言）。
 const (
 	// StreamEventMeta 携带会话/消息 ID 等元信息，是流的第一帧。
 	StreamEventMeta = "meta"
@@ -39,20 +33,13 @@ const (
 	// StreamEventDone 是正常收尾标记，也是客户端判定「回答完整」的唯一依据。
 	StreamEventDone = "done"
 
-	// 下面这个是「网关追加」的事件（docs/04-§4.1 明确只允许两类，
-	// 另一类 `gw_degraded` 属于 M5 的降级路径：M4 没有生产者，
-	// 与其留一个永远不会出现的常量，不如等它真的存在时再加）。
-	//
-	// 它 SHOULD 出现在 `done` 之后：插在 `token` 之间会打断客户端的正文拼接
-	// （客户端看到未知事件时按约定忽略，而「忽略」意味着这一帧被丢掉）。
+	// 网关追加的事件（docs/04-§4.1 只允许两类，另一类 `gw_degraded` 等有生产者时再加）。
+	// SHOULD 出现在 `done` 之后：插在 `token` 之间会打断客户端的正文拼接。
 	StreamEventGwPersistError = "gw_persist_error"
 )
 
-// 工具调用状态（docs/03-§4.1 的 `tool_calls[].status`）。
-//
-// 取值必须与 AI 侧 `app/schemas/chat.py` 的类型别名
-// （`Literal["ok", "error", "timeout", "forbidden"]`）保持一致：
-// 它是**枚举**而不是自由文本，客户端按它决定图标与颜色。
+// 工具调用状态（docs/03-§4.1 的 `tool_calls[].status`），必须与 AI 侧
+// `app/schemas/chat.py` 的 `Literal["ok","error","timeout","forbidden"]` 一致：客户端按它决定图标。
 const (
 	// ToolCallStatusOK 表示工具调用成功返回。
 	ToolCallStatusOK = "ok"
@@ -64,21 +51,15 @@ const (
 	ToolCallStatusForbidden = "forbidden"
 )
 
-// errStreamNoDone 表示上游**干净地**关掉了事件流却没发 `done`。
-//
-// 单独立一个 sentinel 而不是复用 `io.EOF`：两者对外都落 `partial`，
-// 但排障时必须能分清「上游正常收完」与「上游少发了一帧」——
-// 前者无事发生，后者是 AI 侧的 bug。
+// errStreamNoDone 表示上游干净地关掉了事件流却没发 `done`。
+// 不复用 `io.EOF`：两者对外都落 `partial`，但排障要分清「正常收完」与「少发一帧」。
 var errStreamNoDone = errors.New("上游事件流结束但未发送 done")
 
 // StreamEvent 是一条待下发给客户端的事件。
 //
-// 用「接口 + 未导出的标记方法」而不是「一个带 N 个指针字段的大结构体」：
-// 后者的零值组合是无穷的（`Name=""` 但 `Token` 非空是合法 Go 值却不是合法事件），
-// 每个消费者都得先判断「到底哪个字段有值」。接口版把这件事交给类型系统。
-//
-// 标记方法未导出 ⇒ 包外无法再新增实现 ⇒ `service` 的渲染 switch 可以**确定**
-// 自己覆盖了全部情况（新增事件类型会编译不过，而不是静默走到 default 丢帧）。
+// 用「接口 + 未导出标记方法」而非「带 N 个指针字段的大结构体」：后者零值组合无穷
+// （`Name=""` 但 `Token` 非空是合法 Go 值却不是合法事件）。标记方法未导出 ⇒
+// 包外无法新增实现 ⇒ service 的渲染 switch 能确保覆盖全部情况（新增类型会编译不过）。
 type StreamEvent interface {
 	// EventName 返回 SSE 的 `event:` 名（取值见上面的常量）。
 	EventName() string
@@ -93,21 +74,13 @@ type StreamMetaEvent struct {
 	// MessageID 是 AI 侧本条回答的 ID（网关自己的消息 ID 另生成）。
 	MessageID string
 	Model     string
-	// CreatedAt 是 RFC3339 毫秒 UTC 字符串（原样透传，不解析）。
-	// 解析它只会多一个「格式不合法就失败」的分支，而客户端也不需要网关转格式。
+	// CreatedAt 是 RFC3339 毫秒 UTC 字符串，原样透传（解析只会多一个「格式非法就失败」的分支）。
 	CreatedAt string
 	Degraded  bool
-	// DegradedReasons 是降级原因列表，**只用于落库**（docs/04-§9 要求
-	// 「AI 返回 degraded=true 时在 assistant 消息的 `degraded_reasons` 中保留」）。
+	// DegradedReasons 是降级原因列表，只用于落库（docs/04-§9），
+	// 不会出现在下发给客户端的 `meta` 帧（那帧字段固定为契约的五个，docs/04-§2.3）。
 	//
-	// 它**不会**出现在下发给客户端的 `meta` 帧里 —— 那一帧的字段是契约固定死的
-	// 五个（docs/04-§2.3）；客户端要展示「本次未使用知识库」时读
-	// `GET /messages/{id}`，那里有完整的 `degraded_reasons`。
-	//
-	// ※ 这是网关在 proto 里**补出来**的字段：docs/04-§2.3 的映射表只列了
-	// `degraded` 布尔，只满足不了 §9 落库那一条。走 gRPC 时 AI 侧会把原因填进来
-	// （它的 `prepared.degraded_reasons` 本来就在手边）；走 HTTP/SSE 兜底通道时
-	// 拿不到（其 `meta` 帧只有布尔），此时为空。
+	// 这是网关在 proto 里补出的字段：gRPC 通道 AI 侧会填，HTTP/SSE 兜底通道的 meta 帧只有布尔，此时为空。
 	DegradedReasons []string
 }
 
@@ -115,12 +88,8 @@ func (StreamMetaEvent) EventName() string { return StreamEventMeta }
 func (StreamMetaEvent) streamEvent()      {}
 
 // StreamReferenceEvent 是引用帧（`event: reference`）。
-//
-// `References` 是**本轮引用集合的完整 JSON 数组**（不是增量）。
-//
-// AI 侧的行为是「每次重发全部引用」（其 `agent.py` 有明确注释：只发增量会让
-// 客户端的 `[n]` 编号错位），所以累积规则是**后者覆盖前者**而不是追加 ——
-// 追加会让重复的引用在库里出现两次，而正文里的 `[3]` 只指向其中一个。
+// `References` 是本轮引用集合的完整 JSON 数组而非增量，故累积规则是「后者覆盖前者」
+// 而不是追加：AI 侧每次重发全部引用（只发增量会让客户端 `[n]` 编号错位）。
 type StreamReferenceEvent struct {
 	References json.RawMessage
 }
@@ -130,9 +99,8 @@ func (StreamReferenceEvent) streamEvent()      {}
 
 // StreamTokenEvent 是正文增量帧（`event: token`）。
 type StreamTokenEvent struct {
-	// Delta 是增量文本，**可能为空串**（上游偶发空 delta）。
-	// 空串也必须原样下发：丢掉它会让「客户端收到的帧数」与上游的不一致，
-	// 而 docs/04-§4.1 要求顺序与数量保真。
+	// Delta 是增量文本，可能为空串（上游偶发空 delta）。空串也必须原样下发：
+	// 丢掉会让客户端收到的帧数与上游不一致，而 docs/04-§4.1 要求顺序与数量保真。
 	Delta string
 }
 
@@ -143,23 +111,17 @@ func (StreamTokenEvent) streamEvent()      {}
 type StreamToolCallEvent struct {
 	CallID string
 	Name   string
-	// Arguments 是**对象** JSON（不是字符串）。
-	//
-	// 把它从 `arguments_json` 字符串转成对象的动作发生在传输层（data/ai）：
-	// 那里本来就同时看得见两种形状（非流式路径的 `marshalToolCalls` 同理）。
-	// 传字符串进来的话，落库（契约要求 `arguments` 是对象）与下发
-	// （契约要求是对象）就都要各自解析一次 JSON，且两边都可能解析失败。
+	// Arguments 是对象 JSON（不是字符串）。从 `arguments_json` 字符串转对象的动作在传输层
+	//（data/ai）；若传字符串进来，落库与下发都要各自解析一次且都可能失败。
 	Arguments json.RawMessage
 }
 
 func (StreamToolCallEvent) EventName() string { return StreamEventToolCall }
 func (StreamToolCallEvent) streamEvent()      {}
 
-// StreamToolResultEvent 是工具调用结果帧（`event: tool_result`）。
-//
-// 与 `StreamToolCallEvent` 靠 `CallID` 配对（落库时拼成一条完整轨迹）。
-// 只有开始没有结果的调用由累积器兜底成 `status=error`：上游被取消时
-// 就会这样，而库里留一条「没有结果的调用」会让前端渲染出一个转不完的圈。
+// StreamToolResultEvent 是工具调用结果帧（`event: tool_result`），靠 `CallID` 与
+// `StreamToolCallEvent` 配对。只有开始没有结果的调用由累积器兜底成 `status=error`，
+// 否则前端会渲染出一个转不完的圈。
 type StreamToolResultEvent struct {
 	CallID    string
 	Name      string
@@ -179,9 +141,7 @@ type StreamUsageEvent struct {
 func (StreamUsageEvent) EventName() string { return StreamEventUsage }
 func (StreamUsageEvent) streamEvent()      {}
 
-// StreamErrorEvent 是错误帧（`event: error`）。
-//
-// 流已经开始推送之后唯一的报错方式（HTTP 状态码在那时已经发出去了）。
+// StreamErrorEvent 是错误帧（`event: error`）—— 流已开始推送后唯一的报错方式（状态码已发出）。
 type StreamErrorEvent struct {
 	Code      string
 	Message   string
@@ -203,12 +163,8 @@ type StreamDoneEvent struct {
 func (StreamDoneEvent) EventName() string { return StreamEventDone }
 func (StreamDoneEvent) streamEvent()      {}
 
-// StreamUnknownEvent 是未识别的事件（原样透传）。
-//
-// 存在的理由是 docs/04-§4.1 的「未知 `event:` 类型 MUST 透传，MUST NOT 丢弃」：
-// AI 侧一旦新增一类事件，走 gRPC 时它会落进 proto 的 `unknown` 分支，
-// 网关不认识但必须照发。丢掉它在这里**不会报任何错**，只是客户端少了点信息 ——
-// 正是那种「上线半年后才被发现」的静默降级。
+// StreamUnknownEvent 是未识别的事件（原样透传）：docs/04-§4.1 要求未知 `event:` 类型
+// MUST 透传、MUST NOT 丢弃。丢掉它不报任何错，只是客户端少点信息，属于长期潜伏的静默降级。
 type StreamUnknownEvent struct {
 	Name string
 	// Data 是原始 `data` 的 JSON 字节，原样转发（网关不解析也不重新序列化）。
@@ -219,9 +175,7 @@ func (e StreamUnknownEvent) EventName() string { return e.Name }
 func (StreamUnknownEvent) streamEvent()        {}
 
 // StreamPersistErrorEvent 是落库失败时网关追加的事件（`event: gw_persist_error`）。
-//
-// 存在的意义：流式路径的响应已经发出去了，改不了状态码；如果落库又失败了，
-// 客户端会以为「回答已保存」。这一帧是唯一能纠正它的地方。
+// 流式响应已发出、改不了状态码，若不告知，客户端会以为「回答已保存」。
 type StreamPersistErrorEvent struct {
 	// Reason 是**给客户端排障看的**短语，不是完整错误：
 	// 完整错误链里可能有 SQL 片段或表名，它属于日志（biz 已经记过一条 ERROR）。
@@ -233,12 +187,9 @@ func (StreamPersistErrorEvent) streamEvent()      {}
 
 // ---- 流的终止原因 ----
 
-// streamEnd 说明「谁结束了这次流」。
-//
-// 它同时决定三件事：落库状态（`completed`/`partial`/`failed`）、
-// 要不要补发 `error` 帧、以及日志级别。用一个枚举而不是「事后看 error 是不是
-// context.Canceled」：后者要靠字符串或 errors.Is 反推，而
-// 「上游静默断开」与「客户端断连」在 Go 里都可能表现为 `context.Canceled`。
+// streamEnd 说明「谁结束了这次流」，同时决定落库状态、是否补发 `error` 帧、日志级别。
+// 用枚举而非事后看 error 是不是 context.Canceled：「上游静默断开」与「客户端断连」
+// 都可能表现为 context.Canceled。
 type streamEnd int
 
 const (
@@ -276,21 +227,16 @@ func (e streamEnd) String() string {
 	}
 }
 
-// StreamSink 是流式响应的写出端（实现在 service 层，绑定 HTTP 响应）。
-//
-// 接口放在 biz 而不是 service，是因为**写出时机由业务决定**
-// （首字节前不能用 SSE 报错、`done` 之后才追加 `gw_*`、心跳只在等待时发），
-// 而「怎么写到 HTTP」才是 service 的事。
+// StreamSink 是流式响应的写出端（实现在 service 层，绑定 HTTP）。
+// 接口放在 biz：写出时机由业务决定（首字节前不能报错、done 后才追加 gw_*、心跳只在等待时发），
+// 「怎么写到 HTTP」才是 service 的事。
 type StreamSink interface {
 	// Send 写出一帧并 Flush（docs/04-§4.1：每帧写完 MUST Flush）。
 	Send(ev StreamEvent) error
 	// Ping 写出一帧心跳。
 	Ping() error
-	// Started 报告是否已经写出过任何一帧。
-	//
-	// HTTP 状态码只在第一帧之前可以改，所以**错误处理的路径取决于它**：
-	// 没开始 → 正常返回 `4xx/5xx` JSON 信封；已开始 → 只能发 `error` 帧。
-	// 让 sink 记住这件事，比让调用方猜「我刚写了没有」可靠得多。
+	// Started 报告是否已写出过任何一帧。HTTP 状态码只在第一帧之前可改，
+	// 故错误处理路径取决于它：没开始 → 正常返回 4xx/5xx 信封；已开始 → 只能发 error 帧。
 	Started() bool
 }
 
@@ -306,18 +252,11 @@ type ChatStreamer interface {
 
 // ChatEventStream 是一条已经建立的事件流。
 //
-// 为什么是「通道 + Err()」而不是「`Recv() (*StreamEvent, error)`」：
-// 网关在等事件的同时还要做三件与事件无关的事 —— 发心跳、判首字节/空闲超时、
-// 响应取消与进程退出。`Recv()` 会把调用方**阻塞**在那一个调用上，
-// 于是心跳只能在两次 Recv 之间发（而「一直没有 Recv 返回」正是最需要心跳的时候）。
-// 通道可以让调用方 select。
+// 用「通道 + Err()」而非 `Recv() (*StreamEvent, error)`：网关等事件时还要发心跳、
+// 判超时、响应取消/退出，`Recv()` 会把调用方阻塞住，而「一直没有 Recv 返回」正是最需要心跳的时候。
 //
-// 契约（实现 MUST 遵守）：
-//
-//   - `Events()` 只被调用一次，返回的通道在流结束时**关闭**；
-//   - `Err()` 只能在通道关闭后读，返回终止原因（正常结束为 nil）；
-//   - `Close()` 可重复调用，用于提前放弃（取消上游）；
-//   - 通道关闭后消费者**不再需要** Close（实现必须自己回收连接）。
+// 契约（实现 MUST 遵守）：`Events()` 只调一次、流结束时通道关闭；`Err()` 只在通道关闭后读
+// （正常结束为 nil）；`Close()` 可重复调用以提前放弃；通道关闭后消费者不再需要 Close。
 type ChatEventStream interface {
 	Events() <-chan StreamEvent
 	Err() error

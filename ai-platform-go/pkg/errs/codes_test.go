@@ -8,13 +8,10 @@ import (
 	"github.com/YunfeiSHU/ai-assistant/ai-platform-go/pkg/errs"
 )
 
-// docCodes 是 docs/02-接口规范与鉴权.md §4.1 的网关自有错误码**逐行抄录**。
+// docCodes 是 docs/02-接口规范与鉴权.md §4.1 的网关自有错误码逐行抄录（2026-09-29）。
 //
-// 这份表是**契约**，不是实现细节：改代码必须同步改文档，改文档必须同步改代码。
-// 因此这里刻意把期望值硬编码（而不是从实现里推导）——
-// 从实现推导出来的期望值永远会通过，等于没有测试。
-//
-// 抄录时间：2026-09-29。
+// 这份表是契约，不是实现细节：改代码必须同步改文档，反之亦然。期望值刻意硬编码
+// 而不是从实现推导 —— 推导出来的期望值永远会通过，等于没有测试。
 var docCodes = []struct {
 	code      errs.Code
 	status    int
@@ -45,8 +42,6 @@ var docCodes = []struct {
 }
 
 // TestGatewayCodesMatchDoc 断言网关错误码表与文档完全一致（双向）。
-//
-// 双向都要查，因为两种偏差的表现完全不同：
 //   - 代码多了文档没有的码 → 客户端按文档写的 switch 落到 default 分支；
 //   - 文档有的码代码里没有 → 永远不会返回，客户端的分支是死代码。
 //
@@ -67,13 +62,11 @@ func TestGatewayCodesMatchDoc(t *testing.T) {
 }
 
 // TestGatewayCodesAreDocumented 反向断言：实现里不存在文档未声明的码。
-//
-// 唯一的例外在 allowlist 里，并且必须写明理由 —— 加一个码太容易了，
-// 没有这道闸门，编码表会慢慢漂移出文档。
+// 唯一的例外在 allowlist 里且必须写明理由 —— 加一个码太容易了，没有这道闸门，
+// 编码表会慢慢漂移出文档。
 func TestGatewayCodesAreDocumented(t *testing.T) {
-	// 扩展码：不在 docs/02 §4.1 表内，但有明确用途。
-	// 用法：优雅退出期间拒绝新请求（docs/06-§3 第 ② 步），让 LB 把流量切走，
-	// 而不是让客户端收到一个含义不明的 500。
+	// 扩展码：不在 docs/02 §4.1 表内，但有明确用途 —— 优雅退出期间拒绝新请求
+	// （docs/06-§3 第 ② 步），让 LB 把流量切走，而不是给客户端一个含义不明的 500。
 	allowlist := map[errs.Code]string{
 		"SERVICE_SHUTTING_DOWN": "docs/06-§3 优雅退出：新请求被拒，客户端应重试到其它实例",
 	}
@@ -105,9 +98,8 @@ func TestGatewayCodesAreDocumented(t *testing.T) {
 }
 
 // TestLookupStatus 覆盖未知码的兜底行为。
-//
-// 未知码 MUST 落到 500：把「不认识的错误」当成 400 会把服务端缺陷
-// 伪装成调用方问题，而 500 至少会进错误告警。
+// 未知码 MUST 落到 500：把「不认识的错误」当成 400 会把服务端缺陷伪装成调用方问题，
+// 而 500 至少会进错误告警。
 func TestLookupStatus(t *testing.T) {
 	if status, ok := errs.LookupStatus(errs.CodeInvalidArgument); !ok || status != http.StatusBadRequest {
 		t.Fatalf("已知码应返回 (400, true)，实际 (%d, %v)", status, ok)
@@ -118,12 +110,9 @@ func TestLookupStatus(t *testing.T) {
 }
 
 // TestUpstreamErrorPreservesEnvelope 覆盖接缝 J2 的透传规则（docs/02 §4.2）。
-//
-// 透传时最容易犯的两个错：
-//  1. 把上游的 trace_id 换成自己的 → 排障时链路断裂；
-//  2. 直接改上游的 details → 丢字段。
-//
-// 所以这里既断言 trace_id 被保留，也断言 details 的原有键没被动过。
+// 透传时最容易犯的两个错：把上游的 trace_id 换成自己的（链路断裂）、
+// 直接改上游的 details（丢字段）。所以这里既断言 trace_id 被保留，
+// 也断言 details 的原有键没被动过。
 func TestUpstreamErrorPreservesEnvelope(t *testing.T) {
 	upstreamDetails := map[string]any{
 		"model": "deepseek-flash",

@@ -14,20 +14,10 @@ import (
 
 // TestHealthIncludesCircuitBreakerCheck 守住 `/health` 的 `checks.circuit_breaker`。
 //
-// 历史缺口（2026-09-30 真机验收实测）：`Health` 只填了 mysql/redis/ai_platform 三项，
-// 而 docs/06-§5.4 的端点表把它列为该接口的**组成部分**（连响应示例里都有
-// `"circuit_breaker": {"target": "ai-platform", "state": "open"}`）。
-// 字段缺失时按字段消费的面板/脚本拿到 undefined —— 而「熔断打开」正是
-// docs/06-§5.5 的 P2 告警条件，排障第一步就要看它。
-//
-// 这条用例同时钉住两个容易做错的点：
-//
-//  1. **字段恒在**。`circuit` 为 nil（显式关闭熔断）时必须退化成
-//     `state=disabled`，而不是让整个 key 消失。
-//  2. **不影响状态码**。「熔断打开」不等于网关不健康 —— 它此刻恰好是在
-//     正常工作。docs/06-§5.4 明写「仅信息，不影响状态码」，
-//     把 open 当成 503 会让熔断期间的健康检查把实例从 LB 里摘掉，
-//     于是「拒绝了挂掉的上游」被理解成「自己也挂了」。
+// 历史缺口（2026-09-30 实测）：`Health` 只填了 mysql/redis/ai_platform 三项，
+// 而 docs/06-§5.4 的端点表把它列为该接口的组成部分，字段缺失时按字段消费的面板拿到 undefined。
+// 同时钉住两点：`circuit` 为 nil 时字段必须退化成 `state=disabled` 而不是整个 key 消失；
+// 「熔断打开」不得影响状态码 —— 把它当 503 会让熔断期间的健康检查把实例从 LB 里摘掉。
 func TestHealthIncludesCircuitBreakerCheck(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -59,7 +49,7 @@ func TestHealthIncludesCircuitBreakerCheck(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			// 只验 `/health`：它的 200 是**恒定的**，因此不必准备 DB/Redis 依赖。
+			// 只验 `/health`：它的 200 是恒定的，不必准备 DB/Redis 依赖。
 			h := &HealthHandler{
 				cfg:     &conf.Config{},
 				db:      nil,

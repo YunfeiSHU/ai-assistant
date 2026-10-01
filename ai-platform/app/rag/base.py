@@ -1,10 +1,10 @@
 """检索层协议（正文检索实现见 M3 ``docs/06-知识库``）。
 
-这一层在 M2 就建好，是因为 **``use_rag=true`` 时的降级语义**属于对话契约
+这一层在 M2 就建好，是因为 ``use_rag=true`` 时的降级语义属于对话契约
 （``REQ-CHAT-007``）：检索失败不能拖垮对话，而必须变成 ``degraded=true`` +
-``degraded_reasons=["rag_unavailable"]``。协议先定下来，M3 只要填实现。
+``degraded_reasons=["rag_unavailable"]``。
 
-:class:`NullRetriever` 刻意**抛异常**而不是返回空列表 —— 返回空列表会被上层理解成
+:class:`NullRetriever` 刻意抛异常而不是返回空列表 —— 返回空列表会被上层理解成
 「库里确实没有相关资料」，把「功能没接」伪装成「检索没命中」，是最难查的一类问题。
 """
 
@@ -23,14 +23,12 @@ class RetrievalUnavailable(RuntimeError):
 class RetrievedChunk:
     """一条召回片段。
 
-    除「文本 + 分数」之外还带着 :attr:`chunk_index` 与定位字段，因为检索后处理
-    需要它们：相邻切片合并靠 ``chunk_index`` 判「是否相邻」，引用溯源靠
-    ``heading_path`` / ``char_start`` / ``char_end`` 告诉用户「答自哪里」。
-    如果只传文本，后续两步就只能退回字符串匹配，既不准也不可测。
+    除「文本 + 分数」外还带 :attr:`chunk_index` 与定位字段：相邻切片合并靠
+    ``chunk_index`` 判「是否相邻」，引用溯源靠 ``heading_path`` / ``char_start`` /
+    ``char_end`` 告诉用户「答自哪里」。只传文本就只能退回字符串匹配，既不准也不可测。
 
-    ``score`` 的 **语义会变**：向量召回阶段是余弦相似度，重排阶段是交叉编码器
-    打分（同量级但不同分布）。因此所有下游阈值（``score_threshold``）只能在
-    重排之后统一应用。
+    ``score`` 的语义会变：向量召回阶段是余弦相似度，重排阶段是交叉编码器打分
+    （同量级但不同分布）。因此所有下游阈值（``score_threshold``）只能在重排之后统一应用。
     """
 
     chunk_id: str

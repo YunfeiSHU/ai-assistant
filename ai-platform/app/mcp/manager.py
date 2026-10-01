@@ -1,20 +1,12 @@
 """多个 MCP Server 的连接编排（``REQ-MCP-002`` / ``REQ-MCP-003`` / ``REQ-MCP-004``）。
 
-管理器只做四件事，每件都对应一条明写的验收标准：
+管理器只做四件事：并发建连 + 总超时（``REQ-MCP-002``）、``required`` 失败则启动失败
+（``AC-MCP-02``）、非 ``required`` 失败则降级启动（``AC-MCP-01``，服务照常起、状态
+``unavailable``）、按名字重载单个 Server（``AC-MCP-05``，不影响其它 Server）。
 
-============================  ============================================
-职责                            依据
-============================  ============================================
-并发建连 + 总超时               ``REQ-MCP-002``（总超时 ``MCP_STARTUP_TIMEOUT``）
-``required`` 失败 → 启动失败     ``AC-MCP-02``
-非 ``required`` 失败 → 降级启动  ``AC-MCP-01``（服务照常起，状态 ``unavailable``）
-按名字重载单个 Server            ``AC-MCP-05``（不影响其它 Server）
-============================  ============================================
-
-**为什么建连必须带「总超时」而不只是「每个 Server 各自超时」**：
-启动阶段是串行阻塞的（uvicorn 在 ``lifespan`` 返回前不接受请求），
-N 个 Server 各等 10s 会让启动时间随 Server 数量线性增长；
-``MCP_STARTUP_TIMEOUT`` 是「整体预算」，超了就全部按失败处理并继续启动。
+**建连必须带「总超时」而不只是「每个 Server 各自超时」**：启动阶段是串行阻塞的（uvicorn 在
+``lifespan`` 返回前不接受请求），N 个 Server 各等 10s 会让启动时间随数量线性增长；
+``MCP_STARTUP_TIMEOUT`` 是整体预算，超了就全部按失败处理并继续启动。
 """
 
 from __future__ import annotations
@@ -107,8 +99,8 @@ class McpManager:
     def iter_tools(self) -> Iterator[tuple[McpClient, McpToolDef]]:
         """遍历「当前可用」的 Server 及其**已通过过滤**的工具。
 
-        只产出 ``connected`` 的 Server：``unavailable`` 时的工具定义是上次连接的
-        残留，注册出去会让模型调用一个必然失败的工具。
+        只产出 ``connected`` 的 Server：``unavailable`` 时的工具定义是上次连接的残留，
+        注册出去会让模型调用一个必然失败的工具。
         """
         for client in self._clients.values():
             if client.status != "connected":
@@ -248,8 +240,8 @@ class McpManager:
 async def _gather_with_timeout(awaitables: list[Any], *, timeout: float) -> list[Any]:
     """并发执行并把**总耗时**限制在 ``timeout`` 内；返回每个任务的成功标志。
 
-    ``asyncio.gather(return_exceptions=True)`` + ``wait_for``：超时时未完成的任务
-    被取消，已完成任务的结果保留 —— 「部分成功」正是这里想要的语义。
+    ``asyncio.gather(return_exceptions=True)`` + ``wait_for``：超时时未完成的任务被取消，
+    已完成任务的结果保留 —— 「部分成功」正是这里想要的语义。
     """
     tasks = [asyncio.ensure_future(item) for item in awaitables]
     if not tasks:
@@ -275,9 +267,9 @@ async def _gather_with_timeout(awaitables: list[Any], *, timeout: float) -> list
 def make_mcp_check(manager: McpManager) -> HealthCheck:
     """构造 ``/health/ready`` 的 ``mcp`` 检查（``REQ-MCP-005`` / ``AC-MCP-06``）。
 
-    判定口径：**只有 ``required=true`` 的 Server 未连上才算失败**。
-    非必需的 Server 掉线是**预期内**的降级（``AC-MCP-01`` 就是这么定义的），
-    把它算成不健康会让整个服务在「某个可选工具挂了」时被摘出负载均衡。
+    判定口径：**只有 ``required=true`` 的 Server 未连上才算失败**。非必需的 Server 掉线是
+    预期内的降级（``AC-MCP-01`` 就是这么定义的），把它算成不健康会让整个服务在「某个可选
+    工具挂了」时被摘出负载均衡。
 
     没有配置任何 Server 时返回 ``skipped`` —— 「没配 MCP」不是故障。
     """

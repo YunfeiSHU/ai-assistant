@@ -1,12 +1,10 @@
 // Command server 是 go-services 的 HTTP/SSE 入口（代码生成规范.md §三.6）。
 //
-// 这里只做两件事：**装配**与**生命周期**。
-// 装配顺序即依赖顺序：配置 → 日志 → 数据层 → 鉴权 → 业务 → 传输 → 生命周期；
-// 任何一步失败都直接退出（不带着半可用的状态提供服务）。
+// 这里只做两件事：装配与生命周期。装配顺序即依赖顺序（配置 → 日志 → 数据层 →
+// 鉴权 → 业务 → 传输 → 生命周期），任何一步失败都直接退出，不带着半可用的状态服务。
 //
-// 用显式装配而不是 wire 代码生成：本服务的依赖图是线性的（七步），
-// 引入 wire 只多一层生成物与一个必须在 `go build` 前跑的步骤，
-// 而它带来的收益（少写几行 new）在这里不值。依赖图变复杂后再换。
+// 用显式装配而不是 wire 代码生成：依赖图是线性的（七步），引入 wire 只多一层生成物
+// 与一个必须在 `go build` 前跑的步骤，收益不值。依赖图变复杂后再换。
 package main
 
 import (
@@ -37,11 +35,9 @@ import (
 	"github.com/YunfeiSHU/ai-assistant/ai-platform-go/pkg/otelx"
 )
 
-// devJWTSecret 是**仅供本地开发**的兜底密钥（≥ 32 字节）。
-//
-// 生产环境下 conf.Validate 已经强制要求 JWT_SECRET 非空，所以走到这里
-// 一定是非生产环境。但即使如此也会打 WARN —— 因为「本地生成的令牌
-// 拿到别的环境用」是真实会发生的误操作，日志里留痕能省下一次排查。
+// devJWTSecret 是仅供本地开发的兜底密钥（≥ 32 字节）。
+// 生产环境下 conf.Validate 已强制要求 JWT_SECRET 非空，所以走到这里一定是非生产环境；
+// 但即使如此也会打 WARN —— 「本地生成的令牌拿到别的环境用」是真实会发生的误操作。
 const devJWTSecret = "go-services-local-development-secret-key-32bytes-min"
 
 func main() {
@@ -493,15 +489,12 @@ func run() error {
 }
 
 // aiHealthProbe 构造 `/health` 用的 AI 可达性探针（docs/06-§5.4）。
-//
-// 为什么这件事值得单独一个函数：不接探针时 `checks.ai_platform` 恒为
-// `{"ok":false,"configured":false}`，于是 `/health` 的 `status` **永远**是
-// `degraded` —— 一个恒定的字段等于没有字段，运维看到 `degraded` 会去查 AI，
-// 而 AI 其实好好的。M6 之前就是这个状态（探针留了从 M3 起的 `nil` 占位，
-// 没人接）。
+// 不接探针时 `checks.ai_platform` 恒为 `{"ok":false,"configured":false}`，于是 `/health`
+// 的 `status` 永远是 `degraded` —— 一个恒定的字段等于没有字段，运维看到 degraded 会去查
+// 一个其实好好的 AI。
 //
 // 用 HTTP 探活而不是 gRPC 通道状态：`/health` 要回答的是「AI 这套服务能不能用」，
-// 而透传类接口（KB/文档/任务）走的是 HTTP；gRPC 侧也没有可无凭据调用的探活 RPC。
+// 而透传类接口走的是 HTTP；gRPC 侧也没有可无凭据调用的探活 RPC。
 func aiHealthProbe(cfg *conf.Config, logger *slog.Logger) service.AIProbe {
 	if strings.TrimSpace(cfg.AI.BaseURL) == "" {
 		// AI 未配置（`AI_PLATFORM_BASE_URL` 为空）时**不**接探针：
@@ -518,14 +511,11 @@ func aiHealthProbe(cfg *conf.Config, logger *slog.Logger) service.AIProbe {
 }
 
 // circuitStatus 把熔断器适配成 `/health` 需要的只读视图（docs/06-§5.4）。
+// 在装配层做转换而不是让 `biz` 直接实现 `service.CircuitStatus`：「状态码 0/1/2」
+// 与「可读名 closed/half_open/open」是两个不同口径（前者给 Prometheus，后者给人和脚本），
+// 转换放在装配点让两侧各管自己的口径，也让 service 不依赖 biz 的内部常量。
 //
-// 装配层做这层转换而不是让 `biz` 直接实现 `service.CircuitStatus`：
-// 「状态码 0/1/2」与「可读名 closed/half_open/open」是两个不同的口径
-// （前者给 Prometheus，后者给人和脚本），把转换放在装配点让两侧各自
-// 只关心自己的口径，也让 service 不依赖 biz 的内部常量。
-//
-// `breaker` 为 nil（显式关闭熔断）时返回一个 `disabled` 视图：
-// `/health` 的字段**始终存在**，只是状态确定可判。
+// `breaker` 为 nil（显式关闭熔断）时返回 `disabled` 视图：`/health` 的字段始终存在。
 func circuitStatus(breaker *biz.AICircuitBreaker) func() service.CircuitStatus {
 	if breaker == nil {
 		return nil

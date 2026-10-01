@@ -1,12 +1,11 @@
 """用户级记忆偏好（``docs/07`` §5.4「关闭能力」、§6 ``/memory-settings``）。
 
-为什么单独一层而不是塞进 :class:`~app.memory.long_term.MemoryRecord`：
-``memory_enabled=false`` 表示「**既不写入也不读取**长期记忆」。把开关和记忆条目
-放一起，会出现「用户清空记忆后开关也跟着没了」这类耦合 —— 清空记忆不该改变偏好。
+单独一层而不塞进 :class:`~app.memory.long_term.MemoryRecord`：``memory_enabled=false``
+表示「既不写入也不读取」长期记忆。把开关和记忆条目放一起，会出现「用户清空记忆后开关也
+跟着没了」这类耦合 —— 清空记忆不该改变偏好。
 
-`clear_marker` 是 ``REQ-MEM-007`` 要求的「清空后 24h 内不重新抽取旧内容」的落点：
-抽取器拿不到「刚清过」这个事实就会在本轮对话里把用户刚删掉的偏好原样写回来，
-用户看到的是「删了又回来了」。
+``cleared_at`` 是 ``REQ-MEM-007`` 要求的「清空后 24h 内不重新抽取旧内容」的落点：抽取器
+拿不到「刚清过」这个事实，就会在本轮对话里把用户刚删掉的偏好原样写回来。
 """
 
 from __future__ import annotations
@@ -52,8 +51,8 @@ class MemoryPreferenceStore(Protocol):
     ) -> MemoryPreference:
         """取偏好；不存在时返回默认值（而不是抛错 —— 未设置就是「用默认」）。
 
-        ``default_enabled`` 是**全局**开关（``MEMORY_ENABLED``）：它必须能成为
-        新用户的初始值，否则运维把全局开关关掉之后，用户级默认仍然是「开」。
+        ``default_enabled`` 是全局开关（``MEMORY_ENABLED``）：它必须能成为新用户的初始值，
+        否则运维把全局开关关掉之后，用户级默认仍然是「开」。
         """
         ...
 
@@ -105,9 +104,9 @@ class InMemoryMemoryPreferenceStore:
 def recent_fingerprints(contents: Sequence[str]) -> set[str]:
     """把一批正文规范成指纹集合（冷却期「不重新抽取旧内容」的判据）。
 
-    当前实现用「整个冷却窗口内不抽取」达成同一个目的（见
-    ``MemoryService.extract_and_store``），这个函数留给 M6 里的「同一会话逐条比对」
-    方案；先把语义（按空白规范化后比较）定下来，避免两处各自实现一套规范化。
+    当前实现用「整个冷却窗口内不抽取」达成同一个目的（见 MemoryService.extract_and_store），
+    这个函数留给 M6 里的「同一会话逐条比对」方案；先把语义（按空白规范化后比较）定下来，
+    避免两处各自实现一套规范化。
     """
     return {" ".join(content.split()) for content in contents}
 

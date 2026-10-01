@@ -16,7 +16,7 @@ const metricsPath = "/metrics"
 
 // MetricsOptions 是 /metrics 独立监听器的配置。
 type MetricsOptions struct {
-	// Addr 形如 `:9106`；为空时**不启动**监听器（功能关闭）。
+	// Addr 形如 `:9106`；为空时不启动监听器（功能关闭）。
 	Addr string
 	// AllowCIDRs 是允许访问的白名单（空 = 不限制，仅建议在本地/内网如此）。
 	AllowCIDRs []string
@@ -27,14 +27,11 @@ type MetricsOptions struct {
 
 // MetricsServer 是独立的指标监听器。
 //
-// 为什么**不复用主 HTTP 引擎**：docs/06-§5.2 要求 /metrics 只能被
-// 内网/白名单访问，而主引擎是公网入口 —— 把两者放一起意味着
-// 「白名单中间件写错」就变成「公网可拉指标」（指标里含路由、错误码、
-// 用户量级等情报）。分开监听后，即使白名单写错，也只会在另一个端口上
-// 暴露，且那个端口可以通过防火墙/安全组彻底不对外。
+// 不复用主 HTTP 引擎：docs/06-§5.2 要求 /metrics 只能被内网/白名单访问，而主引擎是公网入口 ——
+// 把两者放一起意味着「白名单中间件写错」就变成「公网可拉指标」（指标含路由、错误码、
+// 用户量级等情报）。分开监听后即使白名单写错，也只会在另一个端口上暴露，那个端口可以彻底不对外。
 //
-// 另一点：这个监听器**不挂 AccessLog**。指标会被 Prometheus 每 15 秒
-// 抓一次，记进访问日志只会把真正的业务日志淹掉。
+// 它也不挂 AccessLog：Prometheus 每 15 秒抓一次，记进访问日志只会把真正的业务日志淹掉。
 type MetricsServer struct {
 	server *http.Server
 	log    *slog.Logger
@@ -114,12 +111,9 @@ func (s *MetricsServer) Shutdown(ctx context.Context) error {
 	return s.server.Shutdown(ctx)
 }
 
-// guard 实施 CIDR 白名单。
-//
-// 两种来源都认：`RemoteAddr` 的 IP，以及——当请求直接来自本机时——
-// 这已经够了。**刻意不看 `X-Forwarded-For`**：这个头的可信前提是
-// 「前面有我们自己的反代」，而指标端口通常直接暴露在 Pod 网络里，
-// 信一个客户端可控的头等于没有白名单（AC-NFR-07 是同一个道理）。
+// guard 实施 CIDR 白名单，只看 `RemoteAddr` 的 IP。
+// 刻意不看 `X-Forwarded-For`：该头的可信前提是「前面有我们自己的反代」，
+// 而指标端口通常直接暴露在 Pod 网络里，信一个客户端可控的头等于没有白名单（AC-NFR-07）。
 func (s *MetricsServer) guard(next http.Handler) http.Handler {
 	if len(s.allow) == 0 {
 		return next

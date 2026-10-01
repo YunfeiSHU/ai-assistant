@@ -26,10 +26,8 @@ type QuotaPeriodResponse struct {
 }
 
 // QuotaMetricResponse 是单个指标的配额快照（docs/02-§6.2 的 `metrics[]`）。
-//
-// `Limit` 用指针：内部用 `0` 表示「不限量」，而契约里的 `limit` 是数字。
-// 直接输出 `0` 是最危险的错译 —— 客户端会显示「剩余 0 次」，
-// 用户以为自己被禁用了。所以不限量输出 `null`。
+// `Limit` 用指针：内部用 `0` 表示「不限量」，直接输出 `0` 会让客户端显示「剩余 0 次」，
+// 用户以为自己被禁用了 —— 不限量必须输出 `null`。
 type QuotaMetricResponse struct {
 	Metric    string  `json:"metric"`
 	Limit     *int64  `json:"limit"`
@@ -84,9 +82,8 @@ func (h *QuotaHandler) Quota(c *gin.Context) {
 }
 
 // UsageItemResponse 是用量明细的一行。
-//
 // `trace_id` 原样带出：排障时「这一笔用量对应哪条链路」只能从这里拿，
-// 而明细里的 amount 是 AI 上报的真实值，对不上时就需要顺着 trace 查回去。
+// 而 amount 是 AI 上报的真实值，对不上时就要顺着 trace 查回去。
 type UsageItemResponse struct {
 	ID             int64   `json:"id"`
 	Metric         string  `json:"metric"`
@@ -144,10 +141,8 @@ func ToUsageResponse(r *biz.UsageReport) *UsageResponse {
 }
 
 // Usage 处理 `GET /me/usage`。
-//
-// 时间过滤走 `timeRangeFrom`：契约没有规定缺省区间，
-// 因此缺省给「最近 24 小时」—— 它恰好是日配额的周期，
-// 用户看到的总数就与 `/me/quota` 里的 `used` 对得上。
+// 契约没规定缺省区间，故缺省给「最近 24 小时」—— 它恰好是日配额周期，
+// 于是用户看到的总数与 `/me/quota` 里的 `used` 对得上。
 func (h *QuotaHandler) Usage(c *gin.Context) {
 	now := clockx.Truncate(time.Now())
 	to := now

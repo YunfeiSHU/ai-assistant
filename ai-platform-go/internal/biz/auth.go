@@ -23,9 +23,7 @@ const RefreshTokenBytes = 32
 // ---- 领域对象 ----
 
 // RefreshToken 是刷新令牌领域对象（`refresh_token` 表）。
-//
-// 只存 sha256 哈希（REQ-DATA-003）：明文只在响应体里出现一次。
-// 因此**任何**日志/审计都不得打印 `TokenHash` 的原文来源（那是明文令牌）。
+// TokenHash 是 sha256 哈希（REQ-DATA-003）—— 对应的明文令牌绝不可落日志。
 type RefreshToken struct {
 	ID         string
 	UserID     string
@@ -39,9 +37,7 @@ type RefreshToken struct {
 }
 
 // AuditLog 是审计记录领域对象（共享表 `audit_log`）。
-//
-// resource_type / resource_id 用空串而非 NULL（避三值逻辑，docs/05-§2.8）；
-// `Detail` 为指针表示「这一列没写」，与「写了个空 JSON」区分开。
+// resource_* 用空串而非 NULL（避三值逻辑，docs/05-§2.8）；Detail 用指针区分「未写」与「空 JSON」。
 type AuditLog struct {
 	ID           int64
 	UserID       *string
@@ -55,38 +51,34 @@ type AuditLog struct {
 }
 
 // 审计动作（docs/05-§2.8 MUST 记录的动作）。
-//
-// 动作名是**跨服务契约**：ai-platform 会按同一组字符串写这张共享表，
-// 改这里等于改双方共识，必须先改 docs。
+// 动作名是跨服务契约：ai-platform 按同一组字符串写这张共享表，改动前先改 docs。
 const (
-	// AuditRegister 记录注册成功（新用户落库）。
+	// AuditRegister 记录注册成功。
 	AuditRegister = "register"
 	// AuditLogin 记录登录成功（含签发令牌对）。
 	AuditLogin = "login"
-	// AuditLoginFailed 记录登录失败；detail 只放脱敏后的邮箱，不放密码。
+	// AuditLoginFailed 记录登录失败；detail 只放脱敏邮箱，不放密码。
 	AuditLoginFailed = "login_failed"
-	// AuditLogout 记录单设备登出（作废指定 refresh token）。
+	// AuditLogout 记录单设备登出。
 	AuditLogout = "logout"
-	// AuditLogoutAll 记录全设备登出（作废全部令牌并递增 token_version）。
+	// AuditLogoutAll 记录全设备登出（并递增 token_version）。
 	AuditLogoutAll = "logout_all"
-	// AuditPasswordChange 记录改密码成功（随后旧令牌全部失效）。
+	// AuditPasswordChange 记录改密码成功。
 	AuditPasswordChange = "password_change"
-	// AuditTokenRefresh 记录刷新令牌轮换成功（旧令牌同事务作废）。
+	// AuditTokenRefresh 记录刷新令牌轮换成功。
 	AuditTokenRefresh = "token_refresh"
 	// AuditConversationCreate 记录会话创建。
 	AuditConversationCreate = "conversation_create"
 	// AuditConversationDelete 记录会话删除。
 	AuditConversationDelete = "conversation_delete"
-	// AuditQuotaExceeded 记录一次配额拦截（资源未创建/消息未落库）。
+	// AuditQuotaExceeded 记录一次配额拦截。
 	AuditQuotaExceeded = "quota_exceeded"
 	// AuditRateLimited 记录一次限流拦截。
 	AuditRateLimited = "rate_limited"
 )
 
 // TokenPair 是登录 / 刷新成功后的签发结果（docs/02-§6.1）。
-//
-// 它是 biz 的**结果类型**而不是响应 DTO：`User` 是领域对象，
-// 「哪些字段能出厂」由 service 决定。
+// 它是 biz 的结果类型而非响应 DTO，字段能否出厂由 service 决定。
 type TokenPair struct {
 	AccessToken  string
 	RefreshToken string
@@ -101,20 +93,16 @@ type TokenPair struct {
 type TokenRepo interface {
 	// Create 插入一条刷新令牌记录。
 	Create(ctx context.Context, rt *RefreshToken) error
-	// GetByHash 按哈希取记录；不存在返回 ErrNotFound。
-	//
-	// 刻意不在这里判断「是否已作废/已过期」：那是业务语义，
-	// 仓储只负责「按哈希给我这一行」。
+	// GetByHash 按哈希取记录；不存在返回 ErrNotFound。不判断是否作废/过期（那是业务语义）。
 	GetByHash(ctx context.Context, hash string) (*RefreshToken, error)
 	// Rotate 原子轮换：作废旧令牌并插入新令牌（REQ-AUTH-003 单次有效）。
-	//
-	// 旧令牌已被用过 / 已登出 / 已过期时返回 ErrTokenInvalid **且事务回滚**。
+	// 旧令牌已用过/已登出/已过期时返回 ErrTokenInvalid 且事务回滚。
 	Rotate(ctx context.Context, oldHash string, next *RefreshToken, at time.Time) error
 	// RevokeByHash 作废单个令牌，返回是否命中（幂等，不命中不报错）。
 	RevokeByHash(ctx context.Context, userID, hash string, at time.Time) (bool, error)
 	// RevokeAll 作废某用户全部未作废令牌，返回作废条数。
 	RevokeAll(ctx context.Context, userID string, at time.Time) (int64, error)
-	// ListActive 列出某用户当前有效的令牌（设备列表，P2 用）。
+	// ListActive 列出某用户当前有效的令牌（设备列表）。
 	ListActive(ctx context.Context, userID string, at time.Time) ([]RefreshToken, error)
 	// DeleteExpired 分批删除已过期或很久前作废的令牌（保留期清理）。
 	DeleteExpired(ctx context.Context, before time.Time, limit int) (int64, error)
@@ -130,23 +118,18 @@ type AuditRepo interface {
 	DeleteOlderThan(ctx context.Context, before time.Time, limit int) (int64, error)
 }
 
-// VersionInvalidator 在 `token_version` 被递增后清掉其缓存。
+// VersionInvalidator 在 `token_version` 递增后清掉其缓存（可为 nil，表示无缓存层）。
+// 接口定义在消费方（biz）而非实现方，便于单测传 nil。
 //
-// 接口定义在消费方（biz）而不是实现方，也不直接依赖 data 的具体类型：
-// 这样单测可以传 nil（表示没有缓存层）。
-//
-// 不传入的后果很具体：校验逻辑是「令牌的 ver == 当前版本」才通过，
-// 而缓存里存的是**递增前**的版本。若不清缓存，一个 ver=1 的旧令牌
-// 会与缓存里的 1 相等而继续被放行 —— 「改密码踢下线」最多失效一个 TTL。
+// 不清的后果：缓存里是递增前的版本，旧令牌的 ver 与之相等仍会被放行 ——
+// 「改密码踢下线」最多失效一个 TTL。
 type VersionInvalidator interface {
 	Invalidate(ctx context.Context, userID string) error
 }
 
 // TokenVersionChecker 校验 JWT 的 `ver` 与用户当前 token_version 是否一致
 // （docs/02-§3.3 第 ⑦ 步，REQ-AUTH-004）。
-//
-// 它是**安全规则**而不是传输细节，所以接口放在 biz 而不是 middleware：
-// 中间件只是它的调用方（`server/middleware → biz` 方向合法）。
+// 放在 biz 而非 middleware：它是安全规则，中间件只是调用方。
 type TokenVersionChecker interface {
 	CheckTokenVersion(ctx context.Context, userID string, ver int) error
 }
@@ -165,10 +148,8 @@ type AuthDeps struct {
 	Log        *slog.Logger
 	// Versions 可为 nil：表示没有版本缓存，每次校验直接回源 MySQL。
 	Versions VersionInvalidator
-	// Metrics 是登录/刷新成败的埋点口（M6）。为 nil 时构造期换成空实现。
-	//
-	// 登录失败率与刷新失败率是两个**必看**的面板：前者是撞库的信号，
-	// 后者是客户端体验的信号（令牌过期时间配太短时会看到它抬升）。
+	// Metrics 是登录/刷新成败的埋点（为 nil 时构造期换成空实现）。
+	// 登录失败率（撞库信号）与刷新失败率（客户端体验信号）是两个必看面板。
 	Metrics Metrics
 }
 
@@ -210,7 +191,7 @@ type RefreshInput struct {
 	RefreshToken string `json:"refresh_token"`
 }
 
-// LogoutInput 是登出请求体（两个字段都可选）。
+// LogoutInput 是登出请求体（两字段可选：指定 refresh_token 或 logout_all）。
 type LogoutInput struct {
 	RefreshToken string `json:"refresh_token"`
 	LogoutAll    bool   `json:"logout_all"`
@@ -224,18 +205,15 @@ type ChangePasswordInput struct {
 
 // ---- 注册 ----
 
-// Register 创建用户（REQ-AUTH-001）。
-//
-// 自然幂等：同邮箱第二次返回 409 EMAIL_ALREADY_EXISTS（docs/02-§7）。
+// Register 创建用户（REQ-AUTH-001）。同邮箱第二次返回 409 EMAIL_ALREADY_EXISTS（docs/02-§7）。
 func (s *AuthService) Register(ctx context.Context, in RegisterInput, meta RequestMeta) (*User, error) {
 	email := cryptox.NormalizeEmail(in.Email)
 	if fields := validateRegister(in, email, s.d.Policy); len(fields) > 0 {
 		return nil, errs.InvalidArgument(fields)
 	}
 
-	// 查重必须包含**已软删**的行：uk_user_email 不含 deleted_at，
-	// 邮箱永久占用（REQ-DATA-009）。漏掉这一步会在 INSERT 时才撞唯一键，
-	// 于是「邮箱已被占用」从 409 退化成 500。
+	// 查重须含已软删的行：uk_user_email 不含 deleted_at，邮箱永久占用（REQ-DATA-009）。
+	// 漏掉这一步会在 INSERT 时才撞唯一键 → 「邮箱已被占用」从 409 退化成 500。
 	exists, err := s.d.Users.EmailExists(ctx, email)
 	if err != nil {
 		return nil, wrapDB(err)
@@ -276,10 +254,8 @@ func (s *AuthService) Register(ctx context.Context, in RegisterInput, meta Reque
 // ---- 登录 ----
 
 // Login 校验凭据并签发令牌对（REQ-AUTH-002）。
-//
-// 「用户不存在」与「密码错误」返回**同一个** `INVALID_CREDENTIALS`，
-// 且两条路径都执行一次等价的 Argon2id 计算 —— 否则响应耗时差
-// 会把「这个邮箱存在吗」泄漏出去（AC-NFR-06）。
+// 「用户不存在」与「密码错误」同返回 INVALID_CREDENTIALS 且都做一次等价 Argon2id，
+// 否则耗时差会泄漏「邮箱是否存在」（AC-NFR-06）。
 func (s *AuthService) Login(ctx context.Context, in LoginInput, meta RequestMeta) (*TokenPair, error) {
 	email := cryptox.NormalizeEmail(in.Email)
 	if fields := validateLogin(in, email, s.d.Policy); len(fields) > 0 {
@@ -291,9 +267,8 @@ func (s *AuthService) Login(ctx context.Context, in LoginInput, meta RequestMeta
 		if errors.Is(err, ErrNotFound) {
 			cryptox.BurnPasswordHash(in.Password)
 			s.audit(ctx, nil, AuditLoginFailed, meta, map[string]any{"email": cryptox.MaskEmail(email)})
-			// 账号不存在归 `bad_credentials` 而不是单独一档：
-			// 对外两者本来就不可区分（防用户枚举），面板上也不该让
-			// 猜号攻击能通过「哪条曲线在涨」区分出来。
+			// 归 `bad_credentials` 而非单独一档：对外本就不可区分，
+			// 面板也不该让猜号攻击据此分辨。
 			s.d.Metrics.LoginAttempt(MetricLoginBadCredentials)
 			return nil, errs.New(errs.CodeInvalidCredentials)
 		}
@@ -302,7 +277,7 @@ func (s *AuthService) Login(ctx context.Context, in LoginInput, meta RequestMeta
 
 	ok, verifyErr := cryptox.VerifyPassword(in.Password, u.PasswordHash)
 	if verifyErr != nil {
-		// 编码串损坏：这是数据问题，不能当成「密码错误」糊过去。
+		// 编码串损坏是数据问题，不能当成「密码错误」。
 		s.d.Log.ErrorContext(ctx, "auth.password_hash_corrupt", slog.String("user_id", u.ID))
 		return nil, errs.Wrap(errs.CodeInternalError, verifyErr)
 	}
@@ -338,7 +313,6 @@ func (s *AuthService) Login(ctx context.Context, in LoginInput, meta RequestMeta
 // ---- 刷新 ----
 
 // Refresh 用 refresh token 换取新令牌对（REQ-AUTH-003）。
-//
 // 单次有效：旧令牌在同一次调用里被作废，重复使用返回 401。
 func (s *AuthService) Refresh(ctx context.Context, in RefreshInput, meta RequestMeta) (*TokenPair, error) {
 	if strings.TrimSpace(in.RefreshToken) == "" {
@@ -358,10 +332,8 @@ func (s *AuthService) Refresh(ctx context.Context, in RefreshInput, meta Request
 		return nil, wrapDB(err)
 	}
 	if old.RevokedAt != nil || !old.ExpiresAt.After(now) {
-		// 已作废的令牌被再次使用有两个完全不同的成因：
-		// 客户端并发刷新（无害）与令牌被窃取后重放（严重）。
-		// 单看指标分不出来，但两者的**绝对量**差异很大 ——
-		// 所以先把它计出来，异常时再去翻日志。
+		// 已作废令牌被再次使用可能是无害的并发刷新，也可能是令牌重放（严重）。
+		// 这里分不出来，先计数，异常时再翻日志。
 		s.d.Metrics.TokenRefresh(MetricRefreshInvalid)
 		return nil, errs.New(errs.CodeInvalidRefreshToken)
 	}
@@ -381,11 +353,8 @@ func (s *AuthService) Refresh(ctx context.Context, in RefreshInput, meta Request
 	if err != nil {
 		return nil, err
 	}
-	// 原子轮换：作废旧哈希 + 插入新行。
-	//
-	// 这里能直接用 `next`（而不是先建后查）是因为 buildPair 只组装不落库 ——
-	// 「先建后废」看似更安全，但插入失败时用户会同时失去两个令牌，
-	// 而单次事务里「先废后建」失败会整体回滚，两者都不会出现「有旧无新」。
+	// 原子轮换：作废旧哈希 + 插入新行。直接用 `next`（buildPair 只组装不落库）：
+	// 单事务「先废后建」失败会整体回滚，不会出现「有旧无新」。
 	if err := s.d.Tokens.Rotate(ctx, hash, next, now); err != nil {
 		if errors.Is(err, ErrTokenInvalid) {
 			return nil, errs.New(errs.CodeInvalidRefreshToken)
@@ -400,15 +369,11 @@ func (s *AuthService) Refresh(ctx context.Context, in RefreshInput, meta Request
 
 // ---- 登出 ----
 
-// Logout 作废刷新令牌（REQ-AUTH-004）。
+// Logout 作废刷新令牌（REQ-AUTH-004）。幂等：无论命中与否都返回 nil（接口返回 204）。
 //
-// 语义（按契约的三种情形）：
-//   - 给了 `refresh_token`：只作废该设备；
-//   - `logout_all=true`：作废全部 + 递增 `token_version`（旧 access 立即失效）；
-//   - 都没给：作废全部（不递增版本，access 在剩余 TTL 内仍可用，
-//     靠客户端丢弃 —— 这是 docs/01-S9 明确接受的代价）。
-//
-// 幂等：无论命中与否都返回 nil（接口返回 204）。
+// 三种情形：给了 refresh_token → 只作废该设备；logout_all=true → 作废全部并递增
+// token_version（旧 access 立即失效）；都没给 → 作废全部但不递增版本
+// （access 在剩余 TTL 内仍可用，靠客户端丢弃，docs/01-S9 接受的代价）。
 func (s *AuthService) Logout(ctx context.Context, userID string, in LogoutInput, meta RequestMeta) error {
 	now := s.now()
 
@@ -444,9 +409,7 @@ func (s *AuthService) Logout(ctx context.Context, userID string, in LogoutInput,
 
 // ---- 改密码 ----
 
-// ChangePassword 校验旧密码后更新，并踢下线所有设备（REQ-AUTH-004）。
-//
-// 返回新的 `token_version`（调用方通常不需要，但便于测试断言）。
+// ChangePassword 校验旧密码后更新，并踢下线所有设备（REQ-AUTH-004），返回新的 token_version。
 func (s *AuthService) ChangePassword(ctx context.Context, userID string, in ChangePasswordInput, meta RequestMeta) (int, error) {
 	u, err := s.d.Users.GetByID(ctx, userID)
 	if err != nil {
@@ -494,19 +457,15 @@ func (s *AuthService) ChangePassword(ctx context.Context, userID string, in Chan
 	if _, err := s.d.Tokens.RevokeAll(ctx, userID, now); err != nil {
 		s.d.Log.WarnContext(ctx, "auth.revoke_after_password_change_failed", slog.String("error", err.Error()))
 	}
-	// 版本缓存同理必须失效：它存的是递增前的值，而旧 access 令牌的 ver
-	// 恰好等于那个值 —— 不清就会「改完密码旧令牌还能用满一个 TTL」。
+	// 版本缓存也必须失效：它存的是递增前的值，与旧 access 的 ver 相等，不清就还能用满一个 TTL。
 	s.invalidateVersion(ctx, userID)
 
 	s.audit(ctx, &userID, AuditPasswordChange, meta, nil)
 	return version, nil
 }
 
-// invalidateVersion 尽量清掉版本缓存；失败只告警不阻断。
-//
-// 不阻断的理由：业务动作（改密码 / 踢下线）本身已经成功，
-// 缓存失效失败只是让「安全窗口」从 0 变成最多一个 TTL —— 反过来说，
-// 为了缓存失败而回滚一次已生效的密码修改，对用户是更差的体验。
+// invalidateVersion 尽量清掉版本缓存；失败只告警不阻断 ——
+// 业务动作已成功，为缓存失败回滚一次已生效的密码修改对用户更糟。
 func (s *AuthService) invalidateVersion(ctx context.Context, userID string) {
 	if s.d.Versions == nil {
 		return
@@ -531,10 +490,7 @@ func (s *AuthService) issuePair(ctx context.Context, u *User, meta RequestMeta, 
 	return pair, nil
 }
 
-// buildPair 只组装令牌对，**不落库**。
-//
-// 拆出这一步是为了让「刷新」可以在同一个事务里完成「作废旧 + 插入新」
-// 而不用先插入再查回来（多一次往返，且中间态对并发可见）。
+// buildPair 只组装令牌对，不落库 —— 好让刷新在同一事务里完成「作废旧 + 插入新」。
 func (s *AuthService) buildPair(u *User, meta RequestMeta, deviceName string) (*TokenPair, *RefreshToken, error) {
 	now := s.now()
 	access, exp, err := s.d.Signer.Sign(u.ID, u.TokenVersion, now)
@@ -576,10 +532,8 @@ func (s *AuthService) buildPair(u *User, meta RequestMeta, deviceName string) (*
 	return pair, next, nil
 }
 
-// audit 追加审计记录（best-effort）。
-//
-// 审计写失败 MUST NOT 影响业务结果：把「登录成功但审计表满」变成登录失败，
-// 等于让一个次要依赖决定核心可用性。失败时记 ERROR 让告警能抓到。
+// audit 追加审计记录（best-effort）。审计写失败 MUST NOT 影响业务结果 ——
+// 不该让次要依赖决定核心可用性；失败记 ERROR 供告警。
 func (s *AuthService) audit(ctx context.Context, userID *string, action string, meta RequestMeta, detail map[string]any) {
 	if s.d.Audit == nil {
 		return
@@ -641,11 +595,8 @@ func validateLogin(in LoginInput, email string, policy PasswordPolicy) []errs.Fi
 	return fields
 }
 
-// looksLikeEmail 是轻量的邮箱格式校验。
-//
-// 刻意不用「完整 RFC 5322 正则」：它的常见实现要么过度拒绝合法地址，
-// 要么长得无法审查。真正验证邮箱有效性的手段只有发信确认，
-// 这里只需要挡住明显的手滑输入。
+// looksLikeEmail 是轻量格式校验，只挡明显的手滑输入。
+// 不用完整 RFC 5322 正则：常见实现要么误拒合法地址，要么长到无法审查；真正的有效性只能靠发信。
 func looksLikeEmail(s string) bool {
 	at := strings.Index(s, "@")
 	if at <= 0 || at != strings.LastIndex(s, "@") {
@@ -683,9 +634,8 @@ func defaultNickname(nickname, email string) string {
 }
 
 // wrapDB 把仓储层错误归一化成对外错误。
-//
-// 数据库不可用是**可重试**的 503（DEPENDENCY_UNAVAILABLE），
-// 而不是 500：客户端重试即可，不该被当成服务端 bug 计入错误率。
+// 数据库不可用给可重试的 503（DEPENDENCY_UNAVAILABLE）而非 500 —— 客户端重试即可，
+// 不该计入服务端错误率。
 func wrapDB(err error) *errs.AppError {
 	if err == nil {
 		return nil

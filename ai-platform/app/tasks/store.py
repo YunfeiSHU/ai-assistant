@@ -1,9 +1,8 @@
 """任务仓储（``REQ-TASK-001`` / ``REQ-TASK-003``）。
 
-**为什么用「乐观锁 + 变更函数」而不是一堆 ``update_status`` 方法**：
-``docs/08`` §2 要求状态变更必须带 ``WHERE status = :expected AND version = :v``。
-把它写成通用原语（``update(task_id, mutate)`` 内部做版本比对与重试），
-每个业务动作就只需描述「改什么」，不必各自重写一遍并发控制 —— 重写就一定会漏。
+状态变更写成通用原语（``update(task_id, mutate)`` 内部做版本比对与重试）而不是一堆
+``update_status`` 方法：``docs/08`` §2 要求每次变更都带 ``WHERE status = :expected AND
+version = :v``，每个业务动作只需描述「改什么」，不必各自重写一遍并发控制 —— 重写就一定会漏。
 """
 
 from __future__ import annotations
@@ -33,8 +32,8 @@ logger = logging.getLogger("app.tasks")
 TASK_NOT_FOUND_MESSAGE = "任务不存在"
 
 #: 任务列表的类型别名。**不能**在类体内直接写 ``list[Task]``：仓储协议里有一个
-#: 名为 ``list`` 的方法，类体内那个名字会遮蔽内置类型，my.py 会把注解解析成
-#: 「方法不能当类型用」并报错（运行时无影响，但类型检查就废了）。
+#: 名为 ``list`` 的方法，类体内那个名字会遮蔽内置类型，mypy 会把注解解析成
+#: 「方法不能当类型用」并报错。
 _TaskList = builtins.list[Task]
 
 
@@ -86,8 +85,8 @@ class TaskStore(Protocol):
     async def list_stale_pending(self, *, before: str, limit: int = 50) -> _TaskList:
         """列出「创建于 ``before`` 之前且仍停在 ``PENDING``」的任务（``docs/08`` §5.1）。
 
-        补偿扫描需要**全局**（跨用户）视图：投递失败的任务属于哪个用户都一样
-        没人管，而按用户逐个扫会产生 N 次查询、还漏掉永远不会被再次访问的用户。
+        补偿扫描需要**全局**（跨用户）视图：投递失败的任务属于哪个用户都一样没人管，
+        而按用户逐个扫会产生 N 次查询、还漏掉永远不会被再次访问的用户。
         """
         ...
 
@@ -144,12 +143,11 @@ class InMemoryTaskStore:
             and (type_ is None or task.type is type_)
             and (resource_id is None or task.resource_id == resource_id)
         ]
-        # 排序键与游标比较必须**是同一个键**：``(created_at, id)``。
-        # 这里踩过坑：早期用 ``task.created_at``（字符串）排序、却把游标解出的
-        # ``datetime`` 又 ``isoformat()`` 回字符串来比较 —— 两者格式不同
-        # （``...604Z`` vs ``...604000+00:00``），字符串比较会把同一毫秒创建的任务
-        # 全部判成「已翻过」，第二页直接返回空数组。走 ``cursor_position`` 统一成
-        # 带时区 ``datetime`` 再比，同一时间戳下由 ``id`` 兜底（Windows 时间戳粒度粗）。
+        # 排序键与游标比较必须**是同一个键**：``(created_at, id)``。踩过的坑：早期用
+        # ``task.created_at``（字符串）排序，却把游标解出的 ``datetime`` 又 ``isoformat()``
+        # 回字符串来比较 —— 两者格式不同（``...604Z`` vs ``...604000+00:00``），字符串比较会把
+        # 同一毫秒创建的任务全部判成「已翻过」，第二页直接返回空数组。走 ``cursor_position``
+        # 统一成带时区 ``datetime`` 再比，同一时间戳下由 ``id`` 兜底（Windows 时间戳粒度粗）。
         selected.sort(key=lambda task: cursor_position(task.created_at, task.id), reverse=True)
         if cursor:
             moment, cursor_id = decode_cursor(cursor)
@@ -169,13 +167,12 @@ class InMemoryTaskStore:
             candidate = replace(current)
             mutate(candidate)
             if candidate.version != current.version:
-                # 变更函数不许自己动版本号：版本由 store 统一推进，
-                # 否则「乐观锁」会变成各调用点自己说了算的形式主义
+                # 变更函数不许自己动版本号：版本由 store 统一推进，否则「乐观锁」
+                # 会变成各调用点自己说了算的形式主义
                 raise TaskConflict(f"变更函数不得修改 version（任务 {task_id}）")
             candidate.version = current.version + 1
-            # ``updated_at`` 必须真的前进：它在接口契约里（docs/08 §3），
-            # 而“永远等于 created_at”会让「这个任务多久没动了」这类排障问题
-            # 得到错误答案（也会让前端的“最后更新时间”永远不变）。
+            # ``updated_at`` 必须真的前进：它在接口契约里（``docs/08`` §3），而「永远等于
+            # ``created_at``」会让「这个任务多久没动了」这类排障得到错误答案。
             candidate.updated_at = now_iso()
             self._tasks[task_id] = candidate
             return replace(candidate)
@@ -214,10 +211,9 @@ def encode_task_cursor(task: Task) -> str:
     return encode_cursor(*cursor_position(task.created_at, task.id))
 
 
-#: 时间戳解析不了时的位置：排在**最前**（等价于「非常久以前」）。
-#: 补偿扫描宁可多重投一次，也不能因为一行坏数据而整个停摆 ——
-#: ``list_stale_pending`` 抛异常会让**所有**滞留任务都得不到补偿，
-#: 而原因只是一行 ``created_at`` 被写坏了。
+#: 时间戳解析不了时的位置：排在**最前**（等价于「非常久以前」）。补偿扫描宁可多
+#: 重投一次，也不能因为一行坏数据而整个停摆 —— ``list_stale_pending`` 抛异常会让
+#: **所有**滞留任务都得不到补偿。
 _UNPARSABLE = datetime.min.replace(tzinfo=UTC)
 
 
@@ -240,13 +236,12 @@ def _before_or_unparsable(task: Task, cutoff: tuple[datetime, str]) -> bool:
 def build_task_store(settings: Settings) -> TaskStore:
     """按 ``INFRA_BACKEND`` 选择任务仓储。
 
-    * ``memory`` —— 进程内（本地开发 / 单进程测试）。**与 API 同进程**，
-      所以 ``TASK_RUNNER=kafka`` 下它不可用（Worker 查不到任务行）；
-    * ``real``   —— Redis（跨进程共享）。MySQL 仓储是 ``docs/09`` 指定的权威实现，
-      端口已定好，替换不影响业务代码（见 ``docs/12`` 的待办）。
+    ``memory`` 是进程内实现（本地开发 / 单进程测试），**与 API 同进程**，所以
+    ``TASK_RUNNER=kafka`` 下不可用（Worker 查不到任务行）；``real`` 是 Redis（跨进程共享），
+    而 MySQL 仓储是 ``docs/09`` 指定的权威实现（见 ``docs/12`` 的待办）。
 
-    Redis 不可用（缺依赖 / 连不上）时**不阻断启动**，退化成内存仓储并告警：
-    代价写在脸上（跨进程执行失效），而生产环境由 ``validate_for_startup`` 拦住。
+    Redis 不可用（缺依赖 / 连不上）时**不阻断启动**，退化成内存仓储并告警：代价写在脸上
+    （跨进程执行失效），生产环境由 ``validate_for_startup`` 拦住。
     """
     if not settings.uses_shared_task_store:
         return InMemoryTaskStore()

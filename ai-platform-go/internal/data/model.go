@@ -1,21 +1,16 @@
 // 持久化对象（PO）：表结构的 Go 侧映射。
 //
-// 它们与 biz 的领域对象（biz.User / biz.RefreshToken / biz.AuditLog）是
-// **两套类型**，转换只发生在 data 侧（见各仓储文件末尾的 toXxxPO / toXxxDO）。
-// 代价是几行笨拙的逐字段赋值，换来的是「表加了一列」与「对外多暴露一个字段」
-// 变成两件独立的事 —— 共用一套类型时，PasswordHash 这类字段很容易随着
-// 「反正已经有了」被顺手序列化出去（规范 §三.2 把映射责任给了 service）。
+// 它们与 biz 的领域对象是两套类型，转换只发生在 data 侧（见各仓储文件末尾的 toXxxPO / toXxxDO）。
+// 代价是几行笨拙的逐字段赋值，换来的是「表加了一列」与「对外多暴露一个字段」变成两件独立的事 ——
+// 共用一套类型时，PasswordHash 这类字段很容易被顺手序列化出去（规范 §三.2 把映射责任给了 service）。
 //
-// 表结构的权威定义是 deploy/mysql/*.sql（docs/05-§2），这里只做映射，
-// **不调用 AutoMigrate**：建表由脚本负责，服务启动只校验表存在。
+// 表结构的权威定义是 deploy/mysql/*.sql（docs/05-§2），这里只做映射，不调用 AutoMigrate。
 package data
 
 import "time"
 
-// 表名常量：多处用到，集中定义避免拼错。
-//
-// 取值 MUST 与 deploy/mysql/*.sql 建出的真实表名逐字一致：
-// 拼错不会编译失败，只会在运行时报「表不存在」。
+// 表名常量：集中定义避免拼错。
+// 取值 MUST 与 deploy/mysql/*.sql 建出的真实表名逐字一致：拼错不会编译失败，只会在运行时报「表不存在」。
 const (
 	// TableUser 是用户表。
 	TableUser = "user"
@@ -31,16 +26,14 @@ const (
 	TableUsageRecord = "usage_record"
 	// TableIdempotencyRecord 是幂等响应快照表。
 	TableIdempotencyRecord = "idempotency_record"
-	// TableAuditLog 是审计表；它是与 ai-platform **共享**的表，双方按同一组 action 写入。
+	// TableAuditLog 是审计表；与 ai-platform 共享，双方按同一组 action 写入。
 	TableAuditLog = "audit_log"
 )
 
 // quoteIdent 给表名/列名加反引号。
-//
-// 原生 SQL 里的表名一律用它拼常量，**不要写字符串字面量**：
-// 曾经的批量改名把类型名（`conversationPO` / `messagePO`）改进了字符串里，
-// 编译器和单测都发现不了，只有真跑 SQL 时才报「表不存在」。
-// 守门测试见 TestNoPOTypeNameInSQL。
+// 原生 SQL 里的表名一律用它拼常量，不要写字符串字面量：曾经的批量改名把类型名
+// （`conversationPO` / `messagePO`）改进了字符串里，编译器和单测都发现不了，
+// 只有真跑 SQL 时才报「表不存在」。守门测试见 TestNoPOTypeNameInSQL。
 func quoteIdent(name string) string { return "`" + name + "`" }
 
 // conversationPO 取值。
@@ -80,10 +73,9 @@ const (
 	FinishReasonCanceled = "canceled"
 )
 
-// userPO 映射 `userPO` 表。
-//
-// 注意：本表**没有** user_id 列（id 就是用户 id）；`refresh_token` 等引用它的
-// 列宽是 VARCHAR(64)（跨服务字段约定 docs/05-§2.0）。
+// userPO 映射 `user` 表。
+// 本表没有 user_id 列（id 就是用户 id）；`refresh_token` 等引用它的列宽是 VARCHAR(64)
+// （跨服务字段约定 docs/05-§2.0）。
 type userPO struct {
 	ID           string     `gorm:"column:id;type:varchar(32);primaryKey"`
 	Email        string     `gorm:"column:email;type:varchar(254)"`
@@ -102,7 +94,6 @@ type userPO struct {
 func (userPO) TableName() string { return TableUser }
 
 // refreshTokenPO 映射 `refresh_token` 表。
-//
 // 只存 sha256 哈希（REQ-DATA-003）：明文只在响应体里出现一次。
 type refreshTokenPO struct {
 	ID         string     `gorm:"column:id;type:varchar(32);primaryKey"`
@@ -120,9 +111,7 @@ type refreshTokenPO struct {
 func (refreshTokenPO) TableName() string { return TableRefreshToken }
 
 // conversationPO 映射 `conversation` 表。
-//
-// `KBIDs` 用 JSONList（语义就是 `string[]`，要参与校验与回显）；
-// `Metadata` 用 JSONRaw（透传埋点，网关不解释）。
+// `KBIDs` 用 JSONList（语义是 `string[]`，要参与校验与回显）；`Metadata` 用 JSONRaw（透传埋点）。
 type conversationPO struct {
 	ID            string     `gorm:"column:id;type:varchar(32);primaryKey"`
 	UserID        string     `gorm:"column:user_id;type:varchar(64)"`
@@ -143,13 +132,10 @@ type conversationPO struct {
 // TableName 返回表名。
 func (conversationPO) TableName() string { return TableConversation }
 
-// messagePO 映射 `messagePO` 表。
-//
+// messagePO 映射 `message` 表。
 // 列名 `refs` 而非 `references`（后者是 MySQL 8.0 保留字）。
-//
-// `Refs` / `ToolCalls` 用 JSONRaw：它们的结构由 ai-platform 定义，
-// 网关只做原样存与原样取（一旦网关开始解析，AI 侧改字段就变成网关的故障）。
-// `Usage` 相反 —— 它是强类型的，因为配额要靠 `total_tokens` 累加（接缝 J7）。
+// `Refs` / `ToolCalls` 用 JSONRaw（结构由 ai-platform 定义，网关只原样存取）；
+// `Usage` 相反是强类型 —— 配额要靠 `total_tokens` 累加（接缝 J7）。
 type messagePO struct {
 	ID              string    `gorm:"column:id;type:varchar(32);primaryKey"`
 	ConversationID  string    `gorm:"column:conversation_id;type:varchar(32)"`
@@ -203,8 +189,7 @@ type usageRecordPO struct {
 func (usageRecordPO) TableName() string { return TableUsageRecord }
 
 // idempotencyRecordPO 映射共享表 `idempotency_record`。
-//
-// ⚠️ 这张表与 ai-platform 共用（docs/05-§2.7）：列定义 MUST 双方评审后再改，
+// ⚠️ 与 ai-platform 共用（docs/05-§2.7）：列定义 MUST 双方评审后再改，
 // 改窄（如把 method 变成无默认值的 NOT NULL）会直接弄挂 AI 侧的写入。
 // 网关必填 method / request_hash；AI 侧不填（其默认 ”）。
 type idempotencyRecordPO struct {

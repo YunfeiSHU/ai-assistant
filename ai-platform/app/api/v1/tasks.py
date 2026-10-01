@@ -1,10 +1,11 @@
-"""任务路由（``docs/08`` §4.1 / §4.2 / §4.3 / §4.4 / §4.5）。
+"""任务路由（``docs/08`` §4.1 ～ §4.5）。
 
-``GET /tasks/{id}/events`` 是 SSE 进度流，它复用 ``/chat/stream`` 的帧构造与
-保活机制（``app/core/sse.py``），事件源则是任务事件总线（``app/tasks/events.py``）：
-``inline`` 执行器下是进程内广播，``INFRA_BACKEND=real`` 下是 Redis pub/sub。
-**总线只做尽力而为的增量推送**，所以这个接口的正确用法是
-「先连这个流拿到快照首帧，再按增量更新」——首帧永远读任务表。
+``GET /tasks/{id}/events`` 复用 ``/chat/stream`` 的帧构造与保活机制
+（``app/core/sse.py``），事件源是任务事件总线（``app/tasks/events.py``）：``inline``
+执行器下是进程内广播，``INFRA_BACKEND=real`` 下是 Redis pub/sub。
+
+总线只做尽力而为的增量推送，所以正确用法是「先连这个流拿到快照首帧，再按增量更新」——
+首帧永远读任务表（见 ``app/tasks/stream.py``）。
 """
 
 from __future__ import annotations
@@ -112,8 +113,8 @@ async def retry_task(
 ) -> TaskOut:
     """重试失败任务；``retry_count >= max_retries`` → ``409 TASK_NOT_RETRYABLE``。
 
-    重置状态之后必须**投递**（``docs/08`` §4.4）：只改数据库状态的话任务永远停在
-    ``QUEUED``，接口看起来成功、日志里也没有异常，但没有任何东西会来执行它。
+    重置状态之后必须投递（``docs/08`` §4.4）：只改数据库状态的话任务永远停在
+    ``QUEUED``，接口看起来成功、日志里也没异常，但没有任何东西会来执行它。
     """
     task, requeued = await service.retry(task_id, user_id)
     if requeued:
@@ -145,9 +146,9 @@ async def stream_events(
 ) -> StreamingResponse:
     """任务进度流（``docs/08`` §4.5）。
 
-    鉴权与「任务存在吗」在 SSE **之前**完成：这样越权/不存在仍是普通的
-    ``404 TASK_NOT_FOUND`` JSON 响应，而不是一个先返回 200、再在流里推错误的
-    接口 —— 后者会让所有 HTTP 客户端都看不出失败。
+    鉴权与「任务存在吗」在 SSE 之前完成：这样越权/不存在仍是普通的
+    ``404 TASK_NOT_FOUND`` JSON 响应，而不是先返回 200、再在流里推错误的接口 ——
+    后者会让所有 HTTP 客户端都看不出失败。
     """
     await service.get(task_id, user_id)
     return StreamingResponse(

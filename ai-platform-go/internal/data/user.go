@@ -10,16 +10,11 @@ import (
 )
 
 // userRepo 实现 biz.UserRepo（规范 §六：实现在 data，实现类型不导出）。
-//
-// 它只依赖 Data 而不是具体的 *gorm.DB：引擎换代（换驱动、加分片）
-// 不需要改仓储签名，也让仓储在单测里能被整体替换。
+// 只依赖 Data 而不是具体的 *gorm.DB：引擎换代不需要改仓储签名，单测里也能整体替换。
 type userRepo struct{ data *Data }
 
 // NewUserRepo 构造用户仓储。
-//
-// 返回 biz.UserRepo 而不是 *userRepo：调用方只应看到接口
-// （返回不导出类型会触发 golint 的 "returns unexported type" 告警，
-// 而且会把实现细节泄漏给 main）。
+// 返回 biz.UserRepo 而不是 *userRepo：调用方只应看到接口，否则会把实现细节泄露给 main。
 func NewUserRepo(d *Data) biz.UserRepo { return &userRepo{data: d} }
 
 // Create 插入用户；邮箱已存在时返回 biz.ErrEmailTaken。
@@ -55,11 +50,10 @@ func (r *userRepo) GetByEmail(ctx context.Context, email string) (*biz.User, err
 	return toUserDO(&po), nil
 }
 
-// EmailExists 报告邮箱是否**已被任何行占用**（含软删行）。
-//
-// 这里刻意不过滤 `deleted_at`：`uk_user_email` 不含 deleted_at，
-// 已注销用户的邮箱永久占用（REQ-DATA-009）。注册接口必须用本方法查重，
-// 否则「软删后重新注册」会在 INSERT 时才撞唯一键，错误从 409 退化成 500。
+// EmailExists 报告邮箱是否已被任何行占用（含软删行）。
+// 刻意不过滤 `deleted_at`：`uk_user_email` 不含 deleted_at，已注销用户的邮箱永久占用
+// （REQ-DATA-009）。注册必须用本方法查重，否则「软删后重新注册」会在 INSERT 时才撞唯一键，
+// 错误从 409 退化成 500。
 func (r *userRepo) EmailExists(ctx context.Context, email string) (bool, error) {
 	var count int64
 	err := r.data.DB.GORM.WithContext(ctx).Model(&userPO{}).
@@ -92,10 +86,9 @@ func (r *userRepo) UpdateNickname(ctx context.Context, id, nickname string, at t
 	return nil
 }
 
-// ChangePassword 更新密码哈希并**递增 token_version**，返回新的版本号。
-//
+// ChangePassword 更新密码哈希并递增 token_version，返回新的版本号。
 // 用 `LAST_INSERT_ID(token_version + 1)` 单次往返拿到新值（同 docs/03-§4.2 的 seq 技巧）：
-// 先 UPDATE 再 SELECT 会有并发竞态（两次改密码可能拿到同一个版本号）。
+// 先 UPDATE 再 SELECT 有并发竞态（两次改密码可能拿到同一个版本号）。
 func (r *userRepo) ChangePassword(ctx context.Context, userID, hash string, at time.Time) (int, error) {
 	var version int
 	err := r.data.DB.InTx(ctx, func(tx *gorm.DB) error {
@@ -142,10 +135,8 @@ func (r *userRepo) BumpTokenVersion(ctx context.Context, userID string, at time.
 }
 
 // TokenVersion 读取当前 token_version（JWT 的 `ver` 校验用）。
-//
-// 用 Take 而不是 Scan：`token_version` 的合法值从 1 开始，而 Scan 在无行时
-// 会把版本读成 0 且不报错 —— 那样「用户不存在」与「version=0」就同形了，
-// 鉴权会从「拒绝」退化成「放行」。
+// 用 Take 而不是 Scan：Scan 在无行时会把版本读成 0 且不报错，那样「用户不存在」
+// 与「version=0」同形，鉴权会从「拒绍」退化成「放行」。
 func (r *userRepo) TokenVersion(ctx context.Context, userID string) (int, error) {
 	var po userPO
 	err := r.data.DB.GORM.WithContext(ctx).
@@ -160,9 +151,8 @@ func (r *userRepo) TokenVersion(ctx context.Context, userID string) (int, error)
 
 // ---- PO <-> 领域对象 ----
 //
-// 转换只发生在 data 侧，而且刻意写得很笨（逐字段赋值）：
-// 一旦用 JSON 往返或反射做批量拷贝，`biz.User` 新增字段时会**静默丢失**，
-// 表现为「加了个字段但永远是零值」，排查成本远高于这几行的维护成本。
+// 刻意写得很笨（逐字段赋值）：一旦用 JSON 往返或反射做批量拷贝，
+// `biz.User` 新增字段时会静默丢失（表现为「加了个字段但永远是零值」）。
 
 func toUserPO(u *biz.User) *userPO {
 	if u == nil {

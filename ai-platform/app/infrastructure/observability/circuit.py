@@ -1,21 +1,13 @@
 """进程内熔断器（``REQ-NFR-005``，契约见 ``docs/10`` §3.2）。
 
-刻意**不引入额外组件**（如 pybreaker）：规则只有「连续 N 次失败 → 打开 M 秒 →
-半开试探」，进程内计数器足够，而且更可控 —— 时间源可注入，测试不必 sleep。
+刻意**不引入额外组件**（如 pybreaker）：规则只有「连续 N 次失败 → 打开 M 秒 → 半开试探」，
+进程内计数器足够，而且更可控 —— 时间源可注入，测试不必 sleep。
 
-状态机：
+``closed`` 连续 ``failure_threshold`` 次失败 → ``open``；``recovery_seconds`` 后 → ``half_open``；
+半开连续 ``half_open_successes`` 次成功 → ``closed``；半开期间任何一次失败 → ``open``（并重置计时）。
 
-.. code-block:: text
-
-    closed ──连续 failure_threshold 次失败──▶ open
-      ▲                                      │
-      │                              recovery_seconds 后
-      └──半开成功（连续 half_open_successes 次）── half_open
-                                             │
-                              任何一次失败 ──▶ open（并重置计时）
-
-半开只放行 **1 个** 调用（``half_open_max_calls``）：放行多个就等于取消熔断，
-上游还没恢复时会把刚积累的缓冲瞬间打满。
+半开只放行 **1 个** 调用（``half_open_max_calls``）：放行多个就等于取消熔断，上游还没恢复时会
+把刚积累的缓冲瞬间打满。
 """
 
 from __future__ import annotations
@@ -104,9 +96,9 @@ class CircuitBreaker:
     def allow(self) -> bool:
         """本次调用是否放行（``False`` 表示应直接降级，不打上游）。
 
-        半开时**顺带认领试探额度**：只有 1 个调用能通过，其余继续降级。
-        额度在 :meth:`record_success` / :meth:`record_failure` 里自动归还，
-        调用方不需要成对调用「进入 / 退出」—— 少一个必须记住的约定。
+        半开时**顺带认领试探额度**：只有 1 个调用能通过，其余继续降级。额度在
+        :meth:`record_success` / :meth:`record_failure` 里自动归还，调用方不需要成对调用
+        「进入 / 退出」—— 少一个必须记住的约定。
         """
         state = self.state
         if state == "closed":
@@ -193,10 +185,9 @@ class CircuitRegistry:
     def get(self, target: str) -> CircuitBreaker:
         """取（或创建）某目标的熔断器。
 
-        规则查找顺序：**精确匹配 → 前缀族匹配（``mcp:filesystem`` → ``mcp``）
-        → 默认阈值**。前缀族是必要的：MCP 的熔断器必须**按 Server 独立**
-        （一个 Server 挂了不该让其它 Server 一起降级），但它们应当共用
-        ``docs/10`` §3.2 里 ``mcp`` 那一行的阈值。
+        规则查找顺序：**精确匹配 → 前缀族匹配（``mcp:filesystem`` → ``mcp``）→ 默认阈值**。
+        前缀族是必要的：MCP 的熔断器必须**按 Server 独立**（一个 Server 挂了不该让其它 Server
+        一起降级），但它们应当共用 ``docs/10`` §3.2 里 ``mcp`` 那一行的阈值。
         """
         existing = self._breakers.get(target)
         if existing is not None:

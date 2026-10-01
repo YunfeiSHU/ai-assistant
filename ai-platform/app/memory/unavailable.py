@@ -1,17 +1,14 @@
 """长期记忆仓储不可用时的占位实现（降级路径，不阻断启动）。
 
-与 :mod:`app.infrastructure.storage.unavailable` 同一个取舍，理由见那里；这里只补充
-**记忆特有的那一层**：记忆是「增强」而非「必需」——``docs/07`` §5.4 明确
-允许关闭。所以在 ``real`` 下 MySQL 初始化失败时，正确行为不是让对话跟着挂掉，
-而是：
+与 :mod:`app.infrastructure.storage.unavailable` 同一个取舍；这里补充记忆特有的那一层：
+记忆是「增强」而非「必需」（``docs/07`` §5.4 允许关闭）。所以 MySQL 初始化失败时正确
+行为不是让对话跟着挂掉，而是：
 
 * 所有记忆接口返回 ``503 DEPENDENCY_UNAVAILABLE``（不假装成功）；
-* 对话继续可用，并在 ``degraded_reasons`` 里带上 ``memory_unavailable``
-  （由 :mod:`app.application.chat` 捕获 ``AppError`` 后追加）。
+* 对话继续可用，并在 ``degraded_reasons`` 里带上 ``memory_unavailable``。
 
-**为什么不直接返回内存实现**：内存实现「看起来是好的」—— 写进去能读出来、
-检索也命中，只有重启后消失。在 ``real`` 部署里这等于**静默丢用户数据**，
-而且没有任何一处会报错。宁可明确 503。
+不直接返回内存实现：它「看起来是好的」—— 写进去能读出来、检索也命中，只有重启后消失。
+在 ``real`` 部署里这等于静默丢用户数据，而且没有任何一处会报错。
 """
 
 from __future__ import annotations

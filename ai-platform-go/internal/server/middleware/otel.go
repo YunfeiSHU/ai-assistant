@@ -13,37 +13,29 @@ import (
 )
 
 // HeaderDebugTrace 打开单请求强制采样（docs/06-§5.1）。
-//
-// 为什么需要它：默认采样率是 0.1，而「手工复现一次问题」恰恰需要
-// 这一次被 100% 留下 —— 否则用户拿着 trace_id 去 Jaeger 里搜，
-// 只会得到「什么都没找到」，然后开始怀疑上报链路。
+// 默认采样率是 0.1，而「手工复现一次问题」恰恰需要这一次被 100% 留下 ——
+// 否则用户拿着 trace_id 去 Jaeger 里搜只会得到「什么都没找到」，然后开始怀疑上报链路。
 const HeaderDebugTrace = "X-Debug-Trace"
 
 // TraceOptions 控制 span 中间件的行为。
 type TraceOptions struct {
-	// Provider 为 nil 或未启用时，中间件退化成 no-op（不建 span、
-	// 不碰 ctx），这样 OTEL_ENABLED=false 时的行为与 M5 完全一致。
+	// Provider 为 nil 或未启用时，中间件退化成 no-op（不建 span、不碰 ctx）。
 	Provider *otelx.Provider
 
 	// ForceSample 为真时所有请求都打上强制采样标记。
 	ForceSample bool
 
-	// PIIHashSalt 用于 user_id 的哈希；为空时**不加**用户属性
-	// （宁可不记，也不要明文落进 Jaeger）。
+	// PIIHashSalt 用于 user_id 的哈希；为空时不加用户属性（宁可不记，也不要明文落进 Jaeger）。
 	PIIHashSalt string
 }
 
 // Trace 中间件：为每个请求建立 Server span，并接续上游的 traceparent。
+// 顺序上必须排在 `WithTrace` 之后：trace id 的解析与生成由 `WithTrace` 负责
+// （它是 M1 就存在的、错误信封依赖它的输出），这里只是把它的结果反向构造成 OTel 的远程父上下文。
 //
-// 顺序上它必须排在 `WithTrace` **之后**：trace id 的解析与生成由
-// `WithTrace` 负责（它是 M1 就存在的、错误信封依赖它的输出），
-// 这里只是把它解析出的结果**反向构造**成 OTel 的远程父上下文。
-//
-// 为什么不让 OTel 自己走一遍标准提取：两处解析的宽容度一旦不一致
-// （比如对全 0 trace id、对大写十六进制的处理），就会出现
-// 「响应头 X-Trace-Id 里的值与 Jaeger 里的不同」—— 而 S8 恰恰要求
-// 能用同一个 trace_id 同时在两边查到。以 `WithTrace` 的结果为准，
-// 这个不一致从根上不存在。
+// 不让 OTel 自己走一遍标准提取：两处解析的宽容度一旦不一致（全 0 trace id、大写十六进制），
+// 就会出现「响应头 X-Trace-Id 与 Jaeger 里的值不同」，而 S8 恰恰要求用同一个 trace_id
+// 在两边都查到。以 `WithTrace` 的结果为准，这个不一致从根上不存在。
 func Trace(opt TraceOptions) gin.HandlerFunc {
 	if opt.Provider == nil || !opt.Provider.Enabled() {
 		return func(c *gin.Context) { c.Next() }
@@ -52,7 +44,7 @@ func Trace(opt TraceOptions) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		ctx := c.Request.Context()
 
-		// 用 WithTrace 的结果构造远程父 span：span_id 可能是空
+		// 用 WithTrace 的结果构造远程父 span：span_id 可能为空
 		// （表示客户端只给了 trace id），这时仍能保持同一个 trace。
 		if tid := TraceID(c); tid != "" {
 			if sc, ok := otelx.SpanContextFromHex(tid, SpanID(c)); ok {
@@ -71,8 +63,7 @@ func Trace(opt TraceOptions) gin.HandlerFunc {
 			),
 		)
 		if opt.ForceSample || debugTraceRequested(c) {
-			// 这个属性会被 tail sampler 读到（见 otelx/tail.go），
-			// 使整条 trace 无论成功失败都被导出。
+			// 该属性会被 tail sampler 读到（见 otelx/tail.go），使整条 trace 无论成功失败都被导出。
 			span.SetAttributes(otelx.Attr(otelx.AttrForceSample, true))
 		}
 
@@ -82,7 +73,7 @@ func Trace(opt TraceOptions) gin.HandlerFunc {
 		c.Next()
 
 		// 路由模板只有跑完才有值（`c.FullPath()` 在 404 时为空）——
-		// 这正是 prometheus 的 route 标签口径，两处必须一致，
+		// 这正是 Prometheus 的 route 标签口径，两处必须一致，
 		// 否则指标与 trace 的维度对不上。
 		route := c.FullPath()
 		if route == "" {
@@ -96,8 +87,7 @@ func Trace(opt TraceOptions) gin.HandlerFunc {
 		)
 		if hash := otelx.UserIDHash(opt.PIIHashSalt, userIDOf(c)); hash != "" {
 			// 只放哈希：Jaeger 是「谁都能看的」那一类系统，
-			// 明文 user_id 落进去等同于把用户表导出一份。
-			span.SetAttributes(attribute.String("user_id_hash", hash))
+			// 明文 user_id 落进去等同于把用户表导出一份。			span.SetAttributes(attribute.String("user_id_hash", hash))
 		}
 		if status >= http.StatusInternalServerError {
 			span.SetStatus(codes.Error, http.StatusText(status))
@@ -110,9 +100,8 @@ func Trace(opt TraceOptions) gin.HandlerFunc {
 const ctxTraceSpanKey = "gw_otel_span"
 
 // SpanFrom 取出当前请求的 span；没有时返回 nil。
-//
-// 跨包（auth 中间件在 service 层）需要它来补 `enduser.id` 之类的属性，
-// 但**不允许**把它当成「span 一定存在」的保证 —— OTEL 关闭时它就是 nil。
+// 跳包需要它补 `enduser.id` 之类的属性，但不允许把它当成「span 一定存在」的保证 ——
+// OTEL 关闭时它就是 nil。
 func SpanFrom(c *gin.Context) trace.Span {
 	v, ok := c.Get(ctxTraceSpanKey)
 	if !ok {

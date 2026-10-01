@@ -1,15 +1,10 @@
 """对话编排（``REQ-CHAT-001`` / ``002`` / ``004`` / ``005`` / ``006`` / ``007``）。
 
-编排顺序（与 ``docs/03`` §2 一致）：
+编排顺序（与 ``docs/03`` §2 一致）：校验请求 → 收集上下文片段（短期历史、摘要、长期记忆、
+RAG）→ 装配并裁剪 messages → 调模型 → 落上下文（流式在 ``done`` 时一次性写）。
 
-1. 校验请求（空 query / 模型白名单 / 会话归属）；
-2. 收集上下文片段 —— 短期历史、摘要、长期记忆、RAG；
-3. 装配 messages 并裁剪；
-4. 调模型；
-5. 落上下文（流式在 ``done`` 时一次性写）。
-
-**降级而不是失败**：第 2 步的每个组件都被单独包在 try 里，任何失败只往
-``degraded_reasons`` 里加一条原因码（`REQ-CHAT-007`）。这条规则的取舍是明确的：
+降级而不是失败：收集阶段的每个组件都被单独包在 try 里，任何失败只往
+``degraded_reasons`` 里加一条原因码（``REQ-CHAT-007``）。取舍是明确的：
 「RAG 挂了就整个不能聊天」比「这次没带资料回答」严重得多。
 """
 
@@ -93,7 +88,7 @@ class PreparedChat:
     """一次对话的准备结果。
 
     对外可见是刻意的：路由层需要先完成准备阶段（可能抛 ``400`` / ``404`` / ``429``），
-    **再**开始推 SSE 帧——一旦开始推事件就只能用 ``error`` 帧报错了。
+    再开始推 SSE 帧 —— 一旦开始推事件就只能用 ``error`` 帧报错了。
     """
 
     query: str
@@ -140,9 +135,9 @@ class ChatService:
     def store(self) -> ConversationStore:
         """会话上下文存储。
 
-        暴露它是为了让 :class:`~app.application.agent.AgentService` 复用**同一个**实例：
-        ``/chat`` 写入的历史必须能被 ``/agent/run`` 读到（及反向），各自 new 一个
-        内存实现会让「同一个会话换接口就丢上下文」——不报错，只是历史没了。
+        暴露它是为了让 :class:`~app.application.agent.AgentService` 复用同一个实例：
+        ``/chat`` 写入的历史必须能被 ``/agent/run`` 读到（及反向），各自 new 一个内存实现
+        会让「同一个会话换接口就丢上下文」—— 不报错，只是历史没了。
         """
         return self._store
 
@@ -152,19 +147,13 @@ class ChatService:
     async def prepare(self, request: ChatRequest, user_id: str) -> PreparedChat:
         """把请求规整成 :class:`PreparedChat`：语义校验 → 模型解析 → 历史/摘要/记忆/检索。
 
-        ``use_tools=true`` **不在这里分支**，而是由路由层分派给 :class:`AgentService`
-        （``docs/03`` §3.1）：两种响应的形状不同，混在一个方法里会让"返回类型取决于入参"
-        扩散到整个服务层。空提问给专属的 ``QUERY_EMPTY``，而不是笼统的 ``INVALID_ARGUMENT``。
+        ``use_tools=true`` 由路由层分派给 :class:`AgentService`（``docs/03`` §3.1），
+        不在这里分支。空提问给专属的 ``QUERY_EMPTY`` 而不是笼统的 ``INVALID_ARGUMENT``。
         """
         query = request.query.strip()
         if not query:
             # 语法上过 pydantic、语义上为空：必须给专属错误码而不是 INVALID_ARGUMENT
             raise AppError(ErrorCode.QUERY_EMPTY, "提问内容为空")
-
-        # ``use_tools=true`` 由**路由层**分派给 :class:`AgentService`（见 ``docs/03`` §3.1）。
-        # 放在路由而不是这里的理由：Agent 的响应体是 ``AgentRunResponse``（多一个
-        # ``steps``），流式事件多出 tool_call/tool_result；在同一个方法里分支会让
-        # “返回类型取决于入参”这种最难受测的形态扩散到整个服务层。
 
         model = self._llm.resolve_model(request.model)
         degraded: list[str] = []
@@ -273,12 +262,11 @@ class ChatService:
     # 模型调用（含异常兜底映射）
     # ------------------------------------------------------------------
     async def _call_llm(self, prepared: PreparedChat) -> LLMResponse:
-        """调用模型并**兜底映射**异常。
+        """调用模型并兜底映射异常。
 
-        适配器自己会映射，但那是「适配器的责任」，不是「上层可以依赖的保证」：
-        任何 LLMClient 实现（含测试替身与将来新增的供应商）抛出未识别异常时，
-        这里都保证它变成明确的对外错误码而不是 500 —— 否则监控会把上游故障
-        算成我们自己的 bug，重试策略也会跑偏。
+        适配器自己会映射，但那是「适配器的责任」，不是「上层可以依赖的保证」：任何
+        LLMClient 实现（含测试替身与将来新增的供应商）抛出未识别异常时，这里都保证它变成
+        明确的对外错误码而不是 500 —— 否则监控会把上游故障算成我们自己的 bug。
         """
         settings = self._settings
         try:
@@ -324,17 +312,13 @@ class ChatService:
     # 非流式
     # ------------------------------------------------------------------
     async def complete(self, request: ChatRequest, user_id: str) -> ChatResponse:
-        """非流式对话入口：``prepare`` → 模型调用 → 落库/摘要/记忆投递，一次性返回。
-
-        整段（含收尾逻辑）都包在 ``chat.request`` span 里 —— 看 trace 时要能分辨"慢在模型"
-        还是"慢在我们自己的收尾"。``user_id`` 按 ``docs/10`` §5.1 哈希后才写进 span 属性。
-        """
+        """非流式对话入口：``prepare`` → 模型调用 → 落库/摘要/记忆投递，一次性返回。"""
         started = time.perf_counter()
         prepared = await self.prepare(request, user_id)
 
-        # span 包住**整段**处理（含落库与轮末投递），而不只是模型调用：
-        # 看 trace 时要能一眼看出「慢在模型还是慢在我们自己的收尾逻辑」。
-        # 属性按 ``docs/10`` §5.1：``user_id`` MUST 哈希后才允许外泄给第三方。
+        # span 包住整段处理（含落库与轮末投递），而不只是模型调用：看 trace 时要能一眼
+        # 看出「慢在模型还是慢在我们自己的收尾逻辑」。user_id MUST 哈希后才允许外泄
+        # （``docs/10`` §5.1）。
         with get_tracing().span(
             "chat.request",
             {
@@ -360,9 +344,9 @@ class ChatService:
 
         if prepared.persist and prepared.conversation_id:
             await self._persist(prepared.conversation_id, user_id, prepared, answer)
-            # 轮末动作（记忆抽取 / 摘要）必须在**返回响应之前**投递。
-            # 只在流式路径里做收尾，会让「用 /chat 还是 /chat/stream」决定记忆有没有
-            # 被抽取 —— 默认走的是非流式，于是记忆永远是空的，而日志上看不出异常。
+            # 轮末动作（记忆抽取 / 摘要）必须在返回响应之前投递。只在流式路径里做收尾会让
+            # 「用 /chat 还是 /chat/stream」决定记忆有没有被抽取 —— 默认走的是非流式，
+            # 于是记忆永远是空的，而日志上看不出异常。
             await self._after_turn(prepared.conversation_id, user_id, prepared.degraded_reasons)
 
         elapsed_ms = int((time.perf_counter() - started) * 1000)
@@ -489,10 +473,9 @@ class ChatService:
             await self._persist(prepared.conversation_id, user_id, prepared, answer)
             await self._after_turn(prepared.conversation_id, user_id, prepared.degraded_reasons)
 
-        # 流式**不能**回溯裁剪：`[9]` 可能在某个 delta 里就已经推给前端了，
-        # 而把越界标注「吐一半再撤回」在 SSE 协议里没有表达方式。
-        # 所以这里只做审计（``docs/06`` §6 用的是 SHOULD）：把越界标注记进日志，
-        # 便于发现「模型在编引用」还是「我们少传了上下文」。
+        # 流式不能回溯裁剪：`[9]` 可能在某个 delta 里就已经推给前端了，而把越界标注
+        # 「吐一半再撤回」在 SSE 协议里没有表达方式。所以这里只做审计（``docs/06`` §6 用的是
+        # SHOULD）：把越界标注记进日志，便于发现「模型在编引用」还是「我们少传了上下文」。
         # 真正剔越界标注由非流式路径完成（那里正文一次性产出，可以安全重写）。
         _audit_citations_best_effort(answer, max_index=len(prepared.rag_chunks))
 
@@ -525,14 +508,13 @@ class ChatService:
     async def _after_turn(self, conversation_id: str, user_id: str, degraded: list[str]) -> None:
         """一轮对话结束后的收尾：投递记忆抽取，按需生成摘要。
 
-        两个动作都**不得**把失败冒泡给调用方：它们是在用户已经拿到回答之后执行的，
-        让它们把一次成功对话变成 500 是最不划算的取舍。
+        两个动作都不得把失败冒泡给调用方：它们是在用户已经拿到回答之后执行的，让它们把一次
+        成功对话变成 500 是最不划算的取舍。
 
-        投递规则（刻意只写一次）：**有任务服务就建任务，没有就同步做掉**。
-        前者是 ``docs/08`` 要求的形态（可在 ``GET /tasks`` 看到、可重试）；
-        后者服务于 ``TASK_RUNNER=none`` / 直接构造 ``ChatService`` 的场景 ——
-        没部署 Worker 时如果什么都不做，摘要与记忆就永远不会生成，而表面上
-        一切正常（这才是真正难排查的形态）。
+        投递规则（刻意只写一次）：有任务服务就建任务，没有就同步做掉。前者是 ``docs/08``
+        要求的形态（可在 ``GET /tasks`` 看到、可重试）；后者服务于 ``TASK_RUNNER=none`` /
+        直接构造 ``ChatService`` 的场景 —— 没部署 Worker 时如果什么都不做，摘要与记忆就永远
+        不会生成，而表面上一切正常（这才是真正难排查的形态）。
         """
         if self._memory is None or not self._settings.memory_enabled:
             return
@@ -578,9 +560,9 @@ class ChatService:
                 extra={"code": str(exc.code), "error": exc.message},
             )
             if exc.code is ErrorCode.SUMMARY_GENERATION_FAILED:
-                # 只有**同步**兜底路径（没配 TaskService/Runner）才能把失败写回
-                # 本次响应：异步任务的失败只能体现在 ``GET /tasks`` 上，
-                # 它发生在响应返回之后，不可能回到这个列表里。
+                # 只有同步兜底路径（没配 TaskService/Runner）才能把失败写回本次响应：
+                # 异步任务的失败只能体现在 ``GET /tasks`` 上，它发生在响应返回之后，
+                # 不可能回到这个列表里。
                 _append_reason(degraded, REASON_SUMMARY_FAILED)
         except Exception as exc:
             logger.warning("memory.summary_submit_failed", extra={"error": str(exc)})
@@ -597,10 +579,10 @@ class ChatService:
     ) -> None:
         """建任务并投递；没配置任务服务时退化为同步执行。
 
-        ``turn_marker`` 必须**每轮不同**（用本轮最后一条消息的 ``message_id``）。
-        ``TaskService`` 默认的幂等键是 ``(类型, 用户, 资源)``，同一会话的第二轮会
-        命中第一轮那条已经终态的任务，``runner.submit`` 随即把它当成重复投递跳过 ——
-        结果是「记忆抽取与摘要在第一轮之后再也不执行」，而接口全是 200、没有任何异常。
+        ``turn_marker`` 必须每轮不同（用本轮最后一条消息的 ``message_id``）。
+        ``TaskService`` 默认的幂等键是 ``(类型, 用户, 资源)``，同一会话的第二轮会命中第一轮
+        那条已经终态的任务，``runner.submit`` 随即把它当成重复投递跳过 —— 结果是「记忆抽取与
+        摘要在第一轮之后再也不执行」，而接口全是 200、没任何异常。
         """
         if self._tasks is None or self._runner is None:
             await self._run_inline(type_, user_id, resource_id)
@@ -712,9 +694,8 @@ def _log_background_failure(task: asyncio.Task[None]) -> None:
 def _append_reason(reasons: list[str], reason: str) -> None:
     """追加一条降级原因，并记 ``ai_degraded_total``。
 
-    所有降级都经过这个函数（RAG 不可用 / 记忆不可用 / 重排跳过 / 摘要失败 …），
-    所以指标只需要在这一个地方记 —— 否则「新加了一种降级」时一定会有人忘了补计数，
-    而那正是核心告警指标。
+    所有降级都经过这个函数（RAG / 记忆不可用、重排跳过、摘要失败 …），所以指标只需在这
+    一个地方记；否则「新加了一种降级」时一定会有人忘了补计数，而那正是核心告警指标。
     """
     if reason not in reasons:
         reasons.append(reason)
@@ -734,8 +715,8 @@ def _references(chunks: Sequence[RetrievedChunk]) -> list[Reference]:
             heading_path=chunk.heading_path or None,
             score=chunk.score,
             snippet=chunk.text.strip()[:200],
-            # 哈希算的是**返回给用户的这段文本**，而不是入库时的原文哈希：
-            # 相邻合并会改变 text，用原文哈希会让「同一片段」判断与展示内容不符。
+            # 哈希算的是返回给用户的这段文本，而不是入库时的原文哈希：相邻合并会改变 text，
+            # 用原文哈希会让「同一片段」判断与展示内容不符。
             content_sha256=sha256_hex(chunk.text),
         )
         for index, chunk in enumerate(chunks, start=1)
@@ -745,12 +726,11 @@ def _references(chunks: Sequence[RetrievedChunk]) -> list[Reference]:
 def prune_out_of_range_citations(text: str, *, max_index: int) -> str:
     """剔除正文里越界的 ``[n]`` 引用标注（``AC-RAG-14``）。
 
-    ``docs/06`` §6 要求服务端校验并记 warning。这里**只删标注、不改动其余文本**：
-    模型可能把 ``[9]`` 写在句末，整句删掉会丢内容；把 ``[9]`` 换成 ``[?]`` 又会
-    污染正文。删除是唯一既不丢信息也不误导的做法。
+    ``docs/06`` §6 要求服务端校验并记 warning。这里只删标注、不改动其余文本：模型可能把
+    ``[9]`` 写在句末，整句删掉会丢内容；把 ``[9]`` 换成 ``[?]`` 又会污染正文。
 
-    刻意不用 ``re.sub`` 一次替换：需要知道「剔了哪些」，否则日志里只能记一句
-    「可能剔过」，线上无法定位是模型乱编还是我们漏传了上下文。
+    不用 ``re.sub`` 一次替换：需要知道「剔了哪些」，否则日志里只能记一句「可能剔过」，
+    线上无法定位是模型乱编还是我们漏传了上下文。
     """
     if not text or "[" not in text:
         return text

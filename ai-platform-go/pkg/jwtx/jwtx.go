@@ -1,6 +1,6 @@
 // Package jwtx 负责 Access Token 的签发与校验。
 //
-// 这是**接缝 J1（最高优先级）**：网关签发、ai-platform 校验，契约逐字定在 docs/02-§3.2，
+// 这是接缝 J1（最高优先级）：网关签发、ai-platform 校验，契约逐字定在 docs/02-§3.2，
 // 任何一处不一致（iss/aud/sub/alg/kid 与 payload 字段）都会导致全链路 401。
 package jwtx
 
@@ -16,8 +16,8 @@ import (
 
 // 契约常量。
 const (
-	// Algorithm 是唯一允许的签名算法。校验方 MUST 固定期望算法，
-	// 禁止接受 `none` 或按 token 头部自选算法（防 alg confusion）。
+	// Algorithm 是唯一允许的签名算法。校验方 MUST 固定期望算法，禁止接受 `none`
+	// 或按 token 头部自选算法（防 alg confusion）。
 	Algorithm = "HS256"
 	// TokenTypeAccess 是 access token 的 token_type 取值。
 	TokenTypeAccess = "access"
@@ -28,8 +28,8 @@ var ErrKeyTooShort = errors.New("jwtx: JWT_SECRET 必须 ≥ 32 字节")
 
 // Claims 是 Access Token 的 payload。
 //
-// 这里不用 jwt.RegisteredClaims：它的 `aud` 是 ClaimStrings（数组），而契约要求输出**字符串** `"aud": "ai-platform"`；
-// 显式定义字段能让序列化结果完全可控（J1 不容许「差不多」）。
+// 不用 jwt.RegisteredClaims：它的 `aud` 是 ClaimStrings（数组），而契约要求输出字符串
+// `"aud": "ai-platform"`；显式定义字段能让序列化结果完全可控（J1 不容许「差不多」）。
 type Claims struct {
 	Issuer    string `json:"iss"`
 	Audience  string `json:"aud"`
@@ -90,9 +90,8 @@ type Signer struct {
 }
 
 // NewSigner 构造 Signer 并做启动期自检。
-//
-// 密钥短于 32 字节或 TTL 非正 MUST 拒绝启动（REQ-NFR-009）：
-// 这类错误若拖到请求期才暴露，表现是「所有令牌都验不过」，很难定位。
+// 密钥短于 32 字节或 TTL 非正 MUST 拒绝启动（REQ-NFR-009）：拖到请求期才暴露时
+// 表现是「所有令牌都验不过」，很难定位。
 func NewSigner(cfg Config) (*Signer, error) {
 	if len(cfg.Secret) < 32 {
 		return nil, fmt.Errorf("%w（当前 %d 字节）", ErrKeyTooShort, len(cfg.Secret))
@@ -141,9 +140,10 @@ func (s *Signer) Sign(userID string, version int, now time.Time) (string, time.T
 }
 
 // Parse 校验并解析令牌。
-//
-// 校验顺序与 docs/02-§3.3 一致：算法（Parser 固定）→ iss → aud → exp/nbf（含容差）→ token_type。`ver` 需要查用户状态，由调用方校验。
-// 失败一律返回 *errs.AppError：过期给 TOKEN_EXPIRED（客户端据此静默刷新），其余给 UNAUTHENTICATED，且**不泄漏具体原因**（防探测）。
+// 校验顺序与 docs/02-§3.3 一致：算法（Parser 固定）→ iss → aud → exp/nbf（含容差）
+// → token_type。`ver` 需要查用户状态，由调用方校验。
+// 失败一律返回 *errs.AppError：过期给 TOKEN_EXPIRED（客户端据此静默刷新），
+// 其余给 UNAUTHENTICATED，且不泄漏具体原因（防探测）。
 func (s *Signer) Parse(tokenStr string, now time.Time) (*Claims, error) {
 	claims := &Claims{}
 	parser := jwt.NewParser(
@@ -177,8 +177,8 @@ func (s *Signer) Parse(tokenStr string, now time.Time) (*Claims, error) {
 }
 
 func (s *Signer) keyFunc(token *jwt.Token) (any, error) {
-	// 二次确认算法（Parser 已固定，这里是纵深防御：
-	// 万一将来有人改坏了 WithValidMethods，也不会退化成 alg confusion）。
+	// 二次确认算法：Parser 已固定，这里是纵深防御 —— 万一将来有人改坏了
+	// WithValidMethods，也不会退化成 alg confusion。
 	if token.Method.Alg() != Algorithm {
 		return nil, fmt.Errorf("jwtx: 非预期签名算法 %q", token.Method.Alg())
 	}

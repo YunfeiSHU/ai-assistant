@@ -1,15 +1,12 @@
 """独立指标端口（``METRICS_PORT``，默认 9100）。
 
-契约见 ``docs/10`` §5.2：「暴露方式：``GET /metrics`` 或独立端口 ``METRICS_PORT``。
-默认启用独立端口，避免 ``/metrics`` 被 JWT 中间件拦住」。
+契约见 ``docs/10`` §5.2：「暴露方式：``GET /metrics`` 或独立端口 ``METRICS_PORT``。默认启用
+独立端口，避免 ``/metrics`` 被 JWT 中间件拦住」。本实现**只走独立端口**，因为抓取方
+（Prometheus）不带 JWT，把指标开在主应用上等于要么放宽鉴权、要么给抓取方配令牌，两条路都
+比另开一个端口更麻烦；而放宽鉴权还会顺带泄露路由清单与流量画像。
 
-本实现**只走独立端口**，不把 ``GET /metrics`` 挂到主应用上。原因就是文档那句：
-抓取方（Prometheus）不带 JWT，把指标开在主应用上等于要么放宽鉴权、要么给抓取方
-配令牌，两条路都比「另开一个端口」更麻烦；而放宽鉴权还会顺带泄漏路由清单与流量画像。
-
-为什么自己写这 60 行而不用 ``prometheus_client.start_http_server``：那个版本在后台
-线程里跑 WSGI 且**拿不到 server 对象**，进程退出时无法优雅关闭 —— 测试里会留下
-「端口被占用」的间歇性失败。自己实现可以用 asyncio 原生 server，启停对称。
+自己写这 60 行而不用 ``prometheus_client.start_http_server``：那个版本在后台线程里跑 WSGI 且
+**拿不到 server 对象**，进程退出时无法优雅关闭 —— 测试里会留下「端口被占用」的间歇性失败。
 """
 
 from __future__ import annotations
@@ -57,11 +54,9 @@ class MetricsServer:
     async def start(self) -> bool:
         """开始监听，返回是否成功；绑定失败**不抛异常**。
 
-        ``port=0`` 表示由内核分配一个空闲端口（标准语义，测试用）；
-        「要不要开这个端口」由装配方（``create_app`` 的 lifespan）决定，
-        这里只负责服务，不负责判断该不该服务。
-
-        绑定失败（端口被占）只记 warning：指标端口是观测手段，不该让服务起不来。
+        ``port=0`` 表示由内核分配一个空闲端口（标准语义，测试用）；「要不要开这个端口」由装配方
+        （``create_app`` 的 lifespan）决定。绑定失败（端口被占）只记 warning：指标端口是观测手段，
+        不该让服务起不来。
         """
         try:
             self._server = await asyncio.start_server(self._handle, self._host, self._port)

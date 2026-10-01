@@ -1,11 +1,8 @@
-"""健康检查路由：``/health``、``/health/live``、``/health/ready``。
+"""健康检查路由：``/health``、``/health/live``、``/health/ready``（契约见 ``docs/10`` §5.4）。
 
-契约见 ``docs/10-非功能需求与可观测性.md`` §5.4。三个端点的语义刻意分开：
-
-* ``live`` —— **不检查依赖**。判断标准是「进程是否还能响应 HTTP」，
-  若在这里探依赖，Milvus 抖动就会导致 K8s 把健康的 Pod 杀掉重启。
-* ``ready`` —— 检查依赖。判断标准是「能不能接流量」，失败返回 503。
-* ``health`` —— 综合视图，供人看；``dependencies`` 给出排障明细。
+三个端点的语义刻意分开：``live`` 不检查依赖 —— 若在这里探依赖，Milvus 抖动就会导致
+K8s 把健康的 Pod 杀掉重启；``ready`` 检查依赖（「能不能接流量」），失败返回 503；
+``health`` 是供人看的综合视图，``dependencies`` 给出排障明细。
 """
 
 from __future__ import annotations

@@ -6,17 +6,12 @@ import (
 	"time"
 )
 
-// 以下「期望字节」全部是**跨语言契约**：ai-platform 的
-// `app/core/sse.py::format_frame` 对同一输入必须产出完全相同的字节。
+// 以下「期望字节」全部是跨语言契约：ai-platform 的 `app/core/sse.py::format_frame`
+// 对同一输入必须产出完全相同的字节。
 //
-// 之所以把字面量写在测试里而不是「用 Python 跑一遍」：单测必须能在没有 Python
-// 环境的机器上跑。两侧的一致性由两条互补的手段保证：
-//
-//  1. 这里钉死字节（Go 侧改了立刻红）；
-//  2. `tools/curl_stage4.ps1` 里有一条**真调 Python** 的断言
-//     （`python -c 'print(format_frame(...))'` 的字节必须与网关回的心跳帧一致），
-//     覆盖「Python 侧改了」这个方向。
-//
+// 字面量写在测试里而不是「用 Python 跑一遍」，因为单测必须能在没有 Python 环境的
+// 机器上跑。两侧一致性由两条互补手段保证：这里钉死字节（Go 侧改了立刻红）；
+// `tools/curl_stage4.ps1` 真调一次 Python，覆盖「Python 侧改了」这个方向。
 // 只做其中一条都会漏掉一半。
 func TestFrameMatchesAISideByteForByte(t *testing.T) {
 	cases := []struct {
@@ -33,9 +28,8 @@ func TestFrameMatchesAISideByteForByte(t *testing.T) {
 			want:    "event: meta\ndata: {\"conversation_id\":\"cv_01J8ZQ3K7N9P2V6R4T8W1Y5B3C\",\"model\":\"deepseek-flash\"}\n\n",
 		},
 		{
-			// 中文必须原样（UTF-8 字节），**不能**转成 \uXXXX ——
-			// Python 侧用 ensure_ascii=False，网关若转义就会出现「语义相同、字节不同」，
-			// 前端的 diff 比对会误判。
+			// 中文必须原样（UTF-8 字节），不能转成 \uXXXX —— Python 侧用
+			// ensure_ascii=False，网关若转义就会出现「语义相同、字节不同」。
 			name:    "token-中文",
 			event:   "token",
 			payload: `{"delta":"你好"}`,
@@ -73,9 +67,8 @@ func TestFrameRejectsNewlineInPayload(t *testing.T) {
 }
 
 func TestFrameAcceptsEscapedNewlineInJSON(t *testing.T) {
-	// 与上一条相对的另一半：JSON 里的 `\n` 是**两个字符**（反斜杠 + n），
-	// 不是裸换行 —— 它完全合法，且模型输出的多行 Markdown 正是靠它表达。
-	// 把这种负载也拒掉，会让「回答里带换行」直接 500。
+	// 与上一条相对的另一半：JSON 里的 `\n` 是两个字符（反斜杠 + n）而不是裸换行，
+	// 完全合法，模型输出的多行 Markdown 正是靠它表达。拒掉它会让「回答里带换行」直接 500。
 	payload := `{"delta":"第一行\n第二行"}`
 	got, err := Frame("token", []byte(payload))
 	if err != nil {
@@ -115,8 +108,7 @@ func TestPingFrameShapeAndRoundTrip(t *testing.T) {
 }
 
 func TestPingFrameUsesUTCAndMillis(t *testing.T) {
-	// 时区必须归一：同一时刻在 +08:00 与 UTC 下格式化出的字符串不同，
-	// 而客户端只会按一种解析。
+	// 时区必须归一：同一时刻在 +08:00 与 UTC 下格式化出的字符串不同，而客户端只会按一种解析。
 	at := time.Date(2026, 9, 29, 18, 30, 45, 123_000_000, time.FixedZone("CST", 8*3600))
 	got := string(PingFrame(at))
 	if !strings.Contains(got, `"2026-09-29T10:30:45.123Z"`) {

@@ -1,17 +1,16 @@
 """OpenAI 兼容协议的 LLM 适配器。
 
-DeepSeek / Moonshot / 阿里百炼 / 本地 vLLM 都提供 OpenAI 兼容接口，所以**只需要**
-一个适配器 + 不同的 ``base_url``（见 ``docs/03`` 与 ``MEMORY: llm-apis.md``）。
-真正需要各自定制的只有 embedding —— DeepSeek 根本不提供，必须本地跑 BGE。
+DeepSeek / Moonshot / 阿里百炼 / 本地 vLLM 都提供 OpenAI 兼容接口，所以**只需要**一个适配器
++ 不同的 ``base_url``（见 ``docs/03`` 与 ``MEMORY: llm-apis.md``）。真正需要各自定制的只有
+embedding —— DeepSeek 根本不提供，必须本地跑 BGE。
 
 三件必须由适配器负责的事：
 
 1. **并发闸门**：``llm_max_concurrency`` 限制在途请求数，排队超时即 ``503 OVERLOADED``，
    避免上游限流时把我们自己的线程池/连接池拖垮。
-2. **超时**：非流式整体超时；流式则是「首帧超时 + 帧间空闲超时」两段，
-   对应 ``docs/03`` §4.4 的 30s 首字节口径。
-3. **模型名校验**：``model_name`` 一律以上游回给的值优先，配置值只做兜底 ——
-   模型名拼错时上游可能静默回退到另一个模型，只看配置是发现不了的。
+2. **超时**：非流式整体超时；流式则是「首帧超时 + 帧间空闲超时」两段。
+3. **模型名校验**：``model_name`` 一律以上游回给的值优先，配置值只做兜底 —— 模型名拼错时
+   上游可能静默回退到另一个模型，只看配置是发现不了的。
 """
 
 from __future__ import annotations
@@ -100,8 +99,8 @@ def _to_lc_message(message: LLMMessage) -> dict[str, Any]:
     if message.name:
         payload["name"] = message.name
     if message.tool_calls:
-        # 回注助手轮：少了它，后续 ``role="tool"`` 消息会因为找不到对应的
-        # tool_call_id 被上游拒绝（400）。
+        # 回注助手轮：少了它，后续 ``role="tool"`` 消息会因为找不到对应的 tool_call_id
+        # 被上游拒绝（400）。
         payload["tool_calls"] = [dict(call) for call in message.tool_calls]
     return payload
 
@@ -109,13 +108,10 @@ def _to_lc_message(message: LLMMessage) -> dict[str, Any]:
 class _ToolCallAccumulator:
     """按 ``index`` 累积流式工具调用分片。
 
-    上游把一次工具调用切成多个 chunk（``id``/``name`` 只在首片，``arguments`` 逐片
-    拼接，且 ``index`` 是**本次响应内**的序号，每次 re-inject 后重新从 0 开始）。
-    任何「按到达顺序 append 到列表」的写法都会把一次调用拆成多次。
-
-    关键细节：``index`` 可能缺失。旧版函数调用 API 只给 ``id``/``name`` 而无索引，
-    此时用「已有条数」当作索引——这在单次调用的流里是正确的（同一次响应不会有
-    两个无索引的同名调用）。
+    上游把一次工具调用切成多个 chunk（``id``/``name`` 只在首片，``arguments`` 逐片拼接，且
+    ``index`` 是**本次响应内**的序号）。任何「按到达顺序 append 到列表」的写法都会把一次调用
+    拆成多次。``index`` 可能缺失：旧版函数调用 API 只给 ``id``/``name`` 而无索引，此时用
+    「已有条数」当作索引 —— 在单次调用的流里这是正确的。
     """
 
     def __init__(self) -> None:
@@ -147,8 +143,8 @@ class _ToolCallAccumulator:
     def deltas(self, *, final: bool) -> list[LLMToolCall]:
         """返回可以安全回注的调用。
 
-        ``final=False`` 时只回注「已经有名字」的条目：没有名字的调用无法执行，
-        提前交给 Agent Loop 只会让它把一个半成品记进「已调用」集合。
+        ``final=False`` 时只回注「已经有名字」的条目：没有名字的调用无法执行，提前交给
+        Agent Loop 只会让它把一个半成品记进「已调用」集合。
         """
         out: list[LLMToolCall] = []
         for index in sorted(self._calls):
@@ -215,8 +211,8 @@ class OpenAICompatLLM:
     def resolve_model(self, requested: str | None) -> str:
         """把请求里的模型名解析成可用模型；不在白名单内即 ``400``。
 
-        白名单是**静态配置表**（``docs/03`` §5），不做运行期探测：
-        探测会把一个确定性的错误变成一个延迟不确定的错误。
+        白名单是**静态配置表**（``docs/03`` §5），不做运行期探测：探测会把一个确定性的错误
+        变成一个延迟不确定的错误。
         """
         model = requested or self.default_model
         allowed = {str(item.get("name")) for item in self.available_models()}
@@ -241,9 +237,9 @@ class OpenAICompatLLM:
     ) -> Any:
         """按 (模型, 温度, 上限, 是否带工具) 缓存客户端。
 
-        ``tools`` 进缓存 key 是必要的：带工具与不带工具的调用在部分网关里会落到
-        不同的上游端点（如 ``tool_choice`` 的默认值不同），复用同一个缓存的客户端
-        虽然不会报错，但会把两边的请求头混在一起。
+        ``tools`` 进缓存 key 是必要的：带工具与不带工具的调用在部分网关里会落到不同的上游端点
+        （如 ``tool_choice`` 的默认值不同），复用同一个缓存的客户端虽然不会报错，但会把两边的
+        请求头混在一起。
         """
         key = (model, temperature, max_tokens, tools)
         cached = self._clients.get(key)
@@ -280,9 +276,8 @@ class OpenAICompatLLM:
     ) -> tuple[Any, list[dict[str, Any]], str, float]:
         """返回 ``(可调用客户端, 消息列表, 实际模型名, 实际温度)``。
 
-        带工具时用 ``bind_tools`` 而不是自己拼 ``tools`` 字段：``ainvoke``/``astream``
-        接收的是**消息列表**而非 OpenAI 请求体，自己拼会被当成一条消息塞进去
-        （不报错，但工具永远不生效）。``bind_tools`` 返回的是新对象，原客户端不受影响。
+        带工具时用 ``bind_tools`` 而不是自己拼 ``tools`` 字段：``ainvoke``/``astream`` 接收的是
+        **消息列表**而非 OpenAI 请求体，自己拼会被当成一条消息塞进去（不报错，但工具永远不生效）。
         """
         resolved_model = self.resolve_model(model)
         resolved_temperature = (
@@ -328,8 +323,8 @@ class OpenAICompatLLM:
         """一次性补全（``stream=False``）。
 
         ``model`` / ``temperature`` / ``max_tokens`` 为 ``None`` 时取配置默认值；``timeout``
-        缺省取 ``LLM_TIMEOUT_SECONDS``。``tools`` 非空时把工具定义随请求发出，响应里的
-        工具调用由上层（Agent 循环）决定如何处理。
+        缺省取 ``LLM_TIMEOUT_SECONDS``。``tools`` 非空时把工具定义随请求发出，响应里的工具调用
+        由上层（Agent 循环）决定如何处理。
         """
         client, payload, resolved_model, _ = self._prepare(
             messages, model, temperature, max_tokens, tools
@@ -402,8 +397,8 @@ class OpenAICompatLLM:
                 async for delta in self._guarded(chunks, first_budget, idle_budget):
                     if delta.model is None:
                         delta.model = resolved_model
-                    # 流式响应的 token 用量通常在**最后一帧**才给（OpenAI 兼容行为），
-                    # 所以在这里逐帧看、有就记，而不是等流结束再取
+                    # 流式响应的 token 用量通常在**最后一帧**才给（OpenAI 兼容行为），所以在这里
+                    # 逐帧看、有就记，而不是等流结束再取
                     if delta.usage is not None:
                         get_metrics().add_llm_tokens(
                             model=delta.model or resolved_model,
@@ -440,9 +435,9 @@ class OpenAICompatLLM:
                 tool_calls=accumulator.deltas(final=False),
             )
         if accumulator:
-            # 流结束时的收尾：把最后一版（含拼好的 arguments）回注一次，
-            # 并记下「缺名字」与「参数不是 JSON」的索引——它们**不会**报错，
-            # 只会让模型看到一次莫名其妙的参数非法，日志是唯一的线索。
+            # 流结束时的收尾：把最后一版（含拼好的 arguments）回注一次，并记下「缺名字」与
+            # 「参数不是 JSON」的索引 —— 它们**不会**报错，只会让模型看到一次莫名其妙的参数
+            # 非法，日志是唯一的线索。
             missing = accumulator.incomplete()
             if missing:
                 logger.warning("llm.stream_tool_calls_incomplete", extra={"indices": missing})
@@ -483,9 +478,8 @@ class OpenAICompatLLM:
     async def verify_model(self) -> str:
         """发一次最小真实调用，确认配置的模型名被上游接受。
 
-        只读配置是发现不了「模型名拼错、上游静默回退」的（见用户经验：换供应商后
-        必须打印 ``response_metadata["model_name"]``）。失败时**只告警不阻断启动**：
-        上游抖动不该让整个服务起不来。
+        只读配置是发现不了「模型名拼错、上游静默回退」的（见用户经验：换供应商后必须打印
+        ``response_metadata["model_name"]``）。失败时**只告警不阻断启动**。
         """
         try:
             response = await self.complete(

@@ -4,14 +4,9 @@ import "time"
 
 // Metrics 是 biz 层需要打的指标（docs/06-§5.2）。
 //
-// 为什么在 biz 里定义接口而不是直接依赖 `pkg/metricsx`：
-// 规范 §四的依赖方向是 `service --> biz`、`data --> biz`，
-// biz 依赖一个「打点包」会把可观测性变成业务层的编译期依赖；
-// 而接口化之后，单测传 nil 就是「不打点」，`*metricsx.Metrics` 天然满足它
-// （它所有方法都是 nil 安全的）。**实现方在 pkg / 装配点在 cmd。**
-//
-// 方法名刻意与 Prometheus 指标名一一对应：从「面板上哪条曲线不对」
-// 反查到「哪一行代码在打点」只差一次搜索。
+// 在 biz 定义接口而非直接依赖 `pkg/metricsx`：规范 §四的依赖方向是 `service/data → biz`，
+// 让 biz 依赖打点包会把可观测性变成业务层的编译期依赖。实现方在 pkg、装配点在 cmd。
+// 方法名与 Prometheus 指标名一一对应，便于从面板反查到打点代码。
 type Metrics interface {
 	// QuotaExceeded 记一次配额拦截（`gw_quota_exceeded_total{metric}`）。
 	QuotaExceeded(metric string)
@@ -48,10 +43,8 @@ type Metrics interface {
 
 // 指标标签的固定取值（与 `pkg/metricsx` 的常量保持同值）。
 //
-// 两边各留一份是这个包唯一无法避免的重复：`biz` 不能 import `pkg/metricsx`
-// 的类型来做「常量转发」（那会把接口化变成形式主义）。
-// 因此用 `internal/biz` 的单测断言两组常量相等（见 metrics_test.go）——
-// 值不一致时面板上少一条曲线，而那种错误**没有任何运行时症状**。
+// 两边各留一份是不可避免的重复（biz 不能 import metricsx），
+// 故用单测断言两组常量相等（metrics_test.go）—— 不一致时面板会少一条曲线且无运行时症状。
 const (
 	// MetricResultOK 是 AI 调用成功。
 	MetricResultOK = "ok"
@@ -72,19 +65,13 @@ const (
 	AIOpChatStream = "chat_stream"
 
 	// SSE 断连的阶段（`gw_sse_client_disconnects_total{phase}`）。
-	//
-	// 只有两档而不是三档：`after_done`（收到 done 之后才断开）属于正常收尾，
-	// 网关侧看不出与「正常结束」的区别（客户端关连接没有语义），
-	// 把它计成断连只会制造一批永远为 0 的噪音。
+	// 只有两档：`after_done` 属于正常收尾，计成断连只会制造永远为 0 的噪音。
 	SSEPhaseBeforeFirstToken = "before_first_token"
 	// SSEPhaseMidStream 表示首 token 之后、AI 收尾之前断开（用户已看到部分内容）。
 	SSEPhaseMidStream = "mid_stream"
 
-	// 登录与刷新的结果（`gw_login_attempts_total{result}` /
-	// `gw_token_refresh_total{result}`）。
-	//
-	// `locked` 与「限流拒绝」分开：锁是账号维度的处置，限流是流量维度的，
-	// 两者要动的配置完全不同。
+	// 登录与刷新的结果（`gw_login_attempts_total{result}` / `gw_token_refresh_total{result}`）。
+	// `locked` 与「限流拒绝」分开：锁是账号维度、限流是流量维度，要动的配置不同。
 
 	// MetricLoginOK 表示凭据校验通过并签发令牌对。
 	MetricLoginOK = "ok"

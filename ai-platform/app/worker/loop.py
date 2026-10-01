@@ -1,22 +1,17 @@
 """任务 Worker 主循环（``docs/08`` §5.4，``REQ-TASK-006``）。
 
-**它为什么必须是独立进程**：``docs/10`` §5.1 的首 token 延迟目标要求 API 进程
-不被 CPU 密集的解析/向量化抢占；``docs/10`` §4 更明确要求「文件解析 MUST 在
-独立进程（Worker）中执行，解析器崩溃不得影响 API 进程」。
+**它必须是独立进程**：``docs/10`` §5.1 的首 token 延迟目标要求 API 进程不被 CPU 密集的解析/
+向量化抢占；``docs/10`` §4 更明确要求「文件解析 MUST 在独立进程（Worker）中执行，解析器崩溃
+不得影响 API 进程」。
 
-一次消息处理的状态推进顺序（每一步都有对应的失败后果）：
+一条消息的状态推进顺序：① 读任务行并发幂等判断（已终态 / 正在跑 / 重复消息 → 丢弃）；
+② 有取消标记 → 置 ``CANCELED`` 并丢弃；③ ``FAILED`` 且还有预算 → ``requeue``；
+④ ``PENDING`` → ``mark_queued``，``QUEUED`` → 直接执行；⑤ 执行（整套状态流转由
+``TaskService.track`` 负责）；⑥ 失败时决定自动重试（延迟重投，不阻塞 Worker）还是进死信；
+⑦ **状态落库之后**才提交 offset。
 
-1. 读任务行并发**幂等判断**（已终态 / 正在跑 / 重复消息 → 丢弃）；
-2. 有取消标记 → 置 ``CANCELED`` 并丢弃（用户点过取消）；
-3. ``FAILED`` 且还有预算 → ``requeue``（``docs/08`` §2 的 ``FAILED --> QUEUED``）；
-4. ``PENDING`` → ``mark_queued``；``QUEUED`` → 直接执行；
-5. 执行（整套状态流转由 ``TaskService.track`` 负责，含超时/取消/异常）；
-6. 失败时决定**自动重试**（延迟重投，不阻塞 Worker）还是**进死信**；
-7. **状态落库之后**才提交 offset（``docs/08`` §5.4）。
-
-第 7 步是唯一容易被写反的一步，也是唯一「写反了看不出来」的一步：
-先提交再落库，崩溃后任务消息就永远不会回来了（at-most-once），
-而日志里什么都没有。
+第 ⑦ 步是唯一容易被写反、且写反了看不出来的一步：先提交再落库，崩溃后任务消息就永远不会
+回来了（at-most-once），而日志里什么都没有。
 """
 
 from __future__ import annotations
@@ -127,8 +122,8 @@ class TaskWorker:
         self._retry_jitter = settings.task_retry_jitter
         self._tracker = OffsetTracker()
         self._running = _Running()
-        #: 重试队列的轮询间隔。没有它会变成「每循环一次查一次 Redis」：
-        #: 消息稀少时循环可以跑上千次/秒，把 Redis 打成瓶颈而任务吞吐毫无变化。
+        #: 重试队列的轮询间隔。没有它会变成「每循环一次查一次 Redis」：消息稀少时循环可以跑上千
+        #: 次/秒，把 Redis 打成瓶颈而任务吞吐毫无变化。
         self._retry_poll = max(0.0, float(settings.task_retry_poll_seconds))
         self._next_retry_poll = float("-inf")
 
@@ -170,9 +165,9 @@ class TaskWorker:
     def _start(self, message: TaskMessage) -> None:
         """登记并启动一条消息的处理任务。
 
-        刻意是**同步**方法：它只登记位点、建 task 就返回。写成 ``async def`` 会
-        让调用方以为里面有 await（实际上一个都没有），那种「异步函数里全是同步代码」
-        的写法很容易在后续修改中变成真正的串行卡点。
+        刻意是**同步**方法：它只登记位点、建 task 就返回。写成 ``async def`` 会让调用方以为
+        里面有 await（实际一个都没有），而「异步函数里全是同步代码」的写法很容易在后续修改中
+        变成真正的串行卡点。
         """
         self._tracker.track(
             Position(topic=message.topic, partition=message.partition, offset=message.offset)
@@ -185,10 +180,9 @@ class TaskWorker:
         try:
             await self._execute(message)
         except asyncio.CancelledError:
-            # 关停路径：``_shutdown`` 先给每条在飞任务打了取消标记，所以这里落成
-            # CANCELED 是**约定**（而不是猜测）。``_record_outcome`` 走不到，
-            # 计数只能在这里补 —— 否则关停日志里 ``canceled=0``，
-            # 与 ``worker.drained`` 报的条数对不上，排查时会被误导。
+            # 关停路径：``_shutdown`` 先给每条在飞任务打了取消标记，所以这里落成 CANCELED
+            # 是约定（而不是猜测）。``_record_outcome`` 走不到，计数只能在这里补 —— 否则
+            # 关停日志里 ``canceled=0``，与 ``worker.drained`` 报的条数对不上。
             self.stats.canceled += 1
             raise
         except Exception as exc:
@@ -250,9 +244,8 @@ class TaskWorker:
             )
             return
         if task.status is TaskStatus.RUNNING or task.id in self._running.task_ids:
-            # 重复投递（Kafka at-least-once）或另一个 Worker 正在跑：
-            # 强行再跑一次会让两次执行互相覆盖切片，而且第二次 ``mark_running``
-            # 必然撞上状态机冲突。直接丢弃。
+            # 重复投递（Kafka at-least-once）或另一个 Worker 正在跑：强行再跑一次会让两次执行
+            # 互相覆盖切片，而且第二次 ``mark_running`` 必然撞上状态机冲突。直接丢弃。
             self.stats.skipped += 1
             logger.info("worker.task_already_running", extra={"task_id": task.id})
             return
@@ -307,19 +300,17 @@ class TaskWorker:
         """``dispatcher.handle`` + 超时控制。
 
         **超时不能用 ``wait_for``**：``wait_for`` 超时会取消那个协程，取消信号穿过
-        ``TaskService.track`` 的 ``CancelledError`` 分支，把「跑太久」记成
-        ``CANCELED`` —— 用户看到一个「被取消」的任务，而其实谁都没取消它。
-        所以这里先**主动落 ``FAILED``**，再取消协程；``track`` 在取消时会先看
-        取消标记，看到「没人请求过取消」就保留 ``FAILED``（见
-        ``TaskService._cancel_or_keep``）。
+        ``TaskService.track`` 的 ``CancelledError`` 分支，把「跑太久」记成 ``CANCELED``
+        —— 用户看到一个「被取消」的任务，而其实谁都没取消它。所以这里先**主动落 ``FAILED``**，
+        再取消协程；``track`` 在取消时会先看取消标记，看到「没人请求过取消」就保留 ``FAILED``。
         """
         job = asyncio.ensure_future(self._dispatcher.handle(task))
         try:
             done, _ = await asyncio.wait({job}, timeout=self._timeout)
         except asyncio.CancelledError:
-            # 关停路径：``wait`` 被取消时**不会**取消它正在等的任务。不显式取消就会
-            # 留下一个还在跑 Embedding 的孤儿任务（进程退出前一直在吃 CPU），
-            # 而且 ``track`` 收不到取消信号 —— 任务会永远停在 ``RUNNING``。
+            # 关停路径：``wait`` 被取消时**不会**取消它正在等的任务。不显式取消就会留下一个还在
+            # 跑 Embedding 的孤儿任务（进程退出前一直在吃 CPU），而且 ``track`` 收不到取消信号
+            # —— 任务会永远停在 ``RUNNING``。
             job.cancel()
             await asyncio.gather(job, return_exceptions=True)
             raise
@@ -359,8 +350,8 @@ class TaskWorker:
         elif task.status is TaskStatus.FAILED:
             self.stats.failed += 1
         else:
-            # 处理器返回后仍是中间态：不该发生，但也绝不能静默 ——
-            # 它意味着「任务永远停在那里」，必须留下线索。
+            # 处理器返回后仍是中间态：不该发生，但也绝不能静默 —— 它意味着
+            # 「任务永远停在那里」，必须留下线索。
             logger.error(
                 "worker.task_not_finalized",
                 extra={"task_id": task.id, "status": status},
@@ -412,9 +403,9 @@ class TaskWorker:
     async def _poll_retries(self) -> None:
         """把到期的重试重新投递出去（``docs/08`` §5.2）。
 
-        **只投递、不改状态**：真正把 ``FAILED → QUEUED`` 的是收到消息的 Worker
-        （见 :meth:`_advance`）。这样「投递失败」的后果是「任务仍是 FAILED」——
-        用户可以手动重试，而不是卡在一个谁也看不见的中间态里。
+        **只投递、不改状态**：真正把 ``FAILED → QUEUED`` 的是收到消息的 Worker（见
+        :meth:`_advance`）。这样「投递失败」的后果是「任务仍是 FAILED」—— 用户可以手动重试，
+        而不是卡在一个谁也看不见的中间态里。
         """
         now = self._clock()
         if now < self._next_retry_poll:
@@ -447,9 +438,9 @@ class TaskWorker:
     async def _shutdown(self) -> None:
         """优雅退出（``docs/08`` §5.4）。
 
-        顺序：① 给在飞任务打取消标记（它们在**下一个检查点**自己退出，而不是被
-        硬杀）；② 等待至多 ``grace`` 秒；③ 仍未结束的强制取消（``track`` 会落
-        ``CANCELED``）；④ 提交剩余位点。
+        顺序：① 给在飞任务打取消标记（它们在下一个检查点自己退出，而不是被硬杀）；
+        ② 等待至多 ``grace`` 秒；③ 仍未结束的强制取消（``track`` 会落 ``CANCELED``）；
+        ④ 提交剩余位点。
         """
         in_flight = sorted(self._running.task_ids)
         if in_flight:
@@ -495,10 +486,9 @@ def build_worker(
 ) -> TaskWorker:
     """装配 Worker。
 
-    三个外部依赖都可注入：单测用一个「假 Broker」（``tests/support/fake_broker.py``）
-    驱动整个消费循环，从而覆盖「幂等丢弃 / 自动重试 / 死信 / 取消 / 优雅退出」——
-    这些行为靠人工起一个 Kafka 去验证是不可维护的（与 ``docs/11`` §3 用替身替掉
-    MCP 传输层是同一条纪律）。
+    三个外部依赖都可注入：单测用一个「假 Broker」（``tests/support/fake_broker.py``）驱动整个
+    消费循环，从而覆盖「幂等丢弃 / 自动重试 / 死信 / 取消 / 优雅退出」—— 这些行为靠人工起一个
+    Kafka 去验证是不可维护的。
     """
     return TaskWorker(
         settings,

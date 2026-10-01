@@ -43,20 +43,13 @@ func (s CircuitSnapshot) StateName() string {
 	}
 }
 
-// AICircuitBreaker 是对 ai-platform 的**整体**熔断器（docs/04-§3.4）。
+// AICircuitBreaker 是对 ai-platform 的整体熔断器（docs/04-§3.4）。
+// 只做一个不分接口：网关对 AI 的调用共享同一进程/配额/故障域，分 N 个只会让
+// 「AI 全挂」时每个入口各自慢 10 次。
 //
-// 刻意只做一个（不分接口）：网关对 AI 的调用共享同一个进程、同一份配额、
-// 同一个上游故障域，分成 N 个熔断器只会让「AI 全挂」时每个入口各自慢 10 次。
-//
-// 三条容易做错的约定：
-//
-//  1. **健康检查不参与统计**（docs/04-§3.4 明写）。健康探测本身要能反映
-//     「AI 是否活着」，若它也算失败，熔断打开期间探测会一直失败，
-//     于是熔断**永远无法自行恢复**。
-//  2. 只有「上游故障」计数。参数错误、内容过滤是 AI **正常返回**的结果，
-//     把它们算进去会让一个乱填参数的客户端把整个网关熔断。
-//  3. 半开只放**一个**探针。放 N 个等于在还没恢复时把压力原样打回去，
-//     这正是熔断要避免的事。
+// 三条约定：① 健康检查不参与统计，否则熔断打开期间探测一直失败、永远无法自行恢复；
+// ② 只有上游故障计数，参数错误/内容过滤是 AI 正常返回，算进去会让一个客户端熔断全网关；
+// ③ 半开只放一个探针，放 N 个等于没恢复就把压力打回去。
 type AICircuitBreaker struct {
 	target           string
 	failureThreshold int
@@ -73,10 +66,8 @@ type AICircuitBreaker struct {
 }
 
 // NewAICircuitBreaker 构造熔断器。
-//
-// `failureThreshold <= 0` 或 `openFor <= 0` 时返回 nil：配置为 0 表示
-// **显式关闭熔断**（本地开发时不想被熔断挡住），而不是「立刻打开」。
-// 用 nil 表示「关闭」而不是用一个永远放行的对象，让调用点只判一次 nil。
+// `failureThreshold <= 0` 或 `openFor <= 0` 返回 nil，表示显式关闭熔断（而非「立刻打开」），
+// 让调用点只判一次 nil。
 func NewAICircuitBreaker(target string, failureThreshold int, openFor time.Duration, clock nowFunc, metrics Metrics, log *slog.Logger) *AICircuitBreaker {
 	if failureThreshold <= 0 || openFor <= 0 {
 		return nil
@@ -104,13 +95,8 @@ func NewAICircuitBreaker(target string, failureThreshold int, openFor time.Durat
 }
 
 // circuitEvent 是一次「已决定、但还没落盘」的状态变化日志。
-//
-// 把「决定」与「写日志」拆开是为了让日志 I/O 发生在**解锁之后**：
-// 写日志可能阻塞（管道满了、磁盘慢、`Out-File` 的读者跟不上），
-// 而 `b.mu` 保护的是「是否放行」这条热路径。持锁写日志会把
-// 「日志慢」放大成「整个 AI 调用路径不可用」。
-//
-// 字段是**值拷贝**而不是解锁后再读 `b.state`：后者是数据竞争。
+// 把「决定」与「写日志」拆开，让日志 I/O 发生在解锁之后：写日志可能阻塞，
+// 而 `b.mu` 保护的是「是否放行」这条热路径。字段是值拷贝（解锁后再读 b.state 会数据竞争）。
 type circuitEvent struct {
 	msg      string
 	reason   string
@@ -121,17 +107,13 @@ type circuitEvent struct {
 func (e circuitEvent) empty() bool { return e.msg == "" }
 
 // stateName 把状态码转成日志里可读的名字。
-//
-// 用「构造一个临时 Snapshot」而不是 `b.Snapshot()`：后者要加锁，
-// 而调用点全都在持锁区里（见 `emit` 的注释）。
+// 构造临时 Snapshot 而非调 `b.Snapshot()`：后者要加锁，而这里在持锁区。
 func stateName(state int) string {
 	return CircuitSnapshot{State: state}.StateName()
 }
 
 // Allow 询问是否可以发起调用。
-//
-// 返回 true 时调用方**必须**在结束时调用 `OnSuccess` 或 `OnFailure`
-// （半开态的探针名额靠这个归还，漏掉会让半开永久卡住）。
+// 返回 true 时调用方必须在结束时调 `OnSuccess`/`OnFailure`（半开探针名额靠它归还，漏掉会永久卡住）。
 func (b *AICircuitBreaker) Allow() bool {
 	if b == nil {
 		return true
@@ -152,7 +134,7 @@ func (b *AICircuitBreaker) allowLocked() (bool, circuitEvent) {
 		if now.Sub(b.openedAt) < b.openFor {
 			return false, circuitEvent{}
 		}
-		// 冷却结束：转入半开并把这个名额给当前请求当探针。
+		// 冷却结束：转半开并把名额给当前请求当探针。
 		b.state = CircuitStateHalfOpen
 		b.probeOpen = true
 		b.metrics.CircuitBreakerState(b.target, CircuitStateHalfOpen)
@@ -196,7 +178,7 @@ func (b *AICircuitBreaker) onSuccessLocked() circuitEvent {
 	}
 }
 
-// OnFailure 上报一次**上游故障**。非上游故障不要调它（见类型注释第 2 条）。
+// OnFailure 上报一次上游故障。非上游故障不要调它（见类型注释 ②）。
 func (b *AICircuitBreaker) OnFailure() {
 	if b == nil {
 		return
@@ -210,9 +192,7 @@ func (b *AICircuitBreaker) onFailureLocked() circuitEvent {
 	b.probeOpen = false
 
 	if b.state == CircuitStateHalfOpen {
-		// 探针失败：立刻回到打开并重置冷却计时。
-		// 重置是有意的 —— 否则「冷却已在半开前耗尽」会让下一次 Allow
-		// 立刻又放一个探针，等于取消熔断。
+		// 探针失败：立刻回到打开并重置冷却计时 —— 否则下一次 Allow 会立刻又放一个探针，等于取消熔断。
 		return b.openLocked()
 	}
 	b.failures++
@@ -253,23 +233,12 @@ func (b *AICircuitBreaker) Snapshot() CircuitSnapshot {
 // State 返回状态码。
 func (b *AICircuitBreaker) State() int { return b.Snapshot().State }
 
-// emit 打印一次状态变化。
+// emit 打印一次状态变化。⚠️ 必须在释放 `b.mu` 之后调用：
+// 它读 b.state/b.failures（持锁读会数据竞争，故由 circuitEvent 值拷贝带出），
+// 且日志写入可能阻塞，而 `b.mu` 保护的是「是否放行」这条热路径。
 //
-// ⚠️ **必须在释放 `b.mu` 之后调用**，理由有两条：
-//
-//  1. 它读 `b.state` / `b.failures`，持锁区里读会数据竞争，所以
-//     这些值必须由 `circuitEvent` 带出来（值拷贝）。
-//  2. 日志写入可能阻塞（管道满、磁盘慢），而 `b.mu` 保护的是
-//     「是否放行」这条热路径；持锁写日志会把「日志慢」放大成
-//     「整个 AI 调用路径不可用」。
-//
-// 历史缺陷（2026-09-30 实测，P0）：这里原先调的 `logf` 内部用
-// `b.Snapshot().StateName()` 取状态名，而 `Snapshot` 也要 `b.mu.Lock()`。
-// `sync.Mutex` 不可重入，于是**连续 10 次上游失败 → 熔断打开 → 死锁**：
-// 第一次状态变化就把锁永久锁死，后续所有请求连 `Allow()` 都进不去，
-// 网关对 AI 的调用在「最该工作的那一次」全线不可用，且**一行日志都没有**
-// （卡住的正是写日志那一步）。三个调用点（open / half_open / closed）
-// 全都在持锁区，所以这不是偶发 —— 熔断器只要需要写一次日志就必死。
+// 历史缺陷（2026-09-30，P0）：曾在持锁区内调 `Snapshot().StateName()`，
+// `sync.Mutex` 不可重入 → 第一次状态变化就死锁，熔断器只要写一次日志就必死。
 func (b *AICircuitBreaker) emit(ev circuitEvent) {
 	if ev.empty() || b == nil || b.log == nil {
 		return
@@ -336,10 +305,7 @@ type circuitOrchestrator struct {
 }
 
 // NewCircuitChatOrchestrator 包装非流式对话入口。
-//
-// 装饰器模式而不是把熔断判断写进 `MessageService`：熔断是**传输层策略**，
-// 与「会话、消息、引用」这些业务概念无关；写进业务层会让每个新增的
-// AI 调用点都要记得加一次判断。
+// 用装饰器而非把熔断写进 `MessageService`：熔断是传输层策略，与业务概念无关。
 func NewCircuitChatOrchestrator(next ChatOrchestrator, cb *AICircuitBreaker, m Metrics) ChatOrchestrator {
 	if cb == nil {
 		return next
@@ -348,16 +314,10 @@ func NewCircuitChatOrchestrator(next ChatOrchestrator, cb *AICircuitBreaker, m M
 }
 
 // Chat 在熔断器保护下执行一次非流式对话。
-//
-// 契约要点：
-//   - 熔断打开时**不发起**真实调用，直接返回带 Retry-After 的 AI_OVERLOADED
-//     （S7 的核心断言：AI 挂掉后网关不该每个请求都去撞一次连接超时）；
-//   - 只有上游类故障（5xx/限流/网络/超时）才计入熔断失败；
-//     客户端类错误与业务拒绝仍记一次「调用发生了」，因为它们属于成功率的分母。
+// 熔断打开时不发起真实调用，直接返回带 Retry-After 的 AI_OVERLOADED（S7 核心断言）；
+// 只有上游类故障（5xx/限流/网络/超时）计入熔断失败，客户端类错误仍记一次调用（属成功率分母）。
 func (o *circuitOrchestrator) Chat(ctx context.Context, req ChatRequest) (*ChatResult, error) {
-	// 一次 AI 调用一条 span。名字与指标标签（`operation=chat`）刻意保持一致：
-	// 从「面板上这条曲线不对」到「Jaeger 里那批慢请求」之间的翻译
-	// 不需要额外知识。
+	// 一次 AI 调用一条 span，名字与指标标签 `operation=chat` 保持一致，便于面板→Jaeger 对照。
 	ctx, span := otelx.Tracer("gateway.ai").Start(ctx, "ai.chat",
 		trace.WithSpanKind(trace.SpanKindClient))
 	defer func() { span.End() }()
@@ -412,10 +372,7 @@ func NewCircuitChatStreamer(next ChatStreamer, cb *AICircuitBreaker, m Metrics) 
 }
 
 // ChatStream 在熔断器保护下建立流式对话。
-//
-// 熔断语义与 Chat 相同，但计数对象是**流的建立**：一旦返回了流，
-// 后续中途失败由 StreamFailureReporter 上报，不在这里判断
-// （那时再改熔断状态已经晚了，也没有第二个响应可以返回）。
+// 计数对象是流的建立：一旦返回了流，后续中途失败由 StreamFailureReporter 上报。
 func (s *circuitStreamer) ChatStream(ctx context.Context, req ChatRequest) (ChatEventStream, error) {
 	ctx, span := otelx.Tracer("gateway.ai").Start(ctx, "ai.chat_stream",
 		trace.WithSpanKind(trace.SpanKindClient))
@@ -449,10 +406,8 @@ func (s *circuitStreamer) ChatStream(ctx context.Context, req ChatRequest) (Chat
 }
 
 // circuitStream 是「观测到结论后上报熔断」的流包装。
-//
-// 为什么必须在流上观测而不是在 `ChatStream` 返回处：**流式的失败大多发生在
-// 建流之后**（上游在建流后立刻报错、或半路断流）。只看建流那一刻的结果，
-// 熔断器对「AI 一开流就挂」这种最常见的故障完全无感。
+// 必须在流上观测而非在 `ChatStream` 返回处：流式的失败大多发生在建流之后，
+// 只看建流那一刻的结果，熔断器对「AI 一开流就挂」完全无感。
 type circuitStream struct {
 	inner ChatEventStream
 	cb    *AICircuitBreaker
@@ -465,10 +420,8 @@ type circuitStream struct {
 func (s *circuitStream) Events() <-chan StreamEvent { return s.inner.Events() }
 
 // Err 透传终止原因，并把结论上报给熔断器。
-//
-// 契约保证 `Err()` 只在通道关闭后读，因此此时 nil **确实**意味着正常结束
-// （上游发完了 `done`）；不需要额外探测通道状态 —— 那需要非阻塞读，
-// 而在「还没读完」的时候去读会**吃掉一个事件**，是个静默的数据丢失陷阱。
+// 契约保证 `Err()` 只在通道关闭后读，故此时 nil 确实意味着正常结束，
+// 不需额外探测通道状态 —— 非阻塞读会吃掉一个事件，是静默数据丢失。
 func (s *circuitStream) Err() error {
 	err := s.inner.Err()
 	s.once.Do(func() { s.report(err) })
@@ -479,11 +432,9 @@ func (s *circuitStream) Err() error {
 func (s *circuitStream) Close() error {
 	err := s.inner.Close()
 	s.once.Do(func() {
-		// 提前放弃（客户端断连、超时）时 `inner.Err()` 往往是 nil，
-		// 把它记成「成功」会掩盖「AI 卡住」这类真实故障；而记成失败
-		// 又会把「用户自己按了取消」算到 AI 头上。两难的根源是
-		// 装饰器看不到调用方的判定，因此这里**只有在上游确实给了错误时**
-		// 才表态，超时类故障由编排层显式上报（`ReportStreamFailure`）。
+		// 提前放弃（客户端断连/超时）时 inner.Err() 往往为 nil：记成功会掩盖「AI 卡住」，
+		// 记失败又会把「用户按了取消」算到 AI 头上。装饰器看不到调用方判定，
+		// 故只在**上游确实给了错误**时才表态，超时类由编排层显式上报。
 		if innerErr := s.inner.Err(); innerErr != nil {
 			s.report(innerErr)
 		}
@@ -491,10 +442,8 @@ func (s *circuitStream) Close() error {
 	return err
 }
 
-// ReportStreamFailure 让编排层把「流级故障」显式告诉熔断器。
-//
-// 覆盖的是装饰器看不到的三条路径：首字节超时、空闲超时、整轮超时。
-// 它们都意味着「上游活着但不出活」，正是熔断应当响应的形态。
+// ReportStreamFailure 让编排层把「流级故障」显式告诉熔断器：
+// 首字节/空闲/整轮超时这三条路径装饰器看不到，它们都意味着「上游活着但不出活」。
 func (s *circuitStream) ReportStreamFailure(reason string) {
 	s.once.Do(func() { s.reportTimeout(reason) })
 }
@@ -510,9 +459,7 @@ func (s *circuitStream) reportTimeout(reason string) {
 }
 
 // StreamFailureReporter 由装饰后的流实现；编排层用它上报超时类故障。
-//
-// 定义成小接口 + 类型断言，而不是扩大 `ChatEventStream`：
-// 后者会让所有实现（含测试假件）都必须实现一个与「事件流」无关的方法。
+// 定义成小接口 + 类型断言而不扩大 `ChatEventStream`：后者会让所有实现都必须写一个无关方法。
 type StreamFailureReporter interface {
 	ReportStreamFailure(reason string)
 }
@@ -532,9 +479,7 @@ func (s *circuitStream) report(err error) {
 }
 
 // ReportStreamFailure 让调用方（编排层）把超时类故障显式上报给熔断器。
-//
-// 装饰器在 `Close()` 里刻意不猜结论（见 `circuitStream.Close`），
-// 因此这三条路径必须由知道原因的一方上报：首字节超时、空闲超时、整轮超时。
+// 装饰器在 `Close()` 里刻意不猜结论，故这三条路径必须由知道原因的一方上报。
 func ReportStreamFailure(stream ChatEventStream, reason string) {
 	if r, ok := stream.(StreamFailureReporter); ok {
 		r.ReportStreamFailure(reason)

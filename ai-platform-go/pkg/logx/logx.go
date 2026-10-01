@@ -1,7 +1,8 @@
 // Package logx 统一结构化日志。
 //
-// 契约（docs/06-§5.3）：slog JSON（生产）/ text（本地），输出到 stdout 且 **MUST NOT 自己写文件与轮转**；
-// 每条日志须带 ts/level/msg/service/version/trace_id/span_id/request_id，并 **MUST 按 docs/06-§4.4 脱敏**（凭据一律 `***`）。
+// 契约（docs/06-§5.3）：slog JSON（生产）/ text（本地），输出到 stdout，MUST NOT 自己写文件与轮转；
+// 每条日志须带 ts/level/msg/service/version/trace_id/span_id/request_id，
+// 并 MUST 按 docs/06-§4.4 脱敏（凭据一律 `***`）。
 package logx
 
 import (
@@ -118,9 +119,9 @@ func FieldsFrom(ctx context.Context) Fields {
 }
 
 // WithLogger 把基础 logger 放进 context。
-//
-// 必要性：httpx / middleware 这类下游包无法持有启动时构造的 logger（传参要穿透整条调用链，反向导入又成环）；
-// 不放进去它们只能退回 slog.Default() —— 那是一个**未配置**的 stdlib handler，输出格式与本服务其它日志不一致，也没有 service / version 字段。
+// httpx / middleware 这类下游包无法持有启动时构造的 logger（传参要穿透整条调用链，
+// 反向导入又成环），不放进去只能退回 slog.Default() —— 一个未配置的 stdlib handler，
+// 输出格式与本服务其它日志不一致，也没有 service / version 字段。
 func WithLogger(ctx context.Context, logger *slog.Logger) context.Context {
 	if logger == nil {
 		return ctx
@@ -128,9 +129,9 @@ func WithLogger(ctx context.Context, logger *slog.Logger) context.Context {
 	return context.WithValue(ctx, keyLogger, logger)
 }
 
-// From 返回带上下文字段的 logger；base 为 nil 时优先用 context 里的 logger，再退回 slog.Default()。
-//
-// 这样调用方只需要 `logx.From(ctx, s.logger).Info(...)`，不必手工把 trace_id 抄进每个日志调用（漏抄一次就断了链路）。
+// From 返回带上下文字段的 logger；base 为 nil 时优先用 context 里的 logger，
+// 再退回 slog.Default()。这样调用方不必手工把 trace_id 抄进每个日志调用
+// （漏抄一次就断了链路）。
 func From(ctx context.Context, base *slog.Logger) *slog.Logger {
 	if base == nil {
 		if l, ok := ctx.Value(keyLogger).(*slog.Logger); ok {

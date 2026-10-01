@@ -14,12 +14,8 @@ import (
 // ---- 领域对象与仓储接口 ----
 
 // User 是用户领域对象。
-//
-// 注意：`user` 表**没有** user_id 列（id 就是用户 id）；`refresh_token` 等
-// 引用它的列宽是 VARCHAR(64)（跳服务字段约定 docs/05-§2.0）。
-//
-// 它 MUST NOT 被直接序列化出去：`PasswordHash` / `TokenVersion` 都在这里，
-// 对外视图由 service 的 UserResponse 决定（规范 §三.2）。
+// `user` 表没有 user_id 列（id 即用户 id），引用它的列宽 VARCHAR(64)（docs/05-§2.0）。
+// MUST NOT 直接序列化出去：PasswordHash / TokenVersion 都在这里，对外视图由 service 决定（规范 §三.2）。
 type User struct {
 	ID           string
 	Email        string
@@ -49,12 +45,9 @@ const (
 	UserStatusDeleted = "deleted"
 )
 
-// UserRepo 是用户表的仓储接口。
-//
-// 规范 §六：接口定义在 biz、实现在 data，且实现类型不导出。
-// 因此实现方 MUST 把基础设施错误翻译成领域哨兵：
-// 「记录不存在」-> ErrNotFound，「邮箱撞唯一键」-> ErrEmailTaken。
-// biz 不认识 gorm.ErrRecordNotFound，也不认识 MySQL 的 1062。
+// UserRepo 是用户表的仓储接口（接口在 biz、实现在 data，规范 §六）。
+// 实现方 MUST 把基础设施错误翻译成领域哨兵：「记录不存在」→ ErrNotFound，
+// 「邮箱撞唯一键」→ ErrEmailTaken —— biz 不认识 gorm.ErrRecordNotFound 或 MySQL 1062。
 type UserRepo interface {
 	// Create 插入用户；邮箱已存在时返回 ErrEmailTaken。
 	Create(ctx context.Context, u *User) error
@@ -98,17 +91,13 @@ func NewUserService(d UserDeps) *UserService {
 }
 
 // UpdateProfileInput 是 `PATCH /me` 请求体。
-//
-// 字段用指针：`null`/缺省表示「不改这个字段」，空串表示「清空」。
-// 用零值判断会把这两种语义合并，出现「只想改昵称却把其它字段清空」的 bug。
+// 字段用指针区分「不改」（null/缺省）与「清空」（空串）；用零值判断会把两者合并。
 type UpdateProfileInput struct {
 	Nickname *string `json:"nickname"`
 }
 
-// Me 返回当前用户（REQ-AUTH-005：只返回 JWT 对应的用户）。
-//
-// 返回领域对象而不是响应视图：把「哪些字段可以出厂」交给 service，
-// 这样将来接 gRPC 入口时不会因为复用 HTTP 的 DTO 而误泄 PasswordHash。
+// Me 返回当前用户（REQ-AUTH-005）。返回领域对象而非响应视图，
+// 「哪些字段可出厂」交给 service，避免将来接 gRPC 时误泄 PasswordHash。
 func (s *UserService) Me(ctx context.Context, userID string) (*User, error) {
 	u, err := s.d.Users.GetByID(ctx, userID)
 	if err != nil {

@@ -1,19 +1,17 @@
 """把 MCP 工具适配成 :class:`~app.tools.base.Tool`（``REQ-MCP-003``，契约见 ``docs/05`` §4）。
 
-适配器的存在意义是「**MCP 工具与内置工具在 Agent 眼里没有区别**」：
-同一张注册表、同一个 ``ToolSpec``、同一套 ``ToolOutcome``。
-Agent Loop 与 ``/tools`` 接口都不需要知道某个工具是不是来自 MCP。
+适配器的存在意义是「MCP 工具与内置工具在 Agent 眼里没有区别」：同一张注册表、同一个
+``ToolSpec``、同一套 ``ToolOutcome``。Agent Loop 与 ``/tools`` 接口都不需要知道某个工具
+是不是来自 MCP。
 
 三处必须做对的地方：
 
-1. **名字命名空间化**（``mcp__{server}__{tool}``）：两个 Server 都可能提供 ``search``，
-   不隔离就会撞名。
-2. **``invoke`` 永不抛异常**：工具执行器会把异常转成 ``execution_failed`` 回注给模型，
-   但那是「兜底」；MCP 的失败原因（连接断了 / 上游返回 ``isError``）是**可展示**的，
-   由适配器自己映射成 ``error`` 状态能带上更有用的信息。
-3. **参数校验只做「必需字段」这一层**：完整 JSON Schema 校验需要一个 schema 库，
-   而 MCP Server 真正在意的是自己的校验 —— 我们提前拦下「模型漏传 required 字段」
-   这类高频错误即可，剩下的交给 Server 报错（``isError=true`` 会被原样回注）。
+1. **名字命名空间化**（``mcp__{server}__{tool}``）：两个 Server 都可能提供 ``search``。
+2. **``invoke`` 永不抛异常**：工具执行器会把异常转成 ``execution_failed`` 回注给模型，但那是
+   兜底；MCP 的失败原因（连接断了 / 上游返回 ``isError``）是可展示的，由适配器自己映射成
+   ``error`` 状态能带上更有用的信息。
+3. **参数校验只做「必需字段」这一层**：完整 JSON Schema 校验需要一个 schema 库，而 MCP
+   Server 真正在意的是自己的校验 —— 我们提前拦下「模型漏传 required 字段」这类高频错误即可。
 """
 
 from __future__ import annotations
@@ -156,8 +154,8 @@ class McpTool:
 
         outcome.elapsed_ms = int((time.perf_counter() - started) * 1000)
         # ``ai_tool_calls_total`` 由 :class:`~app.tools.executor.ToolExecutor` 统一记录
-        # （内置与 MCP 走同一条路径）。这里**不**再记一次：两处都记会让每次 MCP 调用
-        # 被计两次 —— 指标翻倍比缺指标难查得多，因为总量看起来「一切正常」。
+        # （内置与 MCP 走同一条路径）。这里**不**再记一次：两处都记会让每次 MCP 调用被计两次
+        # —— 指标翻倍比缺指标难查得多，因为总量看起来「一切正常」。
         if self.side_effect == "write":
             self._audit(ctx, arguments, outcome)
         return outcome
@@ -165,9 +163,8 @@ class McpTool:
     def _to_outcome(self, text: str, is_error: bool) -> ToolOutcome:
         """把 ``CallToolResult`` 转成 ``ToolOutcome``（``docs/05`` §4）。"""
         if is_error:
-            # Server 明确说这次调用失败了 —— ``UPSTREAM_MCP_ERROR`` 对应
-            # 「MCP 调用返回错误」（HTTP 502），但这里不抛异常：
-            # 工具失败的正常出口是回注给模型，让它换个问法或换工具。
+            # Server 明确说这次调用失败了 —— ``UPSTREAM_MCP_ERROR`` 对应「MCP 调用返回错误」
+            # （HTTP 502），但这里不抛异常：工具失败的正常出口是回注给模型，让它换个问法或换工具。
             return ToolOutcome(
                 status="error",
                 payload={"error": "upstream_mcp_error", "detail": {"text": text}},
@@ -182,8 +179,8 @@ class McpTool:
     def _audit(self, ctx: ToolContext, arguments: dict[str, Any], outcome: ToolOutcome) -> None:
         """写副作用工具必须留审计（``docs/05`` §6）。
 
-        ``user_id`` 用 HMAC 哈希后记录（``docs/10`` §5.1：MUST NOT 明文外泄），
-        ``arguments`` 只记键名 —— 写操作的参数里常常夹着用户输入的自由文本。
+        ``user_id`` 用 HMAC 哈希后记录（``docs/10`` §5.1：MUST NOT 明文外泄），``arguments``
+        只记键名 —— 写操作的参数里常常夹着用户输入的自由文本。
         """
         logger.info(
             "mcp.audit",
@@ -214,12 +211,12 @@ def sync_mcp_tools(
 ) -> list[str]:
     """把 MCP 工具同步进注册表（**幂等**），返回注册成功的工具名。
 
-    两步：先摘掉目标 Server 已有的 MCP 工具，再注册当前的工具集合。
-    「先摘后注册」而不是「只补新增」的原因是工具集合会**减少**：
-    Server 升级后下线一个工具，如果旧注册项留着，模型会选中一个已经调不通的工具。
+    两步：先摘掉目标 Server 已有的 MCP 工具，再注册当前的工具集合。「先摘后注册」而不是
+    「只补新增」的原因是工具集合会減少：Server 升级后下线一个工具，如果旧注册项留着，
+    模型会选中一个已经调不通的工具。
 
-    注册前的校验走 :func:`app.tools.validate_tool_spec` —— 与内置工具同一套
-    （描述非空、schema 是 ``type=object``、``mcp_server`` 已声明）。
+    注册前的校验走 :func:`app.tools.validate_tool_spec`（描述非空、schema 是 ``type=object``、
+    ``mcp_server`` 已声明），与内置工具同一套。
 
     Raises:
         ToolRegistrationError: 与内置工具重名，或规格不合法（启动期直接失败）。

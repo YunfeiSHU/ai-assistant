@@ -1,12 +1,11 @@
 """Memory 相关的任务处理器（``summary_build`` / ``memory_extract``）。
 
-对应 ``docs/07`` §3.1（摘要触发）与 §5.1（抽取）。两者都刻意做成**异步任务**：
-它们要调一次 LLM，而这次调用与用户当前那轮回答毫无关系 —— 放进请求路径只会让
-「回答已经流完了，但响应还没结束」这种更难解释的延迟。
+对应 ``docs/07`` §3.1（摘要触发）与 §5.1（抽取）。两者都刻意做成异步任务：它们要调一次
+LLM，而这次调用与用户当前那轮回答毫无关系 —— 放进请求路径只会让「回答已经流完了，但响应
+还没结束」这种更难解释的延迟。
 
-失败语义：处理器内部用 ``TaskService.track`` 包住，因此失败会落到 ``FAILED``
-并可被 ``POST /tasks/{id}/retry`` 重试。**对话本身不会因此失败**：任务是在
-响应之后投递的，它的失败只体现在 ``GET /tasks`` 上。
+失败语义：处理器内部用 ``TaskService.track`` 包住，因此失败会落到 ``FAILED`` 并可被
+``POST /tasks/{id}/retry`` 重试。对话本身不会因此失败。
 """
 
 from __future__ import annotations
@@ -31,10 +30,8 @@ class MemoryTaskHandlers:
     def bind(self, service: MemoryService) -> None:
         """改绑服务实例。
 
-        为什么需要：处理器**只能注册一次**（重复注册是装配错误，分发器会直接抛），
-        所以「重建记忆层」不能在边上再建一个处理器，只能把已注册的那个改绑到新服务。
-        这与路由层「每次请求从 ``app.state`` 取服务」是同一个口径：注入点是
-        ``app.state``，而不是构造期就写死的引用。
+        为什么需要：处理器只能注册一次（重复注册是装配错误，分发器会直接抛），所以
+        「重建记忆层」不能在边上再建一个处理器，只能把已注册的那个改绑到新服务。
         """
         self._service = service
 
@@ -69,7 +66,7 @@ class MemoryTaskHandlers:
         async with self._tasks.track(task.id):
             outcome = await self._service.build_summary(task.resource_id, task.user_id, force=force)
             if outcome is None:
-                # ``None`` 是「条件不满足或命中防抖，本轮跳过」，**不是**错误：
+                # ``None`` 是「条件不满足或命中防抖，本轮跳过」，不是错误：
                 # 每次对话都可能投递摘要任务，而防抖窗口内只允许生成一次 ——
                 # 把跳过记成失败会让任务列表里堆满假故障。
                 logger.info(

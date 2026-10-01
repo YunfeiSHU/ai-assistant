@@ -55,14 +55,10 @@ func bindOnce(t *testing.T, body string, opts ...func(*http.Request)) (string, m
 }
 
 // TestBindJSONDistinguishesEmptyMalformedAndTruncated 是本文件的核心用例。
-//
-// 这三种失败以前都被报成 `empty_body`，而它们的排查方向完全不同：
-//   - empty_body     → 调用方忘了带 body；
-//   - malformed_json → body 完整但语法错（客户端拼错了）；
-//   - truncated_json → body 没传完（客户端序列化被切断 / 连接中断）。
-//
-// 合并成一种的后果是：明明发出了 9 个字节，服务端却回答「你没有请求体」，
-// 排障的人会去反复检查客户端有没有带 body，而不是去看传输是否被截断。
+// 三种失败以前都被报成 `empty_body`，而排查方向完全不同：empty_body 是调用方
+// 忘了带 body；malformed_json 是客户端拼错了；truncated_json 是 body 没传完。
+// 合并后的后果是「明明发出 9 个字节，服务端却回答『你没有请求体』」，
+// 排障的人会去反复检查客户端，而不是去看传输是否被截断。
 func TestBindJSONDistinguishesEmptyMalformedAndTruncated(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -93,9 +89,8 @@ func TestBindJSONDistinguishesEmptyMalformedAndTruncated(t *testing.T) {
 }
 
 // TestBindJSONTypeMismatchProducesFieldError 断言类型错会带字段名。
-//
-// 类型错必须指出**哪个字段**错了。只说「请求参数不合法」会让客户端
-// 被迫逐个字段二分查找，而这是网关唯一比客户端更清楚的上下文。
+// 只说「请求参数不合法」会让客户端被迫逐个字段二分查找 ——
+// 而「哪个字段类型错了」正是网关唯一比客户端更清楚的上下文。
 func TestBindJSONTypeMismatchProducesFieldError(t *testing.T) {
 	code, details, err := bindOnce(t, `{"email":123}`)
 	if err != nil {
@@ -129,10 +124,8 @@ func TestBindJSONTypeMismatchProducesFieldError(t *testing.T) {
 }
 
 // TestBindJSONOversizeIsPayloadTooLarge 断言超限映射成 413 而不是 400。
-//
-// 「body 太大」是调用方的问题，但它**不是参数不合法**：
-// 客户端应该改为分片上传/减少内容，而不是去改字段格式。
-// 更重要的是：413 才能触发客户端换用上传接口这类正确的补救动作。
+// 「body 太大」是调用方的问题，但不是参数不合法：413 才能触发客户端改成
+// 分片上传/减少内容这类正确的补救动作，而不是去改字段格式。
 func TestBindJSONOversizeIsPayloadTooLarge(t *testing.T) {
 	const limit = 256
 	oversize := `{"email":"` + strings.Repeat("a", 1000) + `"}`
@@ -161,9 +154,8 @@ func TestBindJSONHappyPath(t *testing.T) {
 }
 
 // TestBindJSONAcceptsUTF8 断言中文能被正确解析。
-//
-// 编码问题在这里表现得很隐蔽：如果服务端按 latin-1 解码，
-// 中文会变成乱码但**不会报错**，于是错误数据一路写进数据库。
+// 编码问题在这里很隐蔽：按 latin-1 解码时中文会变成乱码但不报错，
+// 于是错误数据一路写进数据库。
 func TestBindJSONAcceptsUTF8(t *testing.T) {
 	code, _, err := bindOnce(t, `{"email":"中文昵称@b.c","password":"X#12345678"}`)
 	if code != "" || err != nil {
@@ -172,10 +164,8 @@ func TestBindJSONAcceptsUTF8(t *testing.T) {
 }
 
 // TestContentTypeIsJSON 覆盖 Content-Type 的宽容规则。
-//
-// 空 Content-Type 视为 JSON 是刻意的：`curl -d` 不带 `-H` 是最常见的
-// 手工调试方式，契约（docs/02 §1）也没有要求必须显式声明。
-// 但 415 仍然要留给真正不兼容的类型（如上传接口收到 JSON）。
+// 空 Content-Type 视为 JSON 是刻意的：`curl -d` 不带 `-H` 是最常见的手工调试方式，
+// 契约（docs/02 §1）也没要求显式声明。但 415 仍要留给真正不兼容的类型。
 func TestContentTypeIsJSON(t *testing.T) {
 	cases := map[string]bool{
 		"":                                    true,

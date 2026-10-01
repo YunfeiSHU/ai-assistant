@@ -2,16 +2,11 @@ package biz
 
 import "time"
 
-// NoopMetrics 是一个什么都不做的 Metrics 实现。
+// NoopMetrics 是空实现的 Metrics。
 //
-// 存在的理由与「`Quota` 为 nil 表示未接线」一致：`Metrics` 在 biz 里是
-// **可选**依赖（接口注释里写着「单测传 nil 就是不打点」），
-// 但 Go 的接口类型为 nil 时调用方法是 **panic** 而不是 no-op。
-//
-// 这个组合很危险：埋点是「尽力而为的观测面」，而它能让整条业务路径崩掉 ——
-// 一次 `Metrics.MessagePersistFailed(...)` 的加分号写错就能把
-// 「落库失败但已降级」变成 500。所以构造期一律用 `OrNoop` 兜底，
-// 让「没接线」与「接了空实现」在语义上等价。
+// Metrics 在 biz 里是可选依赖（单测可传 nil），但 Go 的 nil 接口调用方法是 panic
+// 而不是 no-op —— 埋点这种「尽力而为的观测面」不该让业务路径崩掉。
+// 所以构造期一律用 OrNoop 兜底，让「没接线」与「接了空实现」等价。
 type NoopMetrics struct{}
 
 var _ Metrics = NoopMetrics{}

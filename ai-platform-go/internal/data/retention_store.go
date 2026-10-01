@@ -8,11 +8,8 @@ import (
 )
 
 // retentionStore 把 data 层的保留期清理函数适配成 biz.RetentionRepo。
-//
-// 这一层是必要的而不是多余的：`retention.go` 里那几个函数接收 `*Data`
-// （它们是运维动作，不属于任何业务仓储），而 biz 不能 import data
-// （规范 §四）。适配器的存在让「哪些表允许被定时任务删」这个决定
-// 只写在 biz 的接口上，data 侧只是把它接到现成的 SQL 上。
+// 这一层是必要的：`retention.go` 里的函数接收 `*Data`（它们是运维动作），而 biz 不能 import data
+// （规范 §四）；适配器让「哪些表允许被定时任务删」只写在 biz 的接口上。
 type retentionStore struct{ data *Data }
 
 // NewRetentionRepo 构造保留期仓储。

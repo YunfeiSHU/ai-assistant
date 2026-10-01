@@ -1,7 +1,7 @@
 // Package errs 定义网关的错误码、统一错误信封与 HTTP 映射（权威定义：docs/02 §4）。
 //
-// 码分两区（docs/02 §4.1/§4.2）：网关自有码由本服务产生、状态码固定；复用 ai-platform 的码**网关 MUST 原样透传**（接缝 J2），
-// 状态码从上游响应取，不得改写成网关自己的码。
+// 码分两区（docs/02 §4.1/§4.2）：网关自有码的状态码固定；复用 ai-platform 的码
+// 网关 MUST 原样透传（接缝 J2），状态码从上游响应取，不得改写成网关自己的码。
 package errs
 
 // Code 是机器可读的错误码（写进 error.code）。
@@ -58,8 +58,8 @@ const (
 )
 
 // CodeInvalidToken 是「令牌无效」的兜底码：契约只区分 TOKEN_EXPIRED 与
-// UNAUTHENTICATED，签名错 / ver 不匹配 / token_type 错都归到后者，
-// 但为了让客户端能触发静默刷新，过期单独用 TOKEN_EXPIRED。
+// UNAUTHENTICATED，签名错 / ver 不匹配 / token_type 错都归后者，
+// 过期单独用 TOKEN_EXPIRED 以便客户端触发静默刷新。
 const CodeInvalidToken = CodeUnauthenticated
 
 // spec 描述一个错误码的固定元信息。
@@ -69,9 +69,7 @@ type spec struct {
 	message   string // 默认 zh-CN 文案（可被具体错误覆盖）
 }
 
-// specs 是 §4.1 的完整映射表。
-//
-// 这张表 MUST 与 docs/02-§4.1 逐行一致；测试 TestSpecsMatchContract 守着它。
+// specs 是 §4.1 的完整映射表，MUST 与 docs/02-§4.1 逐行一致（测试 TestSpecsMatchContract 守着它）。
 var specs = map[Code]spec{
 	CodeInvalidArgument:       {400, false, "请求参数不合法"},
 	CodeUnauthenticated:       {401, false, "身份未认证"},
@@ -99,9 +97,8 @@ var specs = map[Code]spec{
 }
 
 // aiErrorStatus 是「复用 ai-platform 的错误码」的兜底状态码（docs/02-§4.2）。
-//
-// 正常路径下透传用的是上游真实状态码；这张表只在需要「按码复原状态码」
-// 时使用（例如从持久化的幂等响应快照还原）。值必须与 §4.2 表一致。
+// 正常路径下透传用的是上游真实状态码；这张表只在需要按码复原状态码时使用
+// （例如从持久化的幂等响应快照还原）。值必须与 §4.2 表一致。
 var aiErrorStatus = map[Code]int{
 	"UPSTREAM_LLM_ERROR":        502,
 	"UPSTREAM_LLM_AUTH_ERROR":   502,
@@ -135,9 +132,8 @@ var aiErrorStatus = map[Code]int{
 }
 
 // LookupStatus 返回某错误码的 HTTP 状态码。
-//
-// 第二个返回值表示该码是否为已知的网关自有码。未知码（含 AI 侧透传的码）
-// 返回 500，调用方应优先使用上游真实状态码。
+// 第二个返回值表示该码是否为已知的网关自有码。未知码（含 AI 侧透传的码）返回 500，
+// 调用方应优先使用上游真实状态码。
 func LookupStatus(code Code) (int, bool) {
 	if s, ok := specs[code]; ok {
 		return s.status, true

@@ -1,23 +1,15 @@
 // Package otelx 封装 OTel SDK 的启动与关闭（docs/06-§5.1）。
 //
-// 为什么需要这个包：OTel 的 SDK 有 5 个必须按序装配的部件
-// （resource / sampler / span processor / exporter / propagator），
-// 而「装配顺序错了」或「忘了装 propagator」**不会报错** ——
-// 现象只是「两侧 trace 对不上」或「Jaeger 里一条都看不到」。
-// 把这些约定收在一个包里，调用点就只剩 `Init` 与 `Shutdown`。
+// OTel SDK 有 5 个必须按序装配的部件（resource / sampler / span processor /
+// exporter / propagator），而「顺序错了」或「忘了装 propagator」不会报错 ——
+// 现象只是「两侧 trace 对不上」或「Jaeger 里一条都看不到」。收敛到本包后，
+// 调用点就只剩 `Init` 与 `Shutdown`。
 //
-// 关于采样的一处**重要设计**：
-//
-// docs/06-§5.1 要求「采样率默认 0.1（`parentbased_traceidratio`），
-// 但**错误与降级链路 MUST 100% 采样**」。这两条在**头部采样**下无法同时成立：
-// 头部采样的决策时刻在 span 创建时，而「这条链路会不会出错」要到它结束才知道。
-// 常见的做法是把尾部采样推给 OTel Collector，但那要求部署侧多一个组件。
-//
-// 因此本包把采样决策**搬到 span 结束时**（见 `tail.go`）：
-// 头部一律记录，结束时按 trace 决定是否导出 —— 见过 `Error` 状态的整条 trace
-// 全量导出，其余按 `OTEL_TRACES_SAMPLER_ARG` 的比例抽样。
-// 配置项的**语义不变**（同一个比例、同样是 parentbased），
-// 只是决策点后移，从而让「错误 100%」成为可能。
+// 采样是本包唯一的设计取舍：docs/06-§5.1 要求「默认 0.1，但错误与降级链路
+// MUST 100% 采样」，而头部采样下「这条链路会不会出错」要到结束时才知道，两条
+// 无法同时成立（推给 Collector 需要多部署一个组件）。因此决策点后移到 span
+// 结束时（见 `tail.go`）：头部一律记录，结束时按 trace 决定是否导出 ——
+// 见过 `Error` 状态的整条 trace 全量导出，其余按 `OTEL_TRACES_SAMPLER_ARG` 抽样。
 package otelx
 
 import (
@@ -62,8 +54,7 @@ type Config struct {
 }
 
 // Provider 是初始化后的句柄。
-//
-// **零值不可用**：必须用 Init 的返回值。禁用时 Init 返回的也是一个可用句柄
+// 零值不可用，必须用 Init 的返回值；禁用时 Init 返回的也是可用句柄
 // （内部走 OTel 的 noop 实现），于是调用点永远不需要判断「追踪开没开」。
 type Provider struct {
 	tp      *sdktrace.TracerProvider
@@ -95,10 +86,9 @@ func (p *Provider) Sampling() string {
 }
 
 // Shutdown 冲刷并关闭。禁用时是空操作。
-//
-// 关停顺序不能颠倒：先 ForceFlush 把缓冲区里的 span 交给导出器，
-// 再 Shutdown 导出器。反过来会让最后一批 span 永远丢在网络里 ——
-// 而那批 span 恰好是「收到 SIGTERM 之前那几秒」的链路，最有用。
+// 关停顺序不能颠倒：先 ForceFlush 把缓冲区里的 span 交给导出器，再 Shutdown
+// 导出器。反过来会让最后一批 span 永远丢在网络里 —— 而那恰好是收到 SIGTERM
+// 之前那几秒的链路，最有用。
 func (p *Provider) Shutdown(ctx context.Context) error {
 	if p == nil || !p.enabled || p.tp == nil {
 		return nil
@@ -114,10 +104,9 @@ func (p *Provider) Shutdown(ctx context.Context) error {
 }
 
 // Init 装配 SDK。
-//
-// 返回的错误**只在配置本身不合法时**出现（端点写错、比例越界）。
-// 「连不上 Collector」不会在这里失败 —— 那样会让「本地起服务时必须先起
-// Jaeger」成为硬依赖。导不出去由导出器自己重试并打日志。
+// 返回的错误只在配置本身不合法时出现（端点写错、比例越界）。「连不上 Collector」
+// 不会在这里失败 —— 那样会让「本地起服务时必须先起 Jaeger」成为硬依赖，
+// 导不出去由导出器自己重试并打日志。
 func Init(ctx context.Context, cfg Config) (*Provider, error) {
 	if !cfg.Enabled {
 		// 显式把全局设为 noop：否则进程内若已有别的库（gin/kratos 的插件）
@@ -182,11 +171,9 @@ func Init(ctx context.Context, cfg Config) (*Provider, error) {
 }
 
 // normalizeEndpoint 把配置里的 OTLP 端点规整成 gRPC 需要的 `host:port`。
-//
-// 默认值给的是 `http://localhost:4317`（URL 形式），因为那一版最直观；
-// 但 gRPC 的 `WithEndpoint` 只接受 `host:port`，直接传 URL 会去解析成
-// 一个名为 `http` 的主机 —— 一个**连不上但也不报错**的端点。
-// 因此这里显式剥掉 scheme，并据此推断要不要 TLS。
+// 默认值给的是 `http://localhost:4317`（URL 形式，最直观），但 gRPC 的
+// `WithEndpoint` 只接受 `host:port`，直接传 URL 会解析成一个名为 `http` 的主机 ——
+// 一个连不上但也不报错的端点。因此这里显式剥掉 scheme，并据此推断要不要 TLS。
 func normalizeEndpoint(raw string) (endpoint string, insecure bool, err error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -216,10 +203,9 @@ func normalizeEndpoint(raw string) (endpoint string, insecure bool, err error) {
 }
 
 // buildResource 描述「这些 span 是谁产生的」。
-//
-// service.name 必须显式给：SDK 的默认推断会取可执行文件名，
-// 于是 `go run ./cmd/server` 上报的是 `server`，
-// 而 Grafana 上按 `go-services` 查会一条都查不到（docs/06 默认值就是 go-services）。
+// service.name 必须显式给：SDK 的默认推断会取可执行文件名，于是
+// `go run ./cmd/server` 上报的是 `server`，而 Grafana 上按 `go-services`
+// 查会一条都查不到。
 func buildResource(ctx context.Context, cfg Config) *resource.Resource {
 	attrs := []attribute.KeyValue{
 		attribute.String("service.name", firstNonEmpty(cfg.ServiceName, "go-services")),
@@ -265,25 +251,19 @@ func firstNonEmpty(vs ...string) string {
 
 // ---- 出站注入与上下文桥接 ----
 
-// Tracer 返回**全局** provider 上的命名 tracer。
-//
-// 为什么不要求调用方持有 `*Provider`：`biz` 层的调用点（配额、熔断、
-// 编排）不应该为了打一条 span 而在构造函数里多一个依赖参数，
-// 而 `Init` 已经把 SDK 注册成全局 provider 了 —— 取一次全局即可。
-//
-// 未启用时全局是 noop 实现，`Start` 返回的 span 所有方法都是空操作，
-// 因此「OTEL_ENABLED=false」下这些调用点的开销约等于零，
-// 调用方也就不必到处写 `if tracing {...}`。
+// Tracer 返回全局 provider 上的命名 tracer。
+// 不要求调用方持有 `*Provider`：`biz` 层的调用点（配额、熔断、编排）不应该为了
+// 打一条 span 而在构造函数里多一个依赖参数，而 `Init` 已经把 SDK 注册成全局
+// provider 了。未启用时全局是 noop，所有 span 方法都是空操作，开销约等于零，
+// 因此调用方不必到处写 `if tracing {...}`。
 func Tracer(name string) trace.Tracer { return otel.GetTracerProvider().Tracer(name) }
 
 // SpanEnd 结束 span 并按错误设置状态。
+// 单独一个函数是为了统一两件容易漏的事：
 //
-// 单独一个函数是为了统一两件事，它们在每个调用点都容易漏：
-//
-//  1. **必须**调用 `End()`，否则 span 永远不结束（tail sampler 拿不到它，
-//     Jaeger 里那条链路直接消失，且内存里的 span 只增不减）；
-//  2. 错误要 `RecordError` + `SetStatus`。只设 status 不记 event 的话，
-//     Jaeger 的「Errors」筛选能命中但看不到错误详情。
+//  1. 必须调 `End()`，否则 span 永远不结束（tail sampler 拿不到它，链路直接消失）；
+//  2. 错误要 `RecordError` + `SetStatus` —— 只设 status 的话，Jaeger 的
+//     「Errors」筛选能命中但看不到错误详情。
 func SpanEnd(span trace.Span, err error) {
 	if span == nil {
 		return
@@ -296,22 +276,19 @@ func SpanEnd(span trace.Span, err error) {
 }
 
 // InjectHTTP 把当前 span 上下文写进 HTTP 头（W3C `traceparent`）。
-//
-// 出站请求**必须**调它：漏掉的表现是「网关侧有 span、AI 侧也有 span，
-// 但 Jaeger 里是两条互不相干的 trace」（docs/06-§5.1 的接缝 J3）。
+// 出站请求必须调它：漏掉的表现是「网关侧有 span、AI 侧也有 span，但 Jaeger 里是
+// 两条互不相干的 trace」（docs/06-§5.1 的接缝 J3）。
 func InjectHTTP(ctx context.Context, h http.Header) {
 	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(h))
 }
 
-// SpanContextFromHex 由十六进制 trace/span id 构造**远程**父上下文。
+// SpanContextFromHex 由十六进制 trace/span id 构造远程父上下文。
 //
-// 用途：网关自己已经解析过 `traceparent`（`middleware.WithTrace`），
-// 并把它作为响应头 `X-Trace-Id` 回给客户端。若让它再走一遍标准提取，
-// 两处解析的宽容度一旦不一致（比如对全 0 trace id 的处理），
-// 就会出现「响应头里的 trace_id 与 Jaeger 里的对不上」——
-// 而这正是 S8「用 trace_id 同时查到同一条链路」要保证的事。
-// 因此这里以**网关的解析结果为准**，反过来构造 OTel 的父上下文。
-//
+// 网关自己已经解析过 `traceparent`（`middleware.WithTrace`）并把它作为响应头
+// `X-Trace-Id` 回给客户端；若让它再走一遍标准提取，两处解析的宽容度一旦不一致
+// （比如对全 0 trace id 的处理），就会出现「响应头里的 trace_id 与 Jaeger 里的
+// 对不上」—— 而这正是 S8「用 trace_id 同时查到同一条链路」要保证的事。
+// 因此这里以网关的解析结果为准，反过来构造 OTel 的父上下文。
 // spanID 允许为空（这时只当成本地新 trace），返回的 SpanContext 仍携带 trace id。
 func SpanContextFromHex(traceIDHex, spanIDHex string) (trace.SpanContext, bool) {
 	tid, err := trace.TraceIDFromHex(traceIDHex)
@@ -344,17 +321,14 @@ func ContextWithRemoteParent(ctx context.Context, sc trace.SpanContext) context.
 
 // TraceparentHeader 组装出站请求的 `traceparent` 头（接缝 J3）。
 //
-// 与 `InjectHTTP` 的区别在于**兜底**：`InjectHTTP` 依赖 ctx 里存在一个
-// 有效的 span，而 `OTEL_ENABLED=false` 时根本没有 span —— 那时
-// `traceparent` 会是空串，AI 侧就会自建一个新 trace id，
-// 于是「网关日志里的 trace_id」与「AI 日志里的 trace_id」对不上，
+// 与 `InjectHTTP` 的区别在于兜底：`InjectHTTP` 依赖 ctx 里存在有效 span，
+// 而 `OTEL_ENABLED=false` 时根本没有 span，那时 `traceparent` 会是空串，
+// AI 侧就会自建一个新 trace id，于是两侧日志里的 trace_id 对不上 ——
 // 而这正是 S8 要断言的场景（且它不该依赖 OTEL 是否开启）。
 //
-// 因此本函数优先用当前 span（采样位与 span id 都能被子 span 继承），
-// 没有 span 时用网关自己的 `X-Trace-Id` 兜底，span id 随机生成 ——
-// 那一段父子关系会丢失，但 trace id 一致，日志仍然串得起来。
-//
-// 返回空串表示「连兜底的 trace id 都不合法」：调用方应当**不设**这个头
+// 因此优先用当前 span，没有 span 时用网关自己的 `X-Trace-Id` 兜底、span id 随机
+// 生成：那一段父子关系会丢失，但 trace id 一致，日志仍然串得起来。
+// 返回空串表示「连兜底的 trace id 都不合法」，调用方应当不设这个头
 // （设一个非法值会让上游直接忽略它，等于白设）。
 func TraceparentHeader(ctx context.Context, fallbackTraceID string) string {
 	if sc := trace.SpanContextFromContext(ctx); sc.IsValid() {
@@ -390,9 +364,8 @@ func isAllZeroHex(s string) bool {
 }
 
 // randomHex 生成 n 字节随机数据的十六进制串。
-//
-// 用 crypto/rand：span id 会出现在响应头与日志里，可预测的值会让
-// 「伪造一条看起来合法的链路」变得容易（而那会污染排障结论）。
+// 用 crypto/rand：span id 会出现在响应头与日志里，可预测的值会让「伪造一条
+// 看起来合法的链路」变得容易（而那会污染排障结论）。
 func randomHex(n int) string {
 	buf := make([]byte, n)
 	if _, err := rand.Read(buf); err != nil {
@@ -433,10 +406,9 @@ func Attr(key string, value any) attribute.KeyValue {
 }
 
 // JoinPath 把上游前缀与路径拼起来（不含查询串）。
-//
-// 单独抽出来是因为它在两个地方要**完全一致**：出站请求的构造
-// 与出站 span 的 `url.path` 属性。两处各写一遍字符串拼接，
-// 就会出现「span 上的路径与实际请求的路径不同」——排障时会把注意力引偏。
+// 单独抽出来是因为它在两个地方要完全一致：出站请求的构造与出站 span 的
+// `url.path` 属性。各写一遍拼接就会出现「span 上的路径与实际请求的不同」，
+// 排障时会把注意力引偏。
 func JoinPath(prefix, p string) string {
 	prefix = strings.TrimSuffix(prefix, "/")
 	p = path.Clean("/" + strings.TrimPrefix(p, "/"))

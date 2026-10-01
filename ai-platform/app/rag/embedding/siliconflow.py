@@ -1,28 +1,13 @@
 """硅基流动（SiliconFlow）向量化（``EMBEDDING_PROVIDER=siliconflow``）。
 
-**与火山方舟那档的根本区别：这个端点支持真批量。** 官方文档
-（``api-docs.siliconflow.cn/docs/api/embeddings-post``）原文：
+与火山方舟那档的根本区别：这个端点支持真批量 —— ``input`` 可传字符串数组，传 N 条就返回
+N 条 ``data``（每条带 ``index``）。实测（``Qwen/Qwen3-Embedding-0.6B``，490 token 的块）：
+batch=32 × 并发 8 ⇒ 379.6 片/s（对比方舟的最好成绩 98.9 req/s）。
+⇒ 这里不需要「每片一次 HTTP + 并发」，只需要「分批 + 少量并发」。
 
-    input: string | array —— 要在单次请求中处理多个输入，请传递字符串数组。
-
-实测（``Qwen/Qwen3-Embedding-0.6B``，490 token 的块）：传 8/32/64/128 条字符串，
-**每次都返回同数量的 ``data``，每条带 ``index``**；batch=32 × 并发 8 ⇒ **379.6 片/s**
-（对比方舟"一条请求一条向量"的最好成绩 98.9 req/s，且方舟的 98.9 是**请求**速率）。
-⇒ 这里不需要"每片一次 HTTP + 并发"，只需要"分批 + 少量并发"。
-
-其余实测结论：
-
-* **原生 1024 维**；``dimensions`` 支持降维，``Qwen3-Embedding-0.6B`` 可选
-  ``[64,128,256,512,768,1024]``（MRL，见 ``SILICONFLOW_EMBEDDING_DIMENSIONS``）；
-* 上下文窗口 **32768 token**（``docs`` 明示；bge-m3 是 8194）⇒ 长块基本不会被截断；
-* ``encoding_format="base64"`` 支持：单条 21,891B → 5,641B（**3.9×**），
-  解出来是 float32 **小端**（与 float 格式逐元素完全一致，实测差 0.000e+00）；
-* **可复现性比方舟好**：同请求体重复调用逐位相同（float×3、base64×2、跨编码均为
-  0.000e+00），而方舟同一文本三次调用会出现 4.883e-03 的差。唯一一次 1.9e-3 的
-  差异出现在**不同批量组成**的两次调用之间（见 ``docs/12``），对检索无影响。
-* 错误体是 ``{"code": 20012, "message": "Model does not exist..."}`` 形状，
-  401 是 ``{"code": 30014, "message": "Token is invalid."}`` ⇒ 直接把 ``message``
-  带进异常详情（由 :mod:`app.core.http` 统一处理）。
+其余实测结论：原生 1024 维；``dimensions`` 支持 MRL 降维；上下文窗口 32768 token；
+``encoding_format="base64"`` 单条 21,891B → 5,641B（3.9×），解出来是 float32 小端；
+可复现性比方舟好 —— 同请求体重复调用逐位相同。
 """
 
 from __future__ import annotations
@@ -151,9 +136,8 @@ class SiliconFlowEmbeddingProvider:
     def _parse(self, body: dict[str, Any], *, expected: int) -> list[list[float]]:
         """把 ``data`` 还原成与入参同序的向量列表。
 
-        用 ``index`` 而不是"按返回顺序"来定位：文档承诺了 ``index``，就该用它 ——
-        把顺序寄托在"上游一定按序返回"上，是最容易在某次升级后错位的地方，
-        而错位的后果是"chunk 与向量串行"，检索结果会变得莫名其妙。
+        用 ``index`` 而不是「按返回顺序」来定位：把顺序寄托在「上游一定按序返回」上，
+        最容易在某次升级后错位，而错位的后果是「chunk 与向量串行」。
         """
         data = body.get("data")
         if not isinstance(data, list) or not data:

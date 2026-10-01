@@ -57,19 +57,14 @@ const (
 const MessageContentMaxRunes = 8000
 
 // Message 是消息领域对象（`message` 表，docs/03-§4.1）。
-//
-// `References` / `ToolCalls` 刻意保持 `json.RawMessage`：它们的结构由
-// ai-platform 定义，网关只做原样存与原样取（ai-platform 改字段不该让网关返工）。
-// `Usage` 相反 —— 它是强类型的，因为配额要靠 `total_tokens` 累加（接缝 J7），
-// 字段名拼错会变成「配额永远不涨」且不报任何错。
+// `References`/`ToolCalls` 保持 raw JSON —— 结构由 AI 侧定义，网关只原样存取。
+// `Usage` 相反是强类型的：配额靠 `total_tokens` 累加（接缝 J7），字段名拼错会变成「配额永不涨」。
 type Message struct {
 	ID             string
 	ConversationID string
 	UserID         string
 	// Seq 是会话内序号，从 1 开始，**排序唯一依据**。
-	//
-	// MUST NOT 用 created_at 排序：Windows 上 time.Now() 的粒度约 15.6ms，
-	// 同一毫秒内的两条消息顺序会退化成随机。
+	// MUST NOT 用 created_at 排序：Windows 上 time.Now() 粒度约 15.6ms，同毫秒内顺序会退化。
 	Seq             int
 	Role            string
 	Content         string
@@ -94,9 +89,7 @@ type MessageUsage struct {
 }
 
 // IsZero 报告用量是否为空。
-//
-// 上游可能返回 usage 帧但三个字段都缺省成 0；把它当真实用量累加等于
-// 白扣一次配额，所以累加前必须先问这一句。
+// 上游可能返回全 0 的 usage，把它当真实用量累加等于白扣一次配额，故累加前先问这一句。
 func (u *MessageUsage) IsZero() bool {
 	return u == nil || (u.PromptTokens == 0 && u.CompletionTokens == 0 && u.TotalTokens == 0)
 }
@@ -104,9 +97,7 @@ func (u *MessageUsage) IsZero() bool {
 // ---- 输入结构 ----
 
 // SendMessageInput 是 `POST /conversations/{id}/messages` 请求体（docs/03-§4.3）。
-//
-// 布尔字段用指针：`use_rag` 缺省是 `true`，用 bool 零值会把
-// 「没传」和「显式传 false」折叠成同一个值，于是默认值永远生效不了。
+// 布尔字段用指针：`use_rag` 缺省是 true，用 bool 零值会把「没传」与「显式 false」折叠。
 type SendMessageInput struct {
 	Content string `json:"content"`
 
@@ -127,15 +118,11 @@ type SendMessageInput struct {
 }
 
 // AppendAssistantInput 是写入 assistant 消息的输入。
-//
-// 它同时服务三个调用方：M3 的非流式成功落库、M4 的流式中断落 `partial`、
-// M4 的 AI `error` 帧落 `failed`（docs/03-§5 的落库时机表）。
+// 服务三个调用方：非流式成功落库、流式中断落 `partial`、AI `error` 帧落 `failed`。
 type AppendAssistantInput struct {
 	// ID 是预先生成的消息 ID；为空时由服务生成。
-	//
-	// 流式路径必须**先**有它：`meta` 帧要把它发给客户端，而那一帧发生在落库
-	// 之前（落库要等流结束）。不预生成的话，客户端拿到的是 AI 侧的 message_id，
-	// 拿它去 `GET /messages/{id}` 必然 404 —— 网关台账里没有那条消息。
+	// 流式路径必须**先**有它：`meta` 帧要把它发给客户端，而那一帧在落库之前。
+	// 不预生成的话客户端拿到的是 AI 侧的 message_id，去 `GET /messages/{id}` 必然 404。
 	ID              string
 	ConversationID  string
 	Content         string
@@ -165,9 +152,7 @@ type MessageList struct {
 }
 
 // SendResult 是一次提问的落库结果。
-//
-// M2/M3 的非流式路径两者都有；流式路径由 M4 自己组装（它不需要在返回时
-// 拿到 assistant 消息，落库发生在响应之后）。
+// 非流式路径两者都有；流式路径由 M4 自己组装（它不需要在返回时拿到 assistant 消息）。
 type SendResult struct {
 	User      *Message
 	Assistant *Message
@@ -179,11 +164,8 @@ type SendResult struct {
 type MessageRepo interface {
 	// Append 在**一个事务内**原子分配 seq 并写入消息，分配到的序号回填到 `m.Seq`。
 	//
-	// 之所以把「分配 + 插入」合成一个方法而不是暴露 `AllocSeq` + `Insert`：
-	// `LAST_INSERT_ID(expr)` 是**连接级**的，两条语句必须在同一连接上执行，
-	// 而连接的所有权属于 data（biz 不认识事务）。拆开就意味着 biz 要传一个
-	// 事务句柄 —— 那就等于 biz 认识 gorm 了。
-	//
+	// 把「分配 + 插入」合成一个方法而不暴露 `AllocSeq` + `Insert`：`LAST_INSERT_ID(expr)`
+	// 是连接级的，两条语句必须在同一连接上执行，而连接所有权属于 data（biz 不认识事务）。
 	// 返回 ErrNotFound（会话不存在/越权/已软删）或 ErrConversationArchived。
 	Append(ctx context.Context, userID, conversationID string, m *Message) error
 	// GetOwned 取属于该用户、且其会话未被软删的消息；否则 ErrNotFound。
@@ -200,11 +182,9 @@ type MessageRepo interface {
 type MessageDeps struct {
 	Conversations ConversationRepo
 	Messages      MessageRepo
-	// Orchestrator 为 nil 表示编排尚未接线（M2）：写 user 消息之后
-	// 直接返回 AI_UNAVAILABLE。这是**有意保留**的状态，见 docs/08-§6。
+	// Orchestrator 为 nil 表示编排尚未接线（M2）：写 user 消息后直接返回 AI_UNAVAILABLE（docs/08-§6）。
 	Orchestrator ChatOrchestrator
-	// Streamer 为 nil 表示流式编排未接线：`StreamSend` 同样在写完 user 消息后
-	// 返回 AI_UNAVAILABLE。与非流式路径同形，便于 M4 之前也能把路由挂上。
+	// Streamer 为 nil 表示流式编排未接线：`StreamSend` 同样在写完 user 消息后返回 AI_UNAVAILABLE。
 	Streamer ChatStreamer
 	Clock    nowFunc
 	Log      *slog.Logger
@@ -217,32 +197,23 @@ type MessageDeps struct {
 	// ---- 流式专用（M4，docs/04-§5 的时延表）----
 	//
 	// 四个时长来自 `AI_FIRST_BYTE_TIMEOUT_SECONDS` / `AI_IDLE_TIMEOUT_SECONDS` /
-	// `AI_TOTAL_TIMEOUT_SECONDS` / `STREAM_ACCUMULATE_MAX_CHARS`，
-	// 由装配层传入；<=0 时回落成上面的 `Stream*Default` 常量。
-	//
-	// 为什么不在这里直接读 `conf`：biz 不认识配置结构（规范 §四），
-	// 而且「时长」是策略，具体数值属于部署面。
+	// `AI_TOTAL_TIMEOUT_SECONDS` / `STREAM_ACCUMULATE_MAX_CHARS`，由装配层传入；
+	// <=0 时回落成 `Stream*Default` 常量。biz 不读配置结构（规范 §四），数值属部署面。
 	StreamFirstByteTimeout   time.Duration
 	StreamIdleTimeout        time.Duration
 	StreamTotalTimeout       time.Duration
 	StreamAccumulateMaxChars int
 	StreamAccumulateMaxItems int
 	// Shutdown 在进程开始优雅退出时被关闭（docs/06-§3 第 ③ 步）。
-	//
-	// 它的作用是让在途的流**自己**发一条 `error(SERVICE_SHUTTING_DOWN)` 并把
-	// 已收到的正文落成 `partial`，而不是被 `http.Server.Shutdown` 到点后一刀切掉
-	// ——被切掉的流什么都不会落库。
+	// 让在途的流自己发一条 error(SERVICE_SHUTTING_DOWN) 并把已收到的正文落成 partial，
+	// 否则被 `http.Server.Shutdown` 一刀切掉、什么都不落库。
 	Shutdown <-chan struct{}
 	// Quota 是配额与并发限额（M5，docs/02-§5.2）。
-	//
-	// 为 nil 表示**未接线**（M5 之前的形态）：此时跳过预扣与并发控制，
-	// 但保留完整的消息台账功能。测试里大量用到这个 nil 形态。
+	// 为 nil 表示未接线（M5 之前的形态）：跳过预扣与并发控制，保留完整消息台账。
 	Quota *QuotaService
 
-	// Metrics 是 Prometheus 埋点口（M6）。
-	//
-	// 为 nil 时构造期会换成 `NoopMetrics`（`OrNoop`）：接口为 nil 时
-	// 调用方法会 panic，而埋点绝不该是「业务能不能跑」的条件。
+	// Metrics 是 Prometheus 埋点口（M6）。为 nil 时构造期换成 `NoopMetrics`：
+	// 接口为 nil 时调方法会 panic，而埋点绝不该是「业务能不能跑」的条件。
 	Metrics Metrics
 }
 
@@ -266,8 +237,8 @@ func NewMessageService(d MessageDeps) *MessageService {
 	if d.HistoryFallbackTurns <= 0 {
 		d.HistoryFallbackTurns = HistoryFallbackTurnsDefault
 	}
-	// 流式的四个时长/限额同样兜底。零值在这里**不是**「禁用超时」而是
-	// 「立即超时」（`time.NewTimer(0)` 立刻就绪），所以必须兜底。
+	// 流式的时长/限额同样兜底：零值这里不是「禁用超时」而是「立即超时」
+	//（`time.NewTimer(0)` 立刻就绪）。
 	if d.StreamFirstByteTimeout <= 0 {
 		d.StreamFirstByteTimeout = StreamFirstByteTimeoutDefault
 	}
@@ -340,12 +311,9 @@ func (s *MessageService) Send(ctx context.Context, userID, conversationID string
 		userMsg.TraceID = &traceID
 	}
 	if err := s.d.Messages.Append(ctx, userID, conv.ID, userMsg); err != nil {
-		// 归档竞态（读到 active 后、分配 seq 前被归档）也在这里被兜住：
-		// 仓储层的 AllocSeq 带 `status = 'active'` 条件，0 行时返回 ErrConversationArchived。
-		//
-		// 这里用的是**不归还**的 Rollback：落库失败的根因在于网关自身
-		// （或已归档的会话），不是「上游没提供服务」——归还会让重复点击
-		// 「归档后发消息」成为免费的配额探测手段。
+		// 归档竞态（读到 active 后、分配 seq 前被归档）也在这里兜住：
+		// 仓储的 AllocSeq 带 `status = 'active'` 条件，0 行时返回 ErrConversationArchived。
+		// 这里用**不归还**的 Rollback：根因在网关自身（或已归档会话），归还会让重复点击成为免费的配额探测。
 		reservation.Rollback(ctx, err)
 		return nil, conversationLookupError(err)
 	}
@@ -353,8 +321,7 @@ func (s *MessageService) Send(ctx context.Context, userID, conversationID string
 	s.applyAutoTitle(ctx, userID, conv, content, now)
 
 	if s.d.Orchestrator == nil {
-		// 编排未接线：user 消息已经落库（上面那一步），这里如实报「AI 不可用」。
-		// 返回的是 `AI_UNAVAILABLE`，所以预扣应当归还（确实没得到服务）。
+		// 编排未接线：user 消息已落库，这里如实报 AI_UNAVAILABLE，预扣应归还（确实没得到服务）。
 		err := errs.New(errs.CodeAIUnavailable).
 			WithDetail("reason", "orchestrator_not_configured")
 		reservation.Rollback(ctx, err)
@@ -363,9 +330,8 @@ func (s *MessageService) Send(ctx context.Context, userID, conversationID string
 
 	chatReq := s.chatRequest(userID, conv, in, content, meta)
 	if !chatReq.UseMemory {
-		// 只有 use_memory=false 才需要网关补历史（REQ-ORCH-006）。
-		// use_memory=true 时 AI 从自己的 Redis 取上下文，网关再传一份
-		// 会让同一段对话被注入两次。
+		// 只有 use_memory=false 才需网关补历史（REQ-ORCH-006）：
+		// use_memory=true 时 AI 自取上下文，网关再传一份会让对话被注入两次。
 		chatReq.History = s.recentHistory(ctx, userID, conv.ID, userMsg.Seq)
 	}
 
@@ -385,15 +351,9 @@ func (s *MessageService) Send(ctx context.Context, userID, conversationID string
 	}
 
 	// 会话 ID 的权威在网关（REQ-ORCH-006 / docs/04-§6）。
-	//
-	// AI 在 `conversation_id` 为空时会自建会话，因此它回显的 ID 未必是我们传的那个。
-	// 一旦不一致，多轮对话就会分裂到两个会话下（用户看到的表现是「上一轮不见了」）。
-	// 所以：以网关自己的 ID 为准（下面写库用的仍然是 conv.ID）+ 明确告警。
-	//
-	// 日志里挂上指标名而不是只打一句话：`gw_*` 的 Prometheus 计数器属于 M6
-	// （docs/08-§6），现在先靠日志让 AC-ORCH-07 可验收，且这个名字不会变。
-	// 日志里挂上指标名并把计数**真的**打上去：AC-ORCH-07 要求这条能
-	// 「在监控里看到」，只靠日志的话运维得先知道去搜什么关键词。
+	// AI 在 `conversation_id` 为空时会自建，回显的 ID 未必是我们传的那个；
+	// 不一致会让多轮对话分裂到两个会话下。故以网关自己的 ID 为准并明确告警。
+	// 日志里挂上指标名、计数也真的打上去，使 AC-ORCH-07 可在监控里看到。
 	if got := strings.TrimSpace(result.ConversationID); got != "" && got != conv.ID {
 		s.d.Metrics.SessionMismatch()
 		s.d.Log.ErrorContext(ctx, "message.session_mismatch",
@@ -405,9 +365,8 @@ func (s *MessageService) Send(ctx context.Context, userID, conversationID string
 		)
 	}
 
-	// AI 回显的 trace_id 必须与本侧一致（接缝 J3，S8 用 trace_id 同时查两侧）：
-	// 不一致意味着「日志里的 trace_id 指向的链路」不是真正执行的那条，
-	// 排障会沿着错误的链路翻半天。
+	// AI 回显的 trace_id 必须与本侧一致（接缝 J3）：不一致意味着日志里的 trace_id
+	// 指向的链路不是真正执行的那条，排障会沿着错误的链路翻半天。
 	if got := strings.TrimSpace(result.TraceID); got != "" && traceID != "" && got != traceID {
 		s.d.Metrics.TraceMismatch()
 		s.d.Log.WarnContext(ctx, "message.trace_mismatch",
@@ -417,10 +376,8 @@ func (s *MessageService) Send(ctx context.Context, userID, conversationID string
 		)
 	}
 
-	// 用量在这里提交：**先结账，再落库**。
-	//
-	// 顺序有实际影响：AI 的算力已经花掉了，落库失败（下一个分支）不该让这次
-	// 用量消失 —— 否则「落库一直失败」就变成一个免费的配额后门。
+	// 用量在这里提交：**先结账，再落库**。顺序有实际影响 —— AI 的算力已花掉，
+	// 落库失败不该让这次用量消失，否则「落库一直失败」就成一个免费的配额后门。
 	ref := UsageRef{ConversationID: conv.ID, MessageID: userMsg.ID, TraceID: traceID}
 	s.commitQuota(ctx, reservation, result.Usage, ref)
 
@@ -439,9 +396,8 @@ func (s *MessageService) Send(ctx context.Context, userID, conversationID string
 		TraceID:         nilIfEmpty(traceID),
 	})
 	if err != nil {
-		// 非流式路径**不能**像流式那样「落库失败也返回成功」：
-		// 响应体里的消息必须是能从 `GET /messages/{id}` 取到的那一条，
-		// 否则客户端刷新后会发现「回答不见了」。
+		// 非流式路径不能像流式那样「落库失败也返回成功」：响应体里的消息必须能从
+		// `GET /messages/{id}` 取到，否则客户端刷新后会发现「回答不见了」。
 		s.d.Log.ErrorContext(ctx, "message.persist_assistant_failed",
 			slog.String("conversation_id", conv.ID),
 			slog.String("error", err.Error()),
@@ -455,10 +411,7 @@ func (s *MessageService) Send(ctx context.Context, userID, conversationID string
 }
 
 // beginChat 是做配额预扣的统一入口（`Quota` 未接线时返回一个空预约）。
-//
-// 返回的预约对象在两种情形下都是**非 nil 且安全可用**的：
-// 未接线（`Quota == nil`）与未配置计数器都会走到「只记台账」的分支。
-// 这样调用点不必写 `if reservation != nil`。
+// 返回值总是非 nil 且安全可用，调用点不必写 `if reservation != nil`。
 func (s *MessageService) beginChat(ctx context.Context, userID string, ref *UsageRef) (*QuotaReservation, error) {
 	if s.d.Quota == nil {
 		return &QuotaReservation{}, nil
@@ -468,9 +421,8 @@ func (s *MessageService) beginChat(ctx context.Context, userID string, ref *Usag
 }
 
 // commitQuota 提交一次成功调用的用量（token + 次数）。
-//
-// `tokens` 取 `usage.total_tokens`；上游没给 usage（或三个字段全 0）时传 0，
-// 那一次就只累计 `chat_requests` —— 凭空补一个 token 数会让账目失真。
+// `tokens` 取 usage.total_tokens；上游没给 usage 时传 0，那一次只累计 `chat_requests` ——
+// 凭空补一个 token 数会让账目失真。
 func (s *MessageService) commitQuota(ctx context.Context, res *QuotaReservation, usage *MessageUsage, ref UsageRef) {
 	if res == nil {
 		return
@@ -530,10 +482,8 @@ func (s *MessageService) Get(ctx context.Context, userID, messageID string) (*Me
 }
 
 // List 分页读取会话历史（`GET /conversations/{id}/messages`）。
-//
-// 先确认会话存在再列消息：只靠 JOIN 过滤的话，「会话不存在」与
-// 「会话存在但没有消息」都会返回空列表，而前者按契约必须是
-// 404 CONVERSATION_NOT_FOUND（软删会话的消息 MUST 一并 404，docs/03-§1）。
+// 先确认会话存在再列消息：只靠 JOIN 过滤的话，「会话不存在」与「会话存在但无消息」
+// 都会返回空列表，而前者按契约必须是 404（软删会话的消息 MUST 一并 404，docs/03-§1）。
 func (s *MessageService) List(ctx context.Context, userID, conversationID string, in ListMessagesInput) (*MessageList, error) {
 	if fields := validateMessageListInput(in); len(fields) > 0 {
 		return nil, errs.InvalidArgument(fields)
@@ -618,8 +568,8 @@ func (s *MessageService) recentHistory(ctx context.Context, userID, conversation
 		Order:           OrderDesc,
 	})
 	if err != nil {
-		// 历史只是兜底：拿不到就让 AI 少一轮上下文，不该让用户这次提问直接失败。
-		// 但必须留痕 —— 静默少上下文会让「AI 忽然不记得上一轮」变成无法解释的现象。
+		// 历史只是兜底：拿不到就让 AI 少一轮上下文，不该让本次提问失败。
+		// 但必须留痕 —— 静默少上下文会让「AI 忽然不记得上一轮」无法解释。
 		s.d.Log.WarnContext(ctx, "message.history_fallback_failed",
 			slog.String("conversation_id", conversationID),
 			slog.String("error", err.Error()),
@@ -648,9 +598,7 @@ func (s *MessageService) recentHistory(ctx context.Context, userID, conversation
 }
 
 // applyAutoTitle 在首条用户消息落库后生成标题（REQ-CONV-002）。
-//
-// 三个前置条件缺一不可：还是 `auto`、标题为空、且写入时条件仍然成立
-// （并发下用户可能刚刚手工改过，条件判断交给 SQL）。
+// 三个前置条件缺一不可：还是 `auto`、标题为空、写入时条件仍成立（并发下用户可能刚手工改过，判断交给 SQL）。
 func (s *MessageService) applyAutoTitle(ctx context.Context, userID string, conv *Conversation, content string, at time.Time) {
 	if conv.TitleSource != TitleSourceAuto || conv.Title != "" {
 		return
@@ -801,9 +749,7 @@ func intPtrIfPositive(n int) *int {
 }
 
 // normalizeJSON 把空的 JSON 列归一化成 nil（写 NULL 而不是 `null` 字面量）。
-//
-// `json.RawMessage("null")` 会被当成合法 JSON 存进列里，读出来是 `null`，
-// 而契约里这两个字段是数组；存 NULL 读出来才是「没有值」，由 DTO 输出 `[]`。
+// `json.RawMessage("null")` 会被当合法 JSON 存进列里，读出来是 `null`，而契约里这两个字段是数组。
 func normalizeJSON(raw json.RawMessage) json.RawMessage {
 	if len(raw) == 0 {
 		return nil

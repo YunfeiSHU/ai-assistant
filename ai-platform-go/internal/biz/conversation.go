@@ -27,10 +27,7 @@ const (
 	TitleSourceManual = "manual"
 )
 
-// 会话字段上限。
-//
-// 这些值是**入参校验与列宽的同一来源**：校验放宽而列宽没跟上，
-// 症状是插入时被 MySQL 截断（静默丢字符）或报错，因此两边必须一起改。
+// 会话字段上限。入参校验与列宽用同一来源：放宽校验却不改列宽会被 MySQL 静默截断。
 const (
 	// ConversationTitleMaxRunes 是标题最大字符数（按 rune 计，不是字节）。
 	ConversationTitleMaxRunes = 100
@@ -49,10 +46,7 @@ const (
 )
 
 // Conversation 是会话领域对象（`conversation` 表）。
-//
-// 它**没有** `MessageCount` 之外的派生字段，也没有 `PasswordHash` 式的敏感列，
-// 但仍然由 service 逐字段映射成响应 DTO：将来加 `metadata` 内部键或
-// 软删标记时，不会因为「反正已经有这个字段了」被顺手写出去。
+// 虽无敏感列，仍由 service 逐字段映射成响应 DTO —— 将来加内部键或软删标记时不会顺手写出去。
 type Conversation struct {
 	ID            string
 	UserID        string
@@ -78,9 +72,7 @@ func (c *Conversation) IsActive() bool {
 // ---- 输入结构 ----
 
 // CreateConversationInput 是 `POST /conversations` 请求体（docs/03-§2.1）。
-//
-// `Title` 用指针是因为「不传」与「传空串」都要按「不设标题」处理，
-// 而后者会被自动标题覆盖 —— 用零值判断会把「显式要求空标题」也一并吞掉。
+// Title 用指针：「不传」与「传空串」都按「不设标题」处理（随后被自动标题覆盖）。
 type CreateConversationInput struct {
 	Title    *string           `json:"title"`
 	Model    *string           `json:"model"`
@@ -89,10 +81,8 @@ type CreateConversationInput struct {
 }
 
 // UpdateConversationInput 是 `PATCH /conversations/{id}` 请求体。
-//
-// `Model` / `KBIDs` 用 PatchValue 三态（未出现 / null / 有值）：
-// `model: null` 是**有效**语义（回到全局默认模型），不能被当成「不改」。
-// `Title` 用普通指针：标题列 NOT NULL，`null` 直接判为非法。
+// Model/KBIDs 用 PatchValue 三态：`model: null` 是有效语义（回到全局默认），不算「不改」。
+// Title 用普通指针：标题列 NOT NULL，null 直接判为非法。
 type UpdateConversationInput struct {
 	Title  *string              `json:"title"`
 	Model  PatchValue[string]   `json:"model"`
@@ -100,10 +90,8 @@ type UpdateConversationInput struct {
 	Pinned *bool                `json:"pinned"`
 }
 
-// ListConversationsInput 是 `GET /conversations` 的查询参数（已归一化）。
-//
-// 它同时充当仓储的过滤条件：字段与 docs/03-§2.2 的过滤项一一对应，
-// 中间再加一层「DTO → 过滤条件」的转换只会让两者慢慢漂移。
+// ListConversationsInput 是 `GET /conversations` 的查询参数（已归一化），
+// 同时充当仓储过滤条件，省掉一层会慢慢漂移的「DTO → 过滤条件」转换。
 type ListConversationsInput struct {
 	PaginationInput
 	Status  string
@@ -118,10 +106,8 @@ type ConversationList struct {
 	HasMore    bool
 }
 
-// ConversationPatch 是仓储要落库的**已校验**字段集（nil / 未 Present = 不改）。
-//
-// 这里刻意不用 `map[string]any`：map 的键是列名，写错一个字母
-// 编译器不会报错，而结构体字段写错会。data 负责把结构体翻成列映射。
+// ConversationPatch 是仓储要落库的已校验字段集（nil / 未 Present = 不改）。
+// 不用 `map[string]any`：列名写错字母 map 不报错而结构体字段会，data 负责翻成列映射。
 type ConversationPatch struct {
 	Title       *string
 	TitleSource *string
@@ -140,10 +126,8 @@ func (p ConversationPatch) Empty() bool {
 // ---- 仓储接口（规范 §六：接口在 biz，实现在 data）----
 
 // ConversationRepo 是会话表的仓储接口。
-//
-// 所有方法都带 `userID`：归属校验是**查询条件**而不是事后判断
-// （先按 id 查出来再比对 user_id 会多一次「越权时返回 403 还是 404」的分支，
-// 而这个分支正是 AC-CONV-02 要求不存在的那一个）。
+// 所有方法都带 `userID`：归属校验是查询条件而非事后判断，避免出现
+// 「越权返回 403 还是 404」的分支（AC-CONV-02 要求不存在该分支）。
 type ConversationRepo interface {
 	// Create 插入会话。
 	Create(ctx context.Context, c *Conversation) error
@@ -154,9 +138,7 @@ type ConversationRepo interface {
 	// Update 更新给定字段；会话不存在/越权/已删返回 ErrNotFound。
 	Update(ctx context.Context, userID, id string, patch ConversationPatch, at time.Time) error
 	// SetAutoTitle 在「仍是 auto 且标题为空」时写入自动标题，返回是否写入。
-	//
-	// 条件必须落在 SQL 里（不能先读后写）：并发下先读后写会把
-	// 用户刚手工改过的标题覆盖掉（AC-CONV-04）。
+	// 条件必须落在 SQL 里：先读后写会把用户刚手工改过的标题覆盖掉（AC-CONV-04）。
 	SetAutoTitle(ctx context.Context, userID, id, title string, at time.Time) (bool, error)
 	// SoftDelete 软删会话；消息靠 JOIN 会话过滤，因此这里是原子的一步。
 	SoftDelete(ctx context.Context, userID, id string, at time.Time) error
@@ -165,10 +147,7 @@ type ConversationRepo interface {
 // ---- 服务 ----
 
 // ConversationDeps 是会话服务的依赖。
-//
-// 这里**没有** `AutoTitleMaxChars`：自动标题是「首条消息落库后」的副作用，
-// 触发点在 MessageService（见 message.go）。配置项只放一处，
-// 两处各存一份迟早会出现「改了配置但只对一条路径生效」。
+// 不含 `AutoTitleMaxChars`：自动标题的触发点在 MessageService，配置项只放一处。
 type ConversationDeps struct {
 	Conversations ConversationRepo
 	Clock         nowFunc
@@ -192,9 +171,7 @@ func NewConversationService(d ConversationDeps) *ConversationService {
 func (s *ConversationService) now() time.Time { return s.d.Clock() }
 
 // Create 创建会话（REQ-CONV-001）。
-//
-// MUST NOT 调用 ai-platform：AI 侧没有会话实体（其上下文是懒创建的），
-// 一次网络往返会让 P95 从 <5ms 变成依赖 AI 的可用性。
+// MUST NOT 调用 ai-platform：一次网络往返会让 P95 变成依赖 AI 的可用性。
 func (s *ConversationService) Create(ctx context.Context, userID string, in CreateConversationInput) (*Conversation, error) {
 	if fields := validateConversationInput(in.Title, in.Model, in.KBIDs, in.Metadata); len(fields) > 0 {
 		return nil, errs.InvalidArgument(fields)
@@ -202,9 +179,8 @@ func (s *ConversationService) Create(ctx context.Context, userID string, in Crea
 
 	now := s.now()
 	c := &Conversation{
-		// ID 只由网关生成（REQ-CONV-001）：请求体里即使带了 `id` 也不会被读到，
-		// 因为 CreateConversationInput 根本没有这个字段 —— 未知字段被忽略
-		// 这条契约恰好让「客户端自定义 ID」在类型层面就不可能。
+		// ID 只由网关生成（REQ-CONV-001）：CreateConversationInput 没有 id 字段，
+		// 「客户端自定义 ID」在类型层面就不可能。
 		ID:          ids.NewConversation(),
 		UserID:      userID,
 		Title:       titleOrEmpty(in.Title),
@@ -247,9 +223,7 @@ func (s *ConversationService) List(ctx context.Context, userID string, in ListCo
 }
 
 // Update 修改会话（标题 / 模型 / 检索范围 / 置顶）。
-//
-// 改 `title` 会把 `title_source` 置为 `manual` —— 这是 AC-CONV-04 的落点：
-// 用户手工改过的标题之后 MUST NOT 再被自动标题覆盖。
+// 改 title 会把 title_source 置为 manual：手工改过的标题 MUST NOT 再被自动标题覆盖（AC-CONV-04）。
 func (s *ConversationService) Update(ctx context.Context, userID, id string, in UpdateConversationInput) (*Conversation, error) {
 	var kbIDs []string
 	if in.KBIDs.Present && in.KBIDs.Value != nil {
@@ -297,9 +271,7 @@ func (s *ConversationService) SetArchived(ctx context.Context, userID, id string
 }
 
 // Delete 软删会话（REQ-CONV-003）。
-//
-// 幂等性由契约决定：删除不存在的资源返回 404 而不是 204
-// （docs/02-§7：204 会掩盖越权 —— 攻击者用一个别人的 id 也能拿到「成功」）。
+// 删不存在的资源返回 404 而非 204（docs/02-§7：204 会掩盖越权）。
 func (s *ConversationService) Delete(ctx context.Context, userID, id string) error {
 	if err := s.d.Conversations.SoftDelete(ctx, userID, id, s.now()); err != nil {
 		return s.conversationError(ctx, err)
@@ -308,9 +280,7 @@ func (s *ConversationService) Delete(ctx context.Context, userID, id string) err
 }
 
 // conversationError 把仓储错误映射成对外错误。
-//
-// 「不存在」与「越权」共用一个 404（AC-CONV-02）：400/403/404 的差异
-// 本身就是「这个 id 存在」的探针。
+// 「不存在」与「越权」共用 404（AC-CONV-02）：状态码差异本身就是「id 存在」的探针。
 func (s *ConversationService) conversationError(ctx context.Context, err error) error {
 	if errors.Is(err, ErrNotFound) {
 		return errs.New(errs.CodeConversationNotFound)
@@ -320,26 +290,18 @@ func (s *ConversationService) conversationError(ctx context.Context, err error) 
 
 // ---- 自动标题（REQ-CONV-002 / docs/03-§3）----
 
-// AutoTitle 由首条用户消息推导会话标题。
+// AutoTitle 由首条用户消息推导会话标题（docs/03-§3）。
+// MUST NOT 调用 LLM：会让「发第一条消息」多一次模型调用，收益不抵成本。
 //
-// **MUST NOT 调用 LLM**：它会让「发第一条消息」多一次模型调用，
-// 既消耗配额又可能失败，而收益（标题更漂亮）远不抵成本。
-//
-// 规则（逐条对应 docs/03-§3 的表）：
-//  1. 换行/制表符 → 空格（`你好\n\n世界` 要变成 `你好 世界` 而不是 `你好世界`）；
-//  2. 去掉 Markdown 标记（` # * [ ] ）；
-//  3. 连续空白折叠成一个空格，再去掉首尾空白；
-//  4. 超过 maxChars 个字符则截断并补 `…`；
-//  5. 处理后不足 2 个字符时用 `新对话 MM-DD` 兜底（如全是标点或空白）。
-//
-// createdAt 只用于兜底值里的日期，固定按 UTC 取（与落库时间同一口径）。
+// 规则：① 换行/制表符 → 空格；② 去 Markdown 标记（` # * [ ]）；③ 折叠空白并去首尾；
+// ④ 超 maxChars 截断补 `…`；⑤ 不足 2 字符时用 `新对话 MM-DD` 兜底。
+// createdAt 只用于兜底日期，按 UTC 取。
 func AutoTitle(content string, maxChars int, createdAt time.Time) string {
 	if maxChars <= 0 {
 		maxChars = AutoTitleMaxCharsDefault
 	}
 
-	// ① 换行与制表符先变空格：直接删除会让「你好\n世界」粘成「你好世界」，
-	//    而两个独立词之间本该有个分隔。
+	// ① 换行/制表符先变空格：直接删除会把两行粘成一个词。
 	replaced := strings.Map(func(r rune) rune {
 		switch r {
 		case '\n', '\r', '\t':
@@ -348,8 +310,7 @@ func AutoTitle(content string, maxChars int, createdAt time.Time) string {
 		return r
 	}, content)
 
-	// ② 去 Markdown 标记。这些字符在标题里没有意义，留着只会让
-	//    "## 标题" 变成 "## 标题"（用户看到两个井号）。
+	// ② 去 Markdown 标记：这些字符在标题里没有意义。
 	sb := strings.Builder{}
 	sb.Grow(len(replaced))
 	for _, r := range replaced {
@@ -363,7 +324,7 @@ func AutoTitle(content string, maxChars int, createdAt time.Time) string {
 	// ③ 折叠空白。
 	title := strings.Join(strings.Fields(sb.String()), " ")
 
-	// ④ 截断。按**字符**而不是字节：按字节会把汉字切成非法 UTF-8。
+	// ④ 截断按字符而非字节，否则会把汉字切成非法 UTF-8。
 	runes := []rune(title)
 	if len(runes) > maxChars {
 		title = string(runes[:maxChars]) + AutoTitleEllipsis
@@ -461,10 +422,8 @@ func titleOrEmpty(title *string) string {
 	return strings.TrimSpace(*title)
 }
 
-// normalizeOptional 把「空串」归一化成 nil。
-//
-// 空串与 NULL 在语义上是同一件事（都是「用默认」），但两者同时存在时，
-// 判空的地方就得写 `model == nil || model == ""`，迟早会漏掉一处。
+// normalizeOptional 把空串归一化成 nil：两者语义相同（都是「用默认」），
+// 同时存在会让判空写出 `x == nil || x == ""` 而迟早漏掉一处。
 func normalizeOptional(s *string) *string {
 	if s == nil {
 		return nil

@@ -7,9 +7,8 @@ import (
 )
 
 // sensitiveKeys 是 MUST 完整替换为 `***` 的属性名（docs/06-§4.4）。
-//
-// 比对是**大小写不敏感的精确匹配 + 子串匹配**：只做精确匹配会漏掉
-// `user_password`、`refresh_token_hash` 这类带前缀/后缀的真实字段名。
+// 比对是大小写不敏感的**子串**匹配：只做精确匹配会漏掉 `user_password`、
+// `refresh_token_hash` 这类带前缀/后缀的真实字段名。
 var sensitiveKeys = []string{
 	"authorization",
 	"access_token",
@@ -35,13 +34,11 @@ var sensitiveKeys = []string{
 const redactStringTail = 512
 
 // redactHandler 在写出前替换敏感属性值并截断超长字符串。
-//
-// 它必须包在**最外层**（见 New）：slog 的 handler 链是「外层先看到记录」，
-// 只有包在最外面才能保证连第三方库通过 slog.Default() 写出的日志也被脱敏。
+// 必须包在最外层（见 New）：slog 的 handler 链是「外层先看到记录」，
+// 只有包在最外面才能保证第三方库通过 slog.Default() 写出的日志也被脱敏。
 type redactHandler struct{ next slog.Handler }
 
 // Enabled 转发给内层 handler。
-//
 // 不做额外过滤：级别过滤的语义只应有一处定义（slog.HandlerOptions），
 // 在这里再判一次会让「日志为什么没出来」有两个可能的原因。
 func (h *redactHandler) Enabled(ctx context.Context, level slog.Level) bool {
@@ -49,9 +46,8 @@ func (h *redactHandler) Enabled(ctx context.Context, level slog.Level) bool {
 }
 
 // Handle 逐属性脱敏后交给内层写出。
-//
-// 只重建 Record 的 Attrs、保留原始 Time/Level/Message/PC：
-// 时间、级别与调用点必须原样传递，否则日志的时间线与定位信息就不可信了。
+// 只重建 Record 的 Attrs、保留原始 Time/Level/Message/PC：时间、级别与调用点
+// 必须原样传递，否则日志的时间线与定位信息就不可信了。
 func (h *redactHandler) Handle(ctx context.Context, r slog.Record) error {
 	out := slog.NewRecord(r.Time, r.Level, r.Message, r.PC)
 	r.Attrs(func(a slog.Attr) bool {
@@ -61,10 +57,9 @@ func (h *redactHandler) Handle(ctx context.Context, r slog.Record) error {
 	return h.next.Handle(ctx, out)
 }
 
-// WithAttrs 在**绑定期**就脱敏后转发。
-//
-// 绑定期脱敏是必要的：`logger.With("password", x)` 可能被长期持有并反复使用，只在 Handle 里过滤依赖「每次写日志都重新走一遍 Attrs」，
-// 一旦某条日志路径绕过了 Handle 的遍历就直接泄漏。
+// WithAttrs 在绑定期就脱敏后转发。
+// 绑定期脱敏是必要的：`logger.With("password", x)` 可能被长期持有并反复使用，
+// 只在 Handle 里过滤依赖「每次都重新遍历 Attrs」，一旦某条路径绕过遍历就直接泄漏。
 func (h *redactHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	safe := make([]slog.Attr, 0, len(attrs))
 	for _, a := range attrs {
@@ -74,9 +69,7 @@ func (h *redactHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 }
 
 // WithGroup 转发分组名给内层 handler。
-//
-// 分组只影响键的命名空间、不影响值的脱敏判据（isSensitive 只看属性键），
-// 因此这里不需要额外处理。
+// 分组只影响键的命名空间、不影响脱敏判据（isSensitive 只看属性键），故无需额外处理。
 func (h *redactHandler) WithGroup(name string) slog.Handler {
 	return &redactHandler{next: h.next.WithGroup(name)}
 }
@@ -87,16 +80,13 @@ func sanitizeAttr(a slog.Attr) slog.Attr {
 	}
 	if a.Value.Kind() == slog.KindString {
 		s := a.Value.String()
-		// 邮箱：`email` / `user_email` / `contact_email` 这类键的值一律脱敏。
-		// 用「键名包含 email」而不是「值看起来像邮箱」做判据：
-		// 后者会对每条日志跑正则，而且 `a@b` 这种既像邮箱又像路径的串
-		// 会被误伤成 `a***@b` —— 在报错信息里那是很有价值的内容。
+		// 用「键名包含 email」而不是「值看起来像邮箱」做判据：后者要对每条日志跑正则，
+		// 且 `a@b` 这种既像邮箱又像路径的串会被误伤成 `a***@b`。
 		if strings.Contains(strings.ToLower(a.Key), "email") {
 			return slog.String(a.Key, RedactEmail(s))
 		}
-		// JWT 的兜底：`eyJ` 是 base64url 的 `{"` 的前三个字符，
-		// 任何 JWT 都以它开头。这里只做前缀判断（零成本），
-		// 命中就整串打掉 —— docs/06-§4.4 的验收明确要求日志里不出现 `eyJ`，
+		// JWT 的兜底：`eyJ` 是 base64url 的 `{"` 的前三个字符，任何 JWT 都以它开头。
+		// 命中就整串打掉 —— docs/06-§4.4 的验收要求日志里不出现 `eyJ`，
 		// 而「某个忘了走脱敏的调用点直接打了 token」是这条要求唯一的破口。
 		if looksLikeJWT(s) {
 			return slog.String(a.Key, "***")
@@ -118,8 +108,8 @@ func sanitizeAttr(a slog.Attr) slog.Attr {
 }
 
 // looksLikeJWT 判断字符串是否是 JWT 形态（三段 base64url，以 `eyJ` 开头）。
-//
-// 要求「三段且前两段非空」而不是只看前缀：只判前缀会把 `eyJhbGci` 这种用户输入（比如昵称里带这三个字母）也打掉，加上段数判断后误伤概率可以忽略。
+// 要求「三段且前两段非空」而不是只看前缀：只判前缀会把昵称里带 `eyJhbGci` 的
+// 用户输入也打掉，加上段数判断后误伤概率可以忽略。
 func looksLikeJWT(s string) bool {
 	if !strings.HasPrefix(s, "eyJ") {
 		return false

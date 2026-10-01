@@ -3,9 +3,8 @@
 三条路由都要鉴权：MCP 状态会暴露「本服务能碰到哪些外部系统」（Server 名、工具名、
 连接错误），这些信息的价值对攻击者高于对运维的便利。
 
-**重载为什么不做成「热改配置」**：改 ``MCP_SERVERS`` 需要重启才能生效（配置是
-启动期读的），而 ``reload`` 解决的是另一个问题 —— Server 侧更新了工具列表 / 连接
-掉线后要恢复。「重载 ≠ 重新读配置」这个边界写清楚，调用方才不会期待它改配置。
+重载不做成「热改配置」：``MCP_SERVERS`` 需要重启才能生效，而 ``reload`` 解决的是
+另一个问题 —— Server 侧更新了工具列表 / 连接掉线后要恢复。
 """
 
 from __future__ import annotations
@@ -48,7 +47,7 @@ async def list_mcp_servers(
     has_more = start + len(window) < len(statuses)
     return Page[McpServerStatusItem](
         # ``McpServerStatus`` 是 ``slots=True`` 的 dataclass，没有 ``__dict__``，
-        # 必须用 ``dataclasses.asdict`` 取字段（直接 ``.**dict__`` 会 AttributeError）
+        # 必须用 ``dataclasses.asdict`` 取字段（直接 ``__dict__`` 会 AttributeError）
         items=[McpServerStatusItem(**asdict(item)) for item in window],
         next_cursor=str(start + len(window)) if has_more else None,
         has_more=has_more,
@@ -70,9 +69,9 @@ async def list_mcp_server_tools(
 ) -> Page[ToolDefinition]:
     """列出某个 Server 注册后的工具。
 
-    数据源是**工具注册表**而不是 ``manager`` 里缓存的 ``tools/list`` 结果：
-    注册表是「模型实际能调到的东西」，而 Server 返回的列表可能包含被 allowlist
-    过滤掉的工具 —— 这个接口的用途正是确认「过滤有没有按预期生效」。
+    数据源是工具注册表而不是 ``manager`` 里缓存的 ``tools/list`` 结果：注册表是「模型实际
+    能调到的东西」，而 Server 返回的列表可能包含被 allowlist 过滤掉的工具 —— 这个接口的
+    用途正是确认「过滤有没有按预期生效」。
     """
     client = manager.get(name)
     specs = [
@@ -121,9 +120,8 @@ async def reload_mcp_server(
 def _decode_offset(cursor: str | None) -> int:
     """把游标解成偏移量；非法游标按 0 处理（等价于从头开始）。
 
-    这里刻意不复用 ``decode_cursor``：那是给 ``(created_at, id)`` 排序键用的，
-    而 MCP 的列表没有时间维度。用一个明确的、自己的偏移语义，比硬套一个
-    「看起来通用」的游标格式更容易看懂。
+    不复用 ``decode_cursor``：那是给 ``(created_at, id)`` 排序键用的，而 MCP 的列表没有
+    时间维度。用一个明确的、自己的偏移语义，比硬套一个「看起来通用」的游标格式更容易看懂。
     """
     if not cursor:
         return 0

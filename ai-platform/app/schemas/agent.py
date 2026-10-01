@@ -1,8 +1,7 @@
 """Agent 与工具相关的数据模型（契约见 ``docs/04-Agent与工具调用.md`` §4）。
 
-与 ``app/schemas/chat.py`` 同样只做**语法级**校验：``allowed_tools`` 里写了不存在的
-工具名属于**语义**错误（要等注册表算出来才知道），由 service 抛
-``INVALID_ARGUMENT``，而不是在 pydantic 里报一个语义模糊的参数错误。
+与 ``app/schemas/chat.py`` 一样只做语法级校验：``allowed_tools`` 里写了不存在的
+工具名属于语义错误（要等注册表算出来才知道），由 service 抛 ``INVALID_ARGUMENT``。
 """
 
 from __future__ import annotations
@@ -61,9 +60,8 @@ class ToolInvokeResponse(StrictModel):
 class AgentRunRequest(ChatRequest):
     """``POST /agent/run`` 与 ``/agent/run/stream`` 的请求体（``docs/04`` §4.3）。
 
-    继承 ``ChatRequest`` 而不是复制字段：两边的 ``kb_ids`` 格式校验、``metadata``
-    长度校验、``rerank_top_n ≤ top_k`` 的跨字段校验都只有一份实现。
-    ``use_tools`` 在 service 里被**强制**置为 true（文档要求），不依赖调用方传对。
+    继承 ``ChatRequest`` 而不是复制字段，几处跨字段校验只保留一份实现。
+    ``use_tools`` 在 service 里被强制置为 true，不依赖调用方传对。
     """
 
     max_steps: int = Field(default=8, ge=1, le=16, description="最大推理轮次")

@@ -21,11 +21,9 @@ import (
 
 const idemTestUser = "u_01J8ZQ3K7N9P2V6R4T8W1Y5B3C"
 
-// fakeIdemStore 是内存版幂等存储。
-//
-// 它必须复刻真实实现的两个关键行为，否则测试会放行真实缺陷：
-//   - `Remember` 撞唯一键返回 `biz.ErrIdemRace`（并发同键）；
-//   - `Recall` 过期视为未命中（真实实现额外查了 expires_at，而不是只靠清理任务）。
+// fakeIdemStore 是内存版幂等存储。必须复刻真实实现的两个关键行为，否则测试会放行真实缺陷：
+// `Remember` 撞唯一键返回 `biz.ErrIdemRace`（并发同键）；
+// `Recall` 过期视为未命中（真实实现额外查了 expires_at，而不是只靠清理任务）。
 type fakeIdemStore struct {
 	mu    sync.Mutex
 	items map[string]*biz.IdempotentResponse
@@ -82,8 +80,8 @@ func (s *fakeIdemStore) keys() []string {
 	return out
 }
 
-// countedHandler 返回一个「记录被调用次数」的 handler，
-// 用来分辨「回放」与「真的执行了第二次」——两者的响应体可以完全一样。
+// countedHandler 返回一个记录被调用次数的 handler，用来分辨「回放」与「真的执行了第二次」
+// —— 两者的响应体可以完全一样。
 type countedHandler struct {
 	calls  int
 	status int
@@ -111,9 +109,9 @@ func discardLogger() *slog.Logger {
 
 // newIdemEngine 组装一个最小可测引擎。
 //
-// 关键点：路由必须挂在**注入了身份的同一个组**上（`middleware.UserID` 取不到用户时
-// 中间件会直接跳过幂等）——如果每个测试另开一个 `e.Group("/api/v1")`,
-// 那新组不会继承身份中间件，测试会变成「幂等从来没生效」却看不出原因。
+// 关键点：路由必须挂在注入了身份的同一个组上（`middleware.UserID` 取不到用户时
+// 中间件会直接跳过幂等）—— 另开一个 `e.Group("/api/v1")` 不会继承身份中间件，
+// 测试会变成「幂等从来没生效」却看不出原因。
 func newIdemEngine(t *testing.T, store biz.IdempotencyStore, routes map[string]gin.HandlerFunc) *gin.Engine {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
@@ -171,9 +169,8 @@ func TestIdempotencyReplaysStoredResponse(t *testing.T) {
 	if second.Code != http.StatusCreated {
 		t.Fatalf("回放状态码应与首次一致，实际 %d：%s", second.Code, second.Body.String())
 	}
-	// 逐字节相等只在内嵌内存版 store 下成立。真实存储是 MySQL `JSON` 列，
-	// 会在读写两侧规范化文档（键序、空白），所以对外承诺的是**语义等价**：
-	// 验收脚本对回放体做深度比较而不是字节比较。断言别写反了。
+	// 逐字节相等只在内嵌内存版 store 下成立。真实存储是 MySQL `JSON` 列，读写两侧会规范化
+	// 文档（键序、空白），对外承诺的是语义等价 —— 验收脚本对回放体做深度比较而不是字节比较。
 	if second.Body.String() != first.Body.String() {
 		t.Errorf("回放响应体应与首次逐字节一致\n首次 %s\n回放 %s", first.Body.String(), second.Body.String())
 	}
@@ -191,10 +188,8 @@ func TestIdempotencyReplaysStoredResponse(t *testing.T) {
 }
 
 // TestIdempotencyReplayKeepsJSONContentType 回放的 Content-Type 必须是 JSON。
-//
-// 首次响应里它是 `c.JSON` 设的，属于另一个请求的 header map；
-// 不显式补上时 net/http 会嗅探 body 并判成 text/plain，
-// 于是客户端的 res.json() 只在重试路径上失败。
+// 首次响应里它是 `c.JSON` 设的，属于另一个请求的 header map；不显式补上时
+// net/http 会嗅探 body 并判成 text/plain，客户端的 res.json() 只在重试路径上失败。
 func TestIdempotencyReplayKeepsJSONContentType(t *testing.T) {
 	store := newFakeIdemStore()
 	h := &countedHandler{status: http.StatusCreated, body: gin.H{"id": "cv_1"}}
@@ -211,10 +206,8 @@ func TestIdempotencyReplayKeepsJSONContentType(t *testing.T) {
 }
 
 // TestIdempotencyReplaysErrorResponse 失败响应也必须被记住。
-//
 // 这是本机制最容易被漏掉的一半：`POST .../messages` 在 AI 不可用时返回 503，
-// 而用户的提问**已经落库**。不记住这个 503，客户端重试就会在台账里
-// 多出一条重复提问 —— 正是幂等要防的事。
+// 而用户的提问已经落库 —— 不记住这个 503，客户端重试就会在台账里多出一条重复提问。
 func TestIdempotencyReplaysErrorResponse(t *testing.T) {
 	store := newFakeIdemStore()
 	h := &countedHandler{status: http.StatusServiceUnavailable}
@@ -252,7 +245,7 @@ func TestIdempotencySameKeyDifferentBodyConflicts(t *testing.T) {
 		t.Fatalf("首次请求失败: %d", w.Code)
 	}
 
-	// 同键不同体是**误用**：直接回放会让调用方拿到一个与本次请求无关的结果，
+	// 同键不同体是误用：直接回放会让调用方拿到一个与本次请求无关的结果，
 	// 而且看起来一切正常（正是最危险的失败形态）。
 	w := doPost(t, e, "/api/v1/conversations", "key-2", `{"title":"b"}`)
 	if w.Code != http.StatusConflict {
@@ -289,10 +282,9 @@ func TestIdempotencyDifferentKeysExecuteHandler(t *testing.T) {
 	}
 }
 
-// TestIdempotencyScopedByRouteTemplate 同一个键在**不同路由**上互不影响。
-//
-// 键里用的是路由模板而不是具体路径：模板让「同一个键被复用到另一个会话」
-// 不会被误判成同一条记录（那会把正常调用当成 key 复用而报 409）。
+// TestIdempotencyScopedByRouteTemplate 同一个键在不同路由上互不影响。
+// 键里用路由模板而不是具体路径：否则「同一个键被复用到另一个会话」会被误判成同一条记录
+// （把正常调用当成 key 复用而报 409）。
 func TestIdempotencyScopedByRouteTemplate(t *testing.T) {
 	store := newFakeIdemStore()
 	first := &countedHandler{status: http.StatusCreated, body: gin.H{"id": "cv_1"}}
@@ -348,7 +340,7 @@ func TestIdempotencyInvalidKeyIsRejected(t *testing.T) {
 
 	e := newIdemEngine(t, store, map[string]gin.HandlerFunc{"/conversations": h.handle("")})
 
-	// 空格与感叹号都不在允许字符集里：这些字符会进 Redis Key 与数据库列。
+	// 空格与感叹号都不在允许字符集里：它们会进 Redis Key 与数据库列。
 	w := doPost(t, e, "/api/v1/conversations", "bad key!", `{"title":"a"}`)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("非法键应 400，实际 %d：%s", w.Code, w.Body.String())
@@ -379,8 +371,8 @@ func TestIdempotencyTooLongKeyIsRejected(t *testing.T) {
 
 // ---- 存储不可用 / 竞态 ----
 
-// TestIdempotencyStoreFailureIsNonBlocking 存储挂了不阻断业务：
-// 幂等是「更好」，不是「前提」（但会打 WARN，不静默降级）。
+// TestIdempotencyStoreFailureIsNonBlocking 存储挂了不阻断业务（幂等是「更好」不是「前提」），
+// 但会打 WARN 而不是静默降级。
 func TestIdempotencyStoreFailureIsNonBlocking(t *testing.T) {
 	store := newFakeIdemStore()
 	store.recallErr = context.DeadlineExceeded
@@ -418,9 +410,8 @@ func TestIdempotencyRememberRaceStillReturnsResponse(t *testing.T) {
 // ---- 缓冲不能破坏下游读体 ----
 
 // TestIdempotencyBodyStillReadableDownstream 中间件读完体后必须把体放回去。
-//
-// 不放回去时下游 `BindJSON` 会读到空体，报「JSON 解析失败」——
-// 表现是「加了幂等之后所有写接口都 400」。
+// 不放回去时下游 `BindJSON` 会读到空体并报「JSON 解析失败」—— 表现是
+// 「加了幂等之后所有写接口都 400」。
 func TestIdempotencyBodyStillReadableDownstream(t *testing.T) {
 	store := newFakeIdemStore()
 
@@ -445,12 +436,11 @@ func TestIdempotencyBodyStillReadableDownstream(t *testing.T) {
 	}
 }
 
-// TestIdempotencyNoContentIsRemembered 204（无响应体）也要能回放。
-//
-// 这里顺带钉住「回放 204 时不写 body、不写 Content-Type」。
-// 注意：内存版 store 存的是结构体，**测不出**真实存储层的坑 —— 落库用的是
-// 共享表的 `response_body json NOT NULL`，空体会被 MySQL 判成非法 JSON（ERROR 3140），
-// 所以 data 层把空体编成 JSON `null`（见 data.encodeResponseBody / emptyBodyJSON）。
+// TestIdempotencyNoContentIsRemembered 204（无响应体）也要能回放，
+// 并钉住「回放 204 时不写 body、不写 Content-Type」。
+// 注意内存版 store 存的是结构体，测不出真实存储层的坑：落库用的是共享表的
+// `response_body json NOT NULL`，空体会被 MySQL 判成非法 JSON（ERROR 3140），
+// 所以 data 层把空体编成 JSON `null`（见 data.emptyBodyJSON）。
 func TestIdempotencyNoContentIsRemembered(t *testing.T) {
 	store := newFakeIdemStore()
 	h := &countedHandler{status: http.StatusNoContent}
@@ -475,8 +465,8 @@ func TestIdempotencyNoContentIsRemembered(t *testing.T) {
 	}
 }
 
-// newIdemEngineWithRecovery 与 newIdemEngine 同理，但把**真实的 Recovery 中间件**
-// 放在最外层 —— 这是唯一能测出「panic 被响应缓冲吞掉」的组装方式。
+// newIdemEngineWithRecovery 与 newIdemEngine 同理，但把真实的 Recovery 中间件放在最外层 ——
+// 这是唯一能测出「panic 被响应缓冲吞掉」的组装方式。
 func newIdemEngineWithRecovery(t *testing.T, store biz.IdempotencyStore, path string, h gin.HandlerFunc) *gin.Engine {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
@@ -493,13 +483,11 @@ func newIdemEngineWithRecovery(t *testing.T, store biz.IdempotencyStore, path st
 
 // TestIdempotencyPanicIsNotSwallowedByBuffer 锁住「panic 必须变成客户端可见的 500」。
 //
-// 这条曾经真的写错过：把 `c.Writer` 换成缓冲 writer 之后，还原真实 writer 的语句
-// 紧跟在 `c.Next()` 后面 —— handler panic 时 `c.Next()` 会把栈直接掀到最外层的
-// `Recovery`，中间那行**一行都不执行**，于是 Recovery 的 500 信封被写进缓冲、
-// 永远不 flush，客户端拿到 **200 + 空响应体**。
-//
-// 为什么这条必须靠测试钉住：把错误伪装成成功比直接报错更危险 ——
-// 客户端会把「空 200」当成结果，还会拿同一个键继续重试，而日志里只有一条 panic。
+// 这条曾经真的写错过：还原真实 writer 的语句紧跟在 `c.Next()` 后面，而 handler panic 时
+// `c.Next()` 会把栈直接掀到最外层的 `Recovery`，中间那行一行都不执行 —— 于是 Recovery 的
+// 500 信封被写进缓冲且永不 flush，客户端拿到 200 + 空响应体。
+// 必须靠测试钉住的原因：把错误伪装成成功比直接报错更危险，客户端会把「空 200」当成结果
+// 并拿同一个键继续重试，而日志里只有一条 panic。
 func TestIdempotencyPanicIsNotSwallowedByBuffer(t *testing.T) {
 	store := newFakeIdemStore()
 	calls := 0
@@ -517,12 +505,12 @@ func TestIdempotencyPanicIsNotSwallowedByBuffer(t *testing.T) {
 		t.Errorf("500 信封里应含错误码 %s，实际 %s", errs.CodeInternalError, w.Body.String())
 	}
 	// panic 的 500 由外层 Recovery 生成，不在缓冲里，因此不该进幂等快照：
-	// 缓存它等于把一个「未知错误」当成该键的最终答案钉死 24 小时。
+	// 缓存它等于把一个未知错误当成该键的最终答案钉死 24 小时。
 	if got := store.keys(); len(got) != 0 {
 		t.Errorf("panic 的 500 不该写幂等快照，实际写了 %v", got)
 	}
 
-	// 同键重试必须**真的再执行一次**（没被缓存成结果），并且仍然报 500。
+	// 同键重试必须真的再执行一次（没被缓存成结果），并且仍然报 500。
 	w2 := doPost(t, e, "/api/v1/conversations", "key-panic", `{}`)
 	if calls != 2 {
 		t.Errorf("同键重试应重新执行 handler（panic 不该被记住），实际执行 %d 次", calls)

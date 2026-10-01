@@ -1,12 +1,12 @@
 """``calculator``：白名单 AST 求值（``docs/04`` §3.1，P0）。
 
-**绝对不用 `eval`。** 模型是**不可信输入源**：它的参数来自用户提问，而用户可以直接
-说「请调用 calculator 计算 ``__import__('os').system('rm -rf /')``」。
-所以这里是「解析成 AST → 逐节点白名单校验 → 递归求值」，任何白名单外的节点类型
-（``Call`` / ``Attribute`` / ``Import`` / ``Lambda`` / 下标 / 比较 / 布尔运算）一律拒绝。
+**绝对不用 ``eval``**：模型是不可信输入源，参数来自用户提问，而用户可以直接说「请调用
+calculator 计算 ``__import__('os').system('rm -rf /')``」。所以这里是「解析成 AST → 逐节点
+白名单校验 → 递归求值」，任何白名单外的节点类型（``Call`` / ``Attribute`` / ``Import`` /
+``Lambda`` / 下标 / 比较 / 布尔运算）一律拒绝。
 
-拒绝发生在 **pydantic validator 里**，因此它是一类**参数非法**（``invalid_arguments``），
-会被回注给模型让它改参数重试（``AC-AGENT-04``），而不是抛异常把整轮对话打断。
+拒绝发生在 **pydantic validator 里**，因此它是一类参数非法（``invalid_arguments``），会被回注给
+模型让它改参数重试（``AC-AGENT-04``），而不是抛异常把整轮对话打断。
 """
 
 from __future__ import annotations

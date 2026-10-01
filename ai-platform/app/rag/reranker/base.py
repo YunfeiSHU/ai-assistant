@@ -1,9 +1,8 @@
 """重排序端口（``docs/06`` §4.4 / §5.2）。
 
-重排是**可选增强**：``docs/06`` §5.2 允许重排失败时退化，但 MUST 在
-``degraded_reasons`` 里给出 ``rerank_skipped``。所以端口设计成「可以明确地说
-『我没做』」，而不是「悄悄地按原分返回」——后者会让调用方以为分数经过了精排，
-阈值判断的语义就悄悄变了。
+重排是可选增强：§5.2 允许重排失败时退化，但 MUST 在 ``degraded_reasons`` 里给出
+``rerank_skipped``。所以端口设计成「可以明确地说『我没做』」，而不是「悄悄地按原分返回」
+—— 后者会让调用方以为分数经过了精排，阈值判断的语义就悄悄变了。
 """
 
 from __future__ import annotations
@@ -37,9 +36,8 @@ class Reranker(Protocol):
 class IdentityReranker:
     """不做重排：按原有顺序返回并标记 ``applied=False``。
 
-    存在的意义是让「未启用重排」与「重排失败」走同一条可观测路径：两种情况
-    上层都会记录 ``rerank_skipped``，用户看到的是同样的降级提示，而不是
-    「有时有提示、有时没有」这种随配置变化的契约。
+    存在的意义是让「未启用重排」与「重排失败」走同一条可观测路径：两种情况上层都会记
+    ``rerank_skipped``，用户看到同样的降级提示，而不是随配置变化的契约。
     """
 
     def __init__(self, *, reason: str = "reranker_disabled") -> None:

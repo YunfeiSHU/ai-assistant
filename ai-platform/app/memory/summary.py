@@ -1,14 +1,12 @@
 """对话摘要的生成（``REQ-MEM-003``，``docs/07`` §3）。
 
-三个设计要点，都是「写错也不会报错、只是效果变差」的那类：
+三个要点，都是「写错也不会报错、只是效果变差」的那类：
 
-1. **输出结构固定四段**。自由格式的摘要在下游要被拼进 system 片段，没有结构时
-   「已确认事实」和「用户偏好」会互相污染，而模型对后者的敏感度远高于前者。
-   因此缺段要补齐（而不是让模型的自由发挥穿透到 Prompt 里）。
-2. **增量合并上一版摘要**。只摘「新消息」会丢掉旧信息 —— 用户在第 3 轮说过偏好，
-   第 30 轮做摘要时若不带上旧摘要，那件事就永久消失了。
-3. **失败只降级不阻塞**。摘要失败的正确后果是「这一轮上下文长一点」，而不是
-   「用户发不出消息」（``AC-MEM-04``）。
+1. 输出结构固定四段。自由格式的摘要在下游要拼进 system 片段，没有结构时「已确认事实」
+   和「用户偏好」会互相污染，而模型对后者的敏感度远高于前者。
+2. 增量合并上一版摘要。只摘新消息会丢掉旧信息 —— 用户在第 3 轮说过偏好，第 30 轮做摘要
+   时若不带上旧摘要，那件事就永久消失了。
+3. 失败只降级不阻塞（``AC-MEM-04``）。
 """
 
 from __future__ import annotations
@@ -62,7 +60,7 @@ def ensure_structure(text: str) -> str:
     """把模型输出规整成四段结构（缺段补「- 无」，多余内容丢弃）。
 
     不能直接信任模型遵守格式：一旦某段缺失，下游拼装出的 system 片段就少一块信息，
-    而这种缺失在日志里看不出来（摘要本身是「一团文本」，看不出少了什么）。
+    而这种缺失在日志里看不出来。
     """
     body = text.strip()
     # 模型常见的多余包裹：```markdown ... ```
@@ -96,8 +94,8 @@ def ensure_structure(text: str) -> str:
 class _Debouncer:
     """同一会话的生成防抖（``docs/07`` §3.1：5 分钟内最多 1 次）。
 
-    用注入的时钟而不是直接读 ``time.monotonic``：否则「防抖有没有生效」这件事
-    只能靠 ``sleep`` 来测，用例会变慢且不稳定。
+    用注入的时钟而不是直接读 ``time.monotonic``：否则「防抖有没有生效」只能靠 ``sleep``
+    来测，用例会变慢且不稳定。
     """
 
     window_seconds: float
@@ -169,9 +167,8 @@ class SummaryBuilder:
         """生成并保存摘要。
 
         Returns:
-            ``None`` 表示「条件不满足或命中防抖，本轮跳过」（不是错误）；
-            否则返回 :class:`SummaryOutcome`，失败时 ``error`` 非空且 ``summary``
-            是上一版（或空）—— 调用方据此降级而不是抛异常。
+            ``None`` 表示「条件不满足或命中防抖，本轮跳过」（不是错误）；否则返回
+            :class:`SummaryOutcome`，失败时 ``error`` 非空且 ``summary`` 是上一版（或空）。
         """
         settings = self._settings
         if not settings.summary_enabled:
@@ -248,9 +245,8 @@ class SummaryBuilder:
         except Exception as exc:
             raise map_llm_exception(exc) from exc
         if not response.content.strip():
-            # 必须在 ``ensure_structure`` **之前**判空：它会把任何输入都补齐成
-            # 四段「- 无」，于是「模型什么都没返回」会变成一份看起来格式完美的
-            # 空摘要并覆盖掉上一版好摘要。
+            # 必须在 ``ensure_structure`` 之前判空：它会把任何输入都补齐成四段「- 无」，
+            # 于是「模型什么都没返回」会变成一份看起来格式完美的空摘要并覆盖掉上一版好摘要。
             raise RuntimeError("摘要结果为空")
         text = ensure_structure(response.content)
         if count_tokens(text) > settings.summary_token_budget:

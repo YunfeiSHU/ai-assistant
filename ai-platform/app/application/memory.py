@@ -1,17 +1,13 @@
 """长期记忆用例编排（``REQ-MEM-004`` ~ ``REQ-MEM-007``）。
 
-职责边界：**关系库 + 向量库的一致性**在这一层收口。底下两个仓储各自只懂自己那半边
+职责边界：关系库 + 向量库的一致性在这一层收口。底下两个仓储各自只懂自己那半边
 （:mod:`app.memory.long_term` 管正文、:mod:`app.memory.vector_index` 管向量），
 「双写」与「双删」的配对只能在这里保证 —— 让每个调用点自己记得同步，就等于留一个
 「列表里删掉了但检索还能命中」的坑。
 
-去重的三层语义（``docs/07`` §5.2）：
-
-| 相似度 | 动作 | 理由 |
-| --- | --- | --- |
-| 完全相同（哈希命中） | ``hit_count+1``，不新增 | 同一句话被抽了两次 |
-| ``score ≥ memory_dedupe_threshold`` | 用较新者覆盖正文 | 同一件事的两种说法 |
-| ``[0.85, threshold)`` | **两条并存** | 宁可冗余也不丢信息（可能是两件事） |
+去重的三层语义（``docs/07`` §5.2）：哈希命中 → ``hit_count+1`` 不新增；
+``score ≥ memory_dedupe_threshold`` → 用较新者覆盖正文；``[0.85, threshold)`` →
+两条并存（宁可冗余也不丢信息，可能是两件事）。
 """
 
 from __future__ import annotations
@@ -121,7 +117,7 @@ class MemoryService:
     # 偏好
     # ------------------------------------------------------------------
     async def preference(self, user_id: str) -> MemoryPreference:
-        """取用户级偏好（未设置时返回**全局开关给出的**默认值）。"""
+        """取用户级偏好（未设置时返回全局开关给出的默认值）。"""
         if self._preferences is None:
             return MemoryPreference(
                 user_id=user_id,
@@ -180,9 +176,9 @@ class MemoryService:
         """写入一条长期记忆（精确 + 语义两层去重）。
 
         Args:
-            enforce_filters: 由抽取器调用时为 ``True``（走完整过滤清单）；
-                由用户/Agent 主动写入时为 ``False`` —— 手动说的是明确意图，
-                不该被「看起来像疑问句」这类启发式规则挡掉。
+            enforce_filters: 由抽取器调用时为 ``True``（走完整过滤清单）；由用户/Agent
+                主动写入时为 ``False`` —— 手动说的是明确意图，不该被「看起来像疑问句」
+                这类启发式规则挡掉。
 
         Raises:
             AppError: ``INVALID_ARGUMENT``（长度越界 / ``expires_at`` 已过期）。
@@ -388,14 +384,14 @@ class MemoryService:
         expires_at: str | None = None,
         clear_expiry: bool = False,
     ) -> MemoryRecord:
-        """修改记忆；正文变化时**重新向量化**（``docs/07`` §6 ``PATCH``）。"""
+        """修改记忆；正文变化时重新向量化（``docs/07`` §6 ``PATCH``）。"""
         current = await self._repo.get(mem_id, user_id)
         text = current.content if content is None else content.strip()
         if content is not None:
             self._validate(text, expires_at=expires_at)
         target_expiry = None if clear_expiry else (expires_at or current.expires_at)
-        # 重新判断过期状态：改正文/改时间都是「用户想让它在场」的信号，
-        # 不重算会让「已过期」这个标记一直粘着，改了时间也回不来
+        # 重新判断过期状态：改正文/改时间都是「用户想让它在场」的信号，不重算会让
+        # 「已过期」这个标记一直粘着，改了时间也回不来
         already_due = target_expiry is not None and target_expiry <= now_iso()
         updated = replace(
             current,
@@ -417,7 +413,7 @@ class MemoryService:
         return saved
 
     async def delete(self, mem_id: str, user_id: str) -> MemoryRecord:
-        """删除单条：关系库与向量库**成对**删除（``REQ-MEM-007``）。"""
+        """删除单条：关系库与向量库成对删除（``REQ-MEM-007``）。"""
         record = await self._repo.delete(mem_id, user_id)
         await self._index.delete(mem_id)
         logger.info(

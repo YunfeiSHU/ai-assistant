@@ -1,8 +1,7 @@
 """对象存储：MinIO 适配器 + 内存实现（``docs/09`` §5.1）。
 
-真实适配器**懒导入** ``minio``：驱动没装时不影响 memory 后端启动，
-只有在 ``INFRA_BACKEND=real`` 且真的调用时才报明确的错误
-（而不是 import 期就把整个应用带崩）。
+真实适配器**懒导入** ``minio``：驱动没装时不影响 memory 后端启动，只有在
+``INFRA_BACKEND=real`` 且真的调用时才报明确的错误（而不是 import 期就把整个应用带崩）。
 """
 
 from __future__ import annotations
@@ -55,14 +54,10 @@ _MINIO_DEPENDENCY_CODES = frozenset(
 def _classify_minio_error(exc: Exception) -> AppError | None:
     """MinIO 异常 → 领域错误；返回 ``None`` 表示「业务层自行判断」。
 
-    分三类：
-
-    * **连不上**（``MaxRetryError`` / 超时等非 ``S3Error``）→ ``503``：
-      容器没起、端口写错、网络不通，都属于依赖故障（``docs/10`` 故障矩阵）。
-    * **连上但认证/桶不对**（:data:`_MINIO_DEPENDENCY_CODES`）→ ``503``：
-      同样是部署配置问题，不是客户端能通过重试解决的事情。
-    * **其它 ``S3Error``**（``NoSuchKey`` 等）→ ``None``：由调用方按业务语义处理
-      （例如 ``get`` 要报 ``404 DOCUMENT_NOT_FOUND``）。
+    **连不上**（``MaxRetryError`` / 超时等非 ``S3Error``）→ ``503``：容器没起、端口写错、
+    网络不通，都属于依赖故障；**连上但认证/桶不对**（:data:`_MINIO_DEPENDENCY_CODES`）→
+    ``503``：同样是部署配置问题，不是客户端能通过重试解决的事情；**其它 ``S3Error``**
+    （``NoSuchKey`` 等）→ ``None``，由调用方按业务语义处理。
     """
     try:
         from minio.error import S3Error
@@ -134,9 +129,8 @@ class MinioObjectStore:
         except AppError:
             raise
         except Exception as exc:
-            # 不分类的话，MinIO 没起来会从上传接口冒出一个 URLError 变成 500，
-            # 而「上传失败」在使用者看来与权限、文件格式是同一类问题 —— 503 才说明
-            # "这是我们这边的依赖挂了"。
+            # 不分类的话，MinIO 没起来会从上传接口冒出一个 URLError 变成 500，而「上传失败」
+            # 在使用者看来与权限、文件格式是同一类问题 —— 503 才说明「这是我们这边的依赖挂了」。
             mapped = _classify_minio_error(exc)
             if mapped is not None:
                 raise mapped from exc
@@ -158,8 +152,8 @@ class MinioObjectStore:
         except AppError:
             raise
         except Exception as exc:
-            # 先判依赖类错误：否则「MinIO 挂了」会被当成 404 —— 用户看到的是
-            # "文档不存在"，会去删了重传，而真正坏掉的东西一直没被发现
+            # 先判依赖类错误：否则「MinIO 挂了」会被当成 404 —— 用户看到的是「文档不存在」，
+            # 会去删了重传，而真正坏掉的东西一直没被发现
             mapped = _classify_minio_error(exc)
             if mapped is not None:
                 raise mapped from exc

@@ -1,15 +1,12 @@
-"""依赖健康检查（``/health/ready`` 的数据来源）。
+"""依赖健康检查（``/health/ready`` 的数据来源，语义见 ``docs/10`` §5.4）。
 
-语义见 ``docs/10-非功能需求与可观测性.md`` §5.4：
+``/health/live`` 进程在跑即 200、不检查依赖（依赖抖动不该导致容器被重启）；
+``/health/ready`` 检查 MySQL / Redis / Milvus 连通性、``required`` MCP Server 状态、
+向量维度校验，任一必需依赖失败返回 503。
 
-* ``/health/live`` —— 进程在跑即 200，**不检查依赖**（依赖抖动不该导致容器被重启）；
-* ``/health/ready`` —— 检查 MySQL / Redis / Milvus 连通性、``required`` MCP Server 状态、
-  向量维度校验，任一必需依赖失败返回 503。
-
-设计取舍：
-* 检查**并发执行**且**各自带超时**，避免一个依赖卡死拖垮整个探活；
-* 检查失败**不上抛**，而是转成 ``ok=false`` 的结果，让响应体成为排障依据；
-* ``INFRA_BACKEND=memory``（本地开发）时外部依赖检查标记为 ``skipped``，保持 ready 为绿。
+设计取舍：检查并发执行且各自带超时（避免一个依赖卡死拖垮整个探活）；检查失败不上抛，
+转成 ``ok=false`` 的结果让响应体成为排障依据；``INFRA_BACKEND=memory`` 时外部依赖标记为
+``skipped``，保持 ready 为绿。
 """
 
 from __future__ import annotations

@@ -1,17 +1,13 @@
 """Embedding 端口与通用工具（``docs/06`` §4.4）。
 
-**为什么把 Embedding 做成可替换的端口**：DeepSeek 之类只提供对话接口，不提供
-embedding，所以向量化必须本地跑；但本地跑 BGE 需要下载数 GB 权重。于是：
+DeepSeek 之类只提供对话接口，不提供 embedding，所以向量化必须本地跑；但本地跑 BGE 需要
+下载数 GB 权重。于是拆成三档：``ark``（火山方舟云端多模态，按 token 计费且一条请求一条
+向量）、``bge``（本地权重，CPU 上 8MB 要 70~100min）、``hash``（确定性词法向量，零下载）。
 
-* ``ark``  —— 火山方舟**云端**多模态向量化：真实语义向量、不占本机算力，
-  代价是按 token 计费且"一条请求一条向量"（并发由 provider 内部负责）；
-* ``bge``  —— 本地权重的真实语义向量（CPU 上 1.45~2.06 ms/token，8MB 要 70~100min）；
-* ``hash`` —— 确定性词法向量，零下载。
-
-``hash`` 不是「玩具」：它保证**同一个输入永远得到同一个向量**（用 blake2b 而不是
-内置 ``hash()``——后者受 ``PYTHONHASHSEED`` 影响，跨进程不稳定）。这让「检索链路」
-本身可以被机械断言：upsert 进去什么、按什么条件过滤、相邻切片怎么合并、阈值怎么
-生效，全部可测；拿语义向量测这些会因为权重版本变动而随机失败。
+``hash`` 不是玩具：它保证同一个输入永远得到同一个向量（用 blake2b 而不是受
+``PYTHONHASHSEED`` 影响的内置 ``hash()``），于是「检索链路」本身可以被机械断言
+（upsert 什么、按什么过滤、相邻切片怎么合并、阈值怎么生效）；拿语义向量测这些会因为
+权重版本变动而随机失败。
 """
 
 from __future__ import annotations
@@ -78,12 +74,11 @@ async def embed_texts(
 ) -> list[list[float]]:
     """带重试与超时的批量编码。
 
-    重试的是**整批**而不是单条：失败几乎总是资源类问题（超时、显存不足），
-    重试整批能自愈；逐条重试反而会把一次失败放大成 N 次慢调用。
+    重试的是整批而不是单条：失败几乎总是资源类问题（超时、显存不足），重试整批能自愈；
+    逐条重试反而会把一次失败放大成 N 次慢调用。
 
-    埋点放在这里而不是各个 provider 里（``docs/10`` §5.1 的 ``embed.batch``）：
-    这是**所有**向量化的必经之路，放在 provider 里就得在 bge / hash / 未来的
-    每个实现里各写一遍 —— 迟早有一个漏掉，而漏掉的那个恰好是线上用的。
+    埋点放在这里而不是各个 provider 里（``docs/10`` §5.1 的 ``embed.batch``）：这是所有
+    向量化的必经之路，放 provider 里就得在每个实现里各写一遍，迟早有一个漏掉。
     """
     last_error: Exception | None = None
     attempts = len(delays) + 1
@@ -108,7 +103,6 @@ async def embed_texts(
         else:
             # ``cache_hit=False`` 恒真：当前没有 embedding 缓存（缓存一旦引入，
             # 这个标签才真正区分得开「命中缓存的快」与「模型真的快了」）。
-            # 先占位、后实现，好过等有了缓存再来改指标口径。
             get_metrics().observe_embedding(
                 model=provider.model_name,
                 cache_hit=False,

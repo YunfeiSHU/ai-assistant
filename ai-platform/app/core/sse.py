@@ -1,12 +1,11 @@
 """SSE 帧构造与响应头（契约见 ``docs/03-对话与流式输出.md`` §4）。
 
-**为什么不用 ``sse_starlette``**：文档对响应头有硬性要求（``no-transform``、
-``X-Accel-Buffering: no``），验收用例还要逐帧比对事件序列。自己拼帧只有几十行，
-换来两件确定的事：①响应头完全可控、不会随依赖升级漂移；②每一帧都能单独单测。
+不用 ``sse_starlette``：文档对响应头有硬性要求（``no-transform``、``X-Accel-Buffering: no``），
+验收用例还要逐帧比对事件序列。自己拼帧只有几十行，换来两件确定的事：响应头完全可控、
+不会随依赖升级漂移；每帧都能单独单测。
 
-**代理层注意**：``X-Accel-Buffering: no`` 是给 Nginx 看的，用来关掉响应缓冲；
-另外整条链路上 MUST NOT 挂 GZip 中间件（``AC-CHAT-04`` 会断言响应里没有
-``Content-Encoding: gzip``）。
+``X-Accel-Buffering: no`` 是给 Nginx 看用来关响应缓冲的；整条链路上 MUST NOT 挂 GZip
+中间件（``AC-CHAT-04`` 会断言响应里没有 ``Content-Encoding: gzip``）。
 """
 
 from __future__ import annotations
@@ -55,8 +54,8 @@ def _to_payload(data: Any) -> str:
 def format_frame(event: str, data: Any) -> bytes:
     """拼一个 SSE 帧。
 
-    SSE 的 ``data:`` 字段以换行结尾，所以负载里**不能出现裸换行**——
-    这里显式拦截，早失败总好过前端收到被截断的 JSON。
+    SSE 的 ``data:`` 字段以换行结尾，所以负载里不能出现裸换行 —— 这里显式拦截，
+    早失败总好过前端收到被截断的 JSON。
     """
     payload = _to_payload(data)
     if "\n" in payload or "\r" in payload:
@@ -79,14 +78,13 @@ async def frame_stream(
 
     ``events`` 里的元素只需具备 ``event`` 与 ``data`` 两个属性（鸭子类型）。
 
-    **为什么中间要加一个队列与 pump 任务**：直觉写法是
-    ``await asyncio.wait_for(anext(events), timeout=15)``，但 ``wait_for`` 超时会
-    **取消** 那个 ``__anext__``——取消信号被抛进异步生成器内部，生成器随即终结，
-    之后再也拿不到任何 token。心跳于是变成了「静默地把流杀死」。
-    用独立任务把事件推进队列、消费端只等队列，取消的才是队列等待而不是生产端。
+    中间加队列与 pump 任务的原因：直觉写法 ``await asyncio.wait_for(anext(events), timeout=15)``
+    在超时会**取消**那个 ``__anext__``，取消信号被抛进异步生成器内部，生成器随即终结，
+    之后再也拿不到任何 token —— 心跳于是变成「静默地把流杀死」。用独立任务把事件推进队列、
+    消费端只等队列，取消的才是队列等待而不是生产端。
 
-    客户端断连时，消费端被取消 → ``finally`` 取消 pump → 事件生成器收到
-    ``CancelledError`` → 上层据此停止上游 LLM 调用（``REQ-CHAT-006``）。
+    客户端断连时，消费端被取消 → ``finally`` 取消 pump → 事件生成器收到 ``CancelledError``
+    → 上层据此停止上游 LLM 调用（``REQ-CHAT-006``）。
     """
     queue: asyncio.Queue[tuple[str, Any] | BaseException | None] = asyncio.Queue()
 
@@ -99,7 +97,7 @@ async def frame_stream(
         except BaseException as exc:
             await queue.put(exc)
         finally:
-            # 显式关闭上游生成器：靠 GC 关闭是不可靠的，会让「断连后停止上游 LLM 调用」
+            # 显式关闭上游生成器：靠 GC 关闭不可靠，会让「断连后停止上游 LLM 调用」
             # 变成取决于垃圾回收时机的行为，而 REQ-CHAT-006 要求 1s 内停。
             await events.aclose()
             await queue.put(None)

@@ -1,14 +1,12 @@
 """Embedding 工厂 + 进程内缓存。
 
-缓存键是 **``content_sha256``** 而不是文本本身：切片内容可能很长，用哈希做键
-内存占用恒定，而且与 ``REQ-RAG-007`` 的去重口径是同一种「内容同一性」。
-生产环境应换成 Redis（``docs/06`` §4.4，TTL 24h）；这里先用有界 LRU 保证
-「重跑入库任务不会重复算同一批向量」，这是本地最需要的性质。
+缓存键是 ``content_sha256`` 而不是文本本身：切片内容可能很长，用哈希做键内存占用恒定，
+而且与 ``REQ-RAG-007`` 的去重口径是同一种「内容同一性」。生产环境应换成 Redis
+（``docs/06`` §4.4，TTL 24h）；这里先用有界 LRU 保证「重跑入库任务不会重复算同一批向量」。
 
-四档 provider（``EMBEDDING_PROVIDER``）：
-``hash``（确定性词法向量，测试/无网）、``bge``（本地权重，需下载数 GB）、
-``ark``（火山方舟云端多模态，**每片一次 HTTP + 并发池**，见 ``ark.py`` 的语义说明）、
-``siliconflow``（硅基流动云端，**真批量 N 进 N 出**，见 ``siliconflow.py``）。
+四档 provider（``EMBEDDING_PROVIDER``）：``hash``（确定性词法向量，测试/无网）、
+``bge``（本地权重，需下载数 GB）、``ark``（火山方舟，每片一次 HTTP + 并发池）、
+``siliconflow``（真批量 N 进 N 出）。
 """
 
 from __future__ import annotations
@@ -24,19 +22,18 @@ from app.rag.embedding.bge import BgeEmbeddingProvider
 from app.rag.embedding.hash import HashEmbeddingProvider
 from app.rag.embedding.siliconflow import SiliconFlowEmbeddingProvider
 
-#: 缓存占用的**浮点数预算**（约 2M 个 → Python float 对象 ~32B/个 ≈ 64MB 上限）。
+#: 缓存占用的浮点数预算（约 2M 个 → Python float 对象 ~32B/个 ≈ 64MB 上限）。
 #: 条数由维度换算而来，而不是写死条数：同一条数在 1024 维与 2048 维下内存差一倍，
-#: 写死"2000 条"在 ark/2048 档下会悄悄变成 ~130MB（本机可用内存只有 ~1.7GB）。
+#: 写死“2000 条”在 ark/2048 档下会悄悄变成 ~130MB（本机可用内存只有 ~1.7GB）。
 CACHE_MAX_FLOATS = 2_000_000
 
 
 def cache_max_entries(dim: int) -> int:
     """按向量维度换算缓存条数（同一内存预算）。
 
-    只保留这一个函数是有意的：条数必须**由实际维度算出来**，而不是写死一个常量。
-    早期版本里有一个 ``CACHE_MAX_ENTRIES`` 常量（按 1024 维算好的 1953），
-    换到 2048 维的档位时会悄悄把内存上限翻倍 —— 那正是这个文件顶部注释在讲的事。
-    常量已删除（全仓库无引用），避免有人再拿它当默认值用。
+    只保留这一个函数是有意的：条数必须由实际维度算出来，而不是写死一个常量。
+    早期版本的 ``CACHE_MAX_ENTRIES``（按 1024 维算好的 1953）换到 2048 维档位时会
+    悄悄把内存上限翻倍。常量已删除（全仓库无引用），避免有人再拿它当默认值用。
     """
     return max(64, CACHE_MAX_FLOATS // max(1, dim))
 

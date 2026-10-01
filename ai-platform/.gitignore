@@ -45,6 +45,8 @@ models/
 *.pth
 volumes/
 milvus_data/
+# huggingface datasets 的落盘缓存（运行时自动生成）
+data-gym-cache/
 
 # ---------- 编辑器 / 系统 ----------
 .idea/

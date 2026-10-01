@@ -1,8 +1,7 @@
 """FastAPI 依赖注入：配置、当前用户、分页参数。
 
-约定：配置一律通过 ``app.state.settings`` 读取（而不是 ``Depends(get_settings)``）。
-后者是进程级单例的 ``lru_cache``，在**同一个进程里创建多个应用实例**（测试的常态）
-时会串味；读 app state 则天然随实例隔离。
+配置一律通过 ``app.state.settings`` 读取，而不是 ``Depends(get_settings)`` —— 后者是
+进程级单例的 ``lru_cache``，在同一个进程里创建多个应用实例（测试常态）时会串味。
 """
 
 from __future__ import annotations
@@ -139,8 +138,8 @@ def get_memory_service(request: Request) -> MemoryService:
 def get_mcp_manager(request: Request) -> McpManager:
     """取出 MCP 连接管理器（``docs/05`` §5）。
 
-    ``create_app`` 在 lifespan 之前就挂好了它，所以即使还没执行启动（连接），
-    路由也能拿到一个「全部 Server 处于 ``unavailable``」的管理器而不是 500。
+    ``create_app`` 在 lifespan 之前就挂好了它，所以即使还没执行启动（连接），路由也能
+    拿到一个「全部 Server 处于 ``unavailable``」的管理器而不是 500。
     """
     return cast(McpManager, request.app.state.mcp_manager)
 

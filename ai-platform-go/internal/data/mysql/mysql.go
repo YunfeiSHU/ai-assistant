@@ -8,8 +8,7 @@ import (
 	"log/slog"
 	"time"
 
-	// 本包就叫 mysql，不加别名时 `mysql.Open` 指的是**驱动**而不是本包，
-	// 读起来极易误判，所以显式别名。
+	// 本包就叫 mysql，不加别名时 `mysql.Open` 指的是驱动而不是本包，极易误判，所以显式别名。
 	gormmysql "gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
@@ -25,10 +24,8 @@ type DB struct {
 }
 
 // Open 建立业务台账连接并做连通性检查。
-//
-// 注意两点：
-//  1. DSN MUST 带 `parseTime=true&loc=UTC`，否则 DATETIME(3) 会按本地时区解析；
-//  2. NowFunc 用 clockx.Now()（UTC + 毫秒截断），保证写库时间与契约序列化一致。
+// 两点注意：DSN MUST 带 `parseTime=true&loc=UTC`，否则 DATETIME(3) 会按本地时区解析；
+// NowFunc 用 clockx.Now()（UTC + 毫秒截断），保证写库时间与契约序列化一致。
 func Open(cfg conf.MySQL, log *slog.Logger) (*DB, error) {
 	if cfg.DSN == "" {
 		return nil, errors.New("data: MYSQL_DSN 为空")
@@ -38,12 +35,11 @@ func Open(cfg conf.MySQL, log *slog.Logger) (*DB, error) {
 		NowFunc: func() time.Time {
 			return clockx.Now()
 		},
-		// 保留默认事务（每条写操作自动包事务）：本项目多处依赖显式事务，
-		// 开 SkipDefaultTransaction 只会让「忘了开事务」的路径更危险。
+		// 保留默认事务：本项目多处依赖显式事务，开 SkipDefaultTransaction
+		// 只会让「忘了开事务」的路径更危险。
 		SkipDefaultTransaction: false,
-		// 把 MySQL 的 1062 翻译成 gorm.ErrDuplicatedKey：
-		// 靠 errno 判断唯一键冲突需要 import driver 的错误类型，
-		// 而「注册撞邮箱」与「刷新令牌撞哈希」必须被区分成 409 / 500。
+		// 把 MySQL 的 1062 翻译成 gorm.ErrDuplicatedKey：「注册撞邮箱」与「刷新令牌撞哈希」
+		// 必须被区分成 409 / 500。
 		TranslateError: true,
 		// 表名不做复数化：DDL 里就是 `user` / `conversation` 这些单数名。
 		NamingStrategy: nil,
@@ -82,9 +78,7 @@ func (db *DB) Close() error {
 }
 
 // VerifyTables 校验期望的表都存在（docs/05-§5 启动检查）。
-//
-// 「能连上」不等于「表建对了」：只做 `SELECT 1` 会漏掉缺表/缺列，
-// 而这类问题要等某条业务 SQL 才暴露（表现为偶发 500）。
+// 「能连上」不等于「表建对了」：只做 `SELECT 1` 会漏掉缺表/缺列，这类问题要等某条业务 SQL 才暴露。
 func (db *DB) VerifyTables(ctx context.Context, tables []string) error {
 	if len(tables) == 0 {
 		return nil

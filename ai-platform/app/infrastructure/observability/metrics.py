@@ -1,15 +1,12 @@
 """指标收集（``REQ-NFR-011``，契约见 ``docs/10`` §5.2）。
 
-设计要点：
-
-* **每个实例一套独立注册表**（``CollectorRegistry``）。``prometheus_client`` 的默认
-  注册表是进程级全局的，第二次注册同名指标会抛 ``Duplicated timeseries`` ——
-  而「同一进程里创建多个应用实例」是测试的常态。用独立注册表后，
-  ``app.state.metrics`` 与它记录的指标是**同一个对象**，断言不会串味。
-* **标签一律取有限集合**：``endpoint`` 取路由模板（未匹配则 ``unmatched``）、
-  ``tool_name`` 取注册表里的名字、``code`` 取错误码枚举。``user_id`` /
-  ``conversation_id`` / ``doc_id`` / ``kb_id`` / ``task_id`` MUST NOT 出现在标签里
-  （docs/10 §5.2 明令禁止高基数标签），它们只进日志与 trace。
+* **每个实例一套独立注册表**（``CollectorRegistry``）：``prometheus_client`` 的默认注册表是
+  进程级全局的，第二次注册同名指标会抛 ``Duplicated timeseries``，而「同一进程里创建多个应用
+  实例」是测试的常态。用独立注册表后 ``app.state.metrics`` 与它记录的指标是同一个对象，断言
+  不会串味。
+* **标签一律取有限集合**：``endpoint`` 取路由模板（未匹配则 ``unmatched``）、``tool_name`` 取注
+  册表里的名字、``code`` 取错误码枚举。``user_id`` / ``conversation_id`` / ``doc_id`` /
+  ``kb_id`` / ``task_id`` MUST NOT 出现在标签里，它们只进日志与 trace。
 * 依赖缺失时**降级为空操作**而不报错：指标是观测手段，不该成为服务可用性的前置条件。
 """
 
@@ -239,9 +236,8 @@ class Metrics:
     def set_mcp_server_state(self, *, server: str, state: str) -> None:
         """设置 MCP Server 状态：当前状态置 1，其余状态置 0。
 
-        一个 ``Gauge`` 表达「枚举当前值」时必须把其它取值显式置零，
-        否则上次为 1 的取值会一直留着，告警规则 ``ai_mcp_server_state == 0``
-        就会永远为真。
+        一个 ``Gauge`` 表达「枚举当前值」时必须把其它取值显式置零，否则上次为 1 的取值会一直留着，
+        告警规则 ``ai_mcp_server_state == 0`` 就会永远为真。
         """
         if not self._enabled:
             return

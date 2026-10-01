@@ -8,18 +8,15 @@ import (
 )
 
 // auditRepo 实现 biz.AuditRepo（规范 §六）。
-//
-// 它只追加、不更新：审计记录一旦写入就是不可变的证据，
-// 「改审计」比「没有审计」更糟。
+// 只追加、不更新：审计一旦写入就是不可变的证据，「改审计」比「没有审计」更糟。
 type auditRepo struct{ data *Data }
 
 // NewAuditRepo 构造审计仓储。
 func NewAuditRepo(d *Data) biz.AuditRepo { return &auditRepo{data: d} }
 
 // Write 追加一条审计记录。
-//
-// 调用方 MUST 把 detail 先脱敏（docs/06-§4.4）；本方法不再重复处理，
-// 因为脱敏需要业务语义（哪些字段是凭据），仓储层无从判断。
+// 调用方 MUST 先把 detail 脱敏（docs/06-§4.4）：脱敏需要业务语义（哪些字段是凭据），
+// 仓储层无从判断。
 func (r *auditRepo) Write(ctx context.Context, entry *biz.AuditLog) error {
 	return r.data.DB.GORM.WithContext(ctx).Create(toAuditLogPO(entry)).Error
 }

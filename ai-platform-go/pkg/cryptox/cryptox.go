@@ -1,7 +1,8 @@
 // Package cryptox 提供密码哈希、令牌生成与常量时间比较。
 //
-// 契约（docs/06-§4.1）：密码用 Argon2id（m=64MB,t=3,p=4）；对**不存在的用户**也必须执行一次等价耗时的哈希校验（防用户枚举的时序侧信道）；
-// Refresh Token 是 32 字节随机串，服务端只存 sha256。
+// 契约（docs/06-§4.1）：密码用 Argon2id（m=64MB,t=3,p=4）；对不存在的用户也必须
+// 执行一次等价耗时的哈希校验（防时序枚举）；Refresh Token 是 32 字节随机串，
+// 服务端只存 sha256。
 package cryptox
 
 import (
@@ -44,9 +45,7 @@ func DefaultArgon2Params() Argon2Params {
 	return Argon2Params{Memory: 64 * 1024, Iterations: 3, Parallelism: 4, SaltLen: 16, KeyLen: 32}
 }
 
-// HashPassword 用 Argon2id 派生并返回标准编码串。
-//
-// 输出形如 `$argon2id$v=19$m=65536,t=3,p=4$<salt>$<hash>`，
+// HashPassword 用 Argon2id 派生并返回标准编码串（`$argon2id$v=19$m=...$salt$hash`），
 // 满足 AC-AUTH-01 的 `$argon2id$` 前缀断言。
 func HashPassword(password string, p Argon2Params) (string, error) {
 	salt := make([]byte, p.SaltLen)
@@ -91,9 +90,9 @@ var (
 	dummyEncoded string
 )
 
-// DummyEncoded 返回一个固定的合法 argon2id 编码串，用于「用户不存在」时执行等价耗时的校验（AC-NFR-06 防时序枚举）。
-//
-// 它对应的明文随机生成且不对外可见，Verify 恒为 false；关键是**成本参数必须与真实哈希一致**，两条路径的耗时才同量级。
+// DummyEncoded 返回一个固定的合法 argon2id 编码串，用于「用户不存在」时执行
+// 等价耗时的校验（AC-NFR-06 防时序枚举）。它对应的明文不对外可见，Verify 恒为 false；
+// 关键是成本参数必须与真实哈希一致，两条路径的耗时才同量级。
 func DummyEncoded() string {
 	dummyOnce.Do(func() {
 		// 用一个确定的盐，避免每次进程启动结果不同（便于测试断言稳定）。
@@ -109,9 +108,8 @@ func DummyEncoded() string {
 	return dummyEncoded
 }
 
-// BurnPasswordHash 执行一次与真实校验等价的 Argon2id 计算（防时序枚举）。
-//
-// 不关心结果，只消耗与 VerifyPassword 相同的 CPU/内存。
+// BurnPasswordHash 执行一次与真实校验等价的 Argon2id 计算（防时序枚举），
+// 只消耗与 VerifyPassword 相同的 CPU/内存。
 func BurnPasswordHash(password string) {
 	_, _ = VerifyPassword(password, DummyEncoded())
 }
@@ -151,10 +149,8 @@ func parseArgon2id(encoded string) (Argon2Params, []byte, []byte, error) {
 	return p, salt, key, nil
 }
 
-// NewOpaqueToken 生成 n 字节随机令牌的 base64url（无填充）表示。
-//
-// Refresh Token 用它：32 字节 → 43 个字符，无 `+`/`/`/`=`，
-// 放进 URL 或 JSON 都不需要转义。
+// NewOpaqueToken 生成 n 字节随机令牌的 base64url（无填充）表示：32 字节 → 43 个字符，
+// 无 `+`/`/`/`=`，放进 URL 或 JSON 都不需要转义。
 func NewOpaqueToken(nBytes int) (string, error) {
 	buf := make([]byte, nBytes)
 	if _, err := rand.Read(buf); err != nil {

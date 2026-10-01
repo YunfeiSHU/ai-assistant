@@ -1,17 +1,12 @@
 """长期记忆工具：``memory_save`` / ``memory_search``（``docs/04`` §3、``docs/07`` §5）。
 
 这两个工具让 Agent **自主**决定什么时候记、什么时候查，与「每轮对话结束后自动抽取」
-（``memory_extract`` 任务）是互补的两条路径：
+（``memory_extract`` 任务）互补：自动抽取适合用户随口说出的稳定偏好，``memory_save`` 适合
+用户明确要求「记住这件事」，``memory_search`` 适合用户提到「我之前说过」而当前上下文里没有。
 
-| 路径 | 触发者 | 适用场景 |
-| --- | --- | --- |
-| 自动抽取 | 服务端 | 用户随口说出的稳定偏好 |
-| ``memory_save`` | 模型 | 用户明确要求「记住这件事」 |
-| ``memory_search`` | 模型 | 用户提到「我之前说过」而当前上下文里没有 |
-
-``memory_save`` 的 ``side_effect="write"`` 是**关键声明**：它会被
-:class:`~app.tools.executor.ToolExecutor` 串行执行、并受写操作放行开关约束
-（``docs/04`` §4.3）。把它标成 ``read`` 会让「本轮不允许写」的护栏直接失效。
+``memory_save`` 的 ``side_effect="write"`` 是关键声明：它会被
+:class:`~app.tools.executor.ToolExecutor` 串行执行、并受写操作放行开关约束（``docs/04`` §4.3）。
+把它标成 ``read`` 会让「本轮不允许写」的护栏直接失效。
 """
 
 from __future__ import annotations

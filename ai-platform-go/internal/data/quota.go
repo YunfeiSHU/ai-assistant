@@ -8,9 +8,8 @@ import (
 )
 
 // 配额指标常量（docs/02-§5.1）。
-//
 // 与 `internal/biz` 的同名常量必须逐字一致（它们是 `quota_usage.metric` 的取值）；
-// data 刻意不 import biz，因此改一边要同时改另一边，否则查的与写的是两行数据。
+// data 刻意不 import biz，改一边必须同时改另一边，否则查的与写的是两行数据。
 const (
 	// MetricChatRequests 是对话请求数（按自然日重置）。
 	MetricChatRequests = "chat_requests"
@@ -84,9 +83,7 @@ func (r *QuotaRepo) Upsert(ctx context.Context, userID, metric, period string, u
 }
 
 // AddDelta 原子累加计数（快路径的对账写入）。
-//
-// 用 `used = used + ?` 而不是先读后写：并发下先读后写会丢更新，
-// 而配额丢更新的表现是「用户实际用了 100 次，台账只记 37 次」。
+// 用 `used = used + ?` 而不是先读后写：并发丢更新的表现是「用户实际用了 100 次，台账只记 37 次」。
 func (r *QuotaRepo) AddDelta(ctx context.Context, userID, metric, period string, delta int64, limit *int64, at time.Time) error {
 	return r.data.DB.GORM.WithContext(ctx).Exec(
 		"INSERT INTO `quota_usage` (user_id, metric, period, used, limit_value, created_at, updated_at) "+
@@ -132,8 +129,7 @@ func (r *QuotaRepo) SumRecords(ctx context.Context, userID, metric string, from,
 		return 0, err
 	}
 	if sum == nil {
-		// SUM 在无行时返回 NULL（不是 0）；直接 Scan 到 int64 会得到 0，
-		// 但显式处理能让「没有数据」这件事在代码里可见。
+		// SUM 在无行时返回 NULL（不是 0）；显式处理让「没有数据」在代码里可见。
 		return 0, nil
 	}
 	return *sum, nil

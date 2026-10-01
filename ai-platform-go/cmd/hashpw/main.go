@@ -3,9 +3,9 @@
 //	go run ./cmd/hashpw -passwords "Aa#123456789,Bb#123456789"
 //	go run ./cmd/hashpw -password "Aa#123456789" -format sql
 //
-// 存在的理由：测试账号要写进 `deploy/mysql/*.sql`，而 SQL 脚本必须是静态的
-// （CI 与本地要能重复执行出同样的账号）。哈希只能离线算好再贴进去 ——
-// 手工拼 PHC 串几乎一定会拼错，而拼错的症状是「密码看起来对但登录总是 401」。
+// 测试账号要写进 `deploy/mysql/*.sql`，而 SQL 脚本必须是静态的（CI 与本地要能重复
+// 执行出同样的账号），哈希只能离线算好再贴进去；手工拼 PHC 串几乎一定会拼错，
+// 拼错的症状是「密码看起来对但登录总是 401」。
 package main
 
 import (

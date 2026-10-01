@@ -32,7 +32,7 @@ class ParsedDocument:
     def is_empty(self, *, min_chars: int) -> bool:
         """有效正文是否不足 ``min_chars``。
 
-        典型触发场景是扫描版 PDF：解析成功但一个字都没有。这种情况必须报
+        典型触发场景是扫描版 PDF：解析成功但一个字都没有。必须报
         ``422 UNPROCESSABLE_DOCUMENT`` 而不是「入库成功但检索不到东西」。
         """
         return self.char_count < min_chars
@@ -63,9 +63,9 @@ def build_blocks_from_pages(
 ) -> tuple[list[SourceBlock], str, int]:
     """把「按页文本」拼成块列表，同时给出整篇正文与总字符数。
 
-    ``offset`` 以**拼接后**的正文为基准，而拼接规则（页间 ``\\n\\n``）在这里
-    唯一定义。让各解析器自己算偏移量是这类代码最经典的错位来源：
-    引用溯源报出的字符区间会在第 2 页之后全部漂移。
+    ``offset`` 以拼接后的正文为基准，而拼接规则（页间 ``\\n\\n``）在这里唯一定义。
+    让各解析器自己算偏移量是这类代码最经典的错位来源：引用溯源报出的字符区间会在
+    第 2 页之后全部漂移。
     """
     blocks: list[SourceBlock] = []
     parts: list[str] = []
@@ -89,8 +89,8 @@ def build_blocks_from_pages(
 class BlockBuilder:
     """逐块累积正文，同时维护每块在整篇正文里的字符偏移。
 
-    Markdown / HTML / DOCX 都是「流式遇到结构边界就切块」，逐块累加偏移比事后
-    用 ``str.find`` 反推可靠：重复段落会让 ``find`` 定位到第一处，字符区间就错了。
+    Markdown / HTML / DOCX 都是「流式遇到结构边界就切块」，逐块累加偏移比事后用
+    ``str.find`` 反推可靠：重复段落会让 ``find`` 定位到第一处，字符区间就错了。
     """
 
     SEPARATOR = "\n\n"

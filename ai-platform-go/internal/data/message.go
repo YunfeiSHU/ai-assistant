@@ -11,10 +11,8 @@ import (
 )
 
 // MsgCursor 是消息分页的游标载荷。
-//
 // 只用 `seq` 就够了：它在会话内唯一且严格递增（docs/03-§4.2），
-// 比「时间戳 + id」的复合游标更不容易错 —— 同毫秒并发的时间戳比较
-// 需要同一个元组才能稳定排序，而 seq 天然没有这个问题。
+// 而「时间戳 + id」的复合游标在同毫秒并发时需要整个元组参与比较才能稳定排序。
 type MsgCursor struct {
 	Seq int `json:"seq"`
 	// ConversationID 只作可读性提示（排障时能看出游标属于哪个会话）。
@@ -52,12 +50,9 @@ type messageRepo struct{ data *Data }
 // NewMessageRepo 构造消息仓储。
 func NewMessageRepo(d *Data) biz.MessageRepo { return &messageRepo{data: d} }
 
-// Append 在**一个事务内**原子分配 seq 并写入消息，分配到的序号回填到 `m.Seq`。
-//
-// 两步必须在同一事务里，理由有两个：
-//   - `LAST_INSERT_ID(expr)` 是连接级的，两条语句换了连接就会读到别人的值；
-//   - 「分配成功但插入失败」会留下 `message_count` 已加一、消息却不存在的空洞，
-//     下次分配直接跳号，而且不报任何错。
+// Append 在一个事务内原子分配 seq 并写入消息，分配到的序号回填到 `m.Seq`。
+// 两步必须在同一事务里：`LAST_INSERT_ID(expr)` 是连接级的，换连接会读到别人的值；
+// 而「分配成功但插入失败」会留下 `message_count` 已加一、消息却不存在的空洞，下次直接跳号且不报错。
 func (r *messageRepo) Append(ctx context.Context, userID, conversationID string, m *biz.Message) error {
 	conv := &conversationRepo{data: r.data}
 	return r.data.DB.InTx(ctx, func(tx *gorm.DB) error {
@@ -71,8 +66,7 @@ func (r *messageRepo) Append(ctx context.Context, userID, conversationID string,
 }
 
 // GetOwned 取属于该用户的消息。
-//
-// 同时 JOIN 会话确认未被软删：软删会话后其消息 MUST 视同不存在（docs/03-§6）。
+// JOIN 会话确认未被软删：软删会话后其消息 MUST 视同不存在（docs/03-§6）。
 func (r *messageRepo) GetOwned(ctx context.Context, userID, id string) (*biz.Message, error) {
 	var po messagePO
 	err := r.data.DB.GORM.WithContext(ctx).Model(&messagePO{}).
@@ -88,7 +82,6 @@ func (r *messageRepo) GetOwned(ctx context.Context, userID, id string) (*biz.Mes
 }
 
 // ListByConversation 按 seq 分页列出会话消息（JOIN 会话过滤软删）。
-//
 // 排序 MUST 用 seq：`created_at` 在 Windows 上粒度约 15.6ms，
 // 同一毫秒内的两条消息顺序会退化成随机（docs/03-§4.2）。
 func (r *messageRepo) ListByConversation(ctx context.Context, userID, convID string, in biz.ListMessagesInput) (*biz.MessageList, error) {
@@ -138,7 +131,7 @@ func (r *messageRepo) ListByConversation(ctx context.Context, userID, convID str
 		out.Items = append(out.Items, *toMessageDO(&rows[i]))
 	}
 	if out.HasMore && len(rows) > 0 {
-		// 游标取**本页最后一条**的 seq：下一页从它继续，与排序方向无关。
+		// 游标取本页最后一条的 seq：下一页从它继续，与排序方向无关。
 		next := MsgCursor{Seq: rows[len(rows)-1].Seq, ConversationID: convID}
 		encoded, err := next.Encode()
 		if err != nil {
@@ -150,10 +143,8 @@ func (r *messageRepo) ListByConversation(ctx context.Context, userID, convID str
 }
 
 // Delete 硬删单条消息（docs/03-§6：不影响 AI 侧上下文）。
-//
-// 这里也要挡住「软删会话的消息」：只按 (id, user_id) 删除时，
-// 客户端可以拿一个已删会话里的消息 id 把它删掉 —— 不可见的数据
-// 更不应该可写。
+// 先 GetOwned 是为了挡住「软删会话的消息」：只按 (id, user_id) 删时，
+// 客户端可以拿一个已删会话里的消息 id 把它删掉 —— 不可见的数据更不应该可写。
 func (r *messageRepo) Delete(ctx context.Context, userID, id string) error {
 	if _, err := r.GetOwned(ctx, userID, id); err != nil {
 		return err
@@ -217,10 +208,8 @@ func toMessageDO(po *messagePO) *biz.Message {
 }
 
 // refsBytes 把 JSON 列还原成原始字节；未设置时返回 nil。
-//
 // nil 与 `[]` 的区别要保住：`reference` 事件一条都没来过时（如未开 RAG），
-// 响应里应该是 `[]` 而不是 `null` —— 这个判断交给 DTO 层，
-// 存储层只需要如实回答「有没有值」。
+// 响应里应该是 `[]` 而不是 `null`。判断交给 DTO 层，存储层如实回答「有没有值」。
 func refsBytes(raw JSONRaw) []byte {
 	if !raw.Valid || raw.Raw == "" {
 		return nil

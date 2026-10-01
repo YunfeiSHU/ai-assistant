@@ -46,10 +46,10 @@ func BindJSON(c *gin.Context, dst any) error {
 		}).WithCause(err)
 	}
 
-	// 空体与「被截断的体」必须分开报，两者的排查方向完全不同：
-	// empty_body → 调用方忘了带 body（或代理吞了它）；truncated_json → body 有内容但没传完（客户端序列化被切断 / 连接中断）。
-	// 曾把两者合并成 `empty_body`，于是 `{"email":` 这种「明显有内容」的请求被报成「没有请求体」，排查方向直接跑偏。
-	// 注意 `io.ErrUnexpectedEOF` 不满足 `errors.Is(err, io.EOF)`（反之亦然），所以下面两个分支互不干扰、顺序无关。
+	// 空体与「被截断的体」必须分开报：曾把两者合并成 `empty_body`，于是 `{"email":`
+	// 这种「明显有内容」的请求被报成「没有请求体」，排查方向直接跑偏。
+	// 注意 `io.ErrUnexpectedEOF` 不满足 `errors.Is(err, io.EOF)`（反之亦然），
+	// 所以下面两个分支互不干扰、顺序无关。
 	if errors.Is(err, io.EOF) {
 		return errs.New(errs.CodeInvalidArgument).
 			WithDetail("reason", "empty_body").
@@ -68,8 +68,8 @@ func BindJSON(c *gin.Context, dst any) error {
 }
 
 // ContentTypeIsJSON 报告请求体的 Content-Type 是否为 JSON。
-//
-// 兼容带 charset 的写法（`application/json; charset=utf-8`），且对空 Content-Type 返回 true：curl 不带 `-H` 时很常见，契约（docs/02-§1）也没要求必须显式声明。
+// 兼容带 charset 的写法，且对空 Content-Type 返回 true：curl 不带 `-H` 时很常见，
+// 契约（docs/02-§1）也没要求必须显式声明。
 func ContentTypeIsJSON(c *gin.Context) bool {
 	ct := c.ContentType()
 	return ct == "" || ct == "application/json"

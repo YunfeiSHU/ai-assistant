@@ -1,17 +1,16 @@
 """会话上下文的 Redis 实现（``docs/07`` §2.1，``INFRA_BACKEND=real``）。
 
-与 :class:`~app.memory.context_store.InMemoryConversationStore` **结构完全一致**
-（``ctx:{id}`` 列表 + ``LTRIM`` + TTL + 会话级锁），只是换了载体。这样
-「同一个会话在两个后端上的行为」是同一段语义，只有存储换了。
+与 :class:`~app.memory.context_store.InMemoryConversationStore` 结构完全一致
+（``ctx:{id}`` 列表 + ``LTRIM`` + TTL + 会话级锁），只是换了载体。
 
 三个必须留在代码里的细节：
 
-* **归属写在独立键里**（``ctx:owner:{id}``）而不是塞进消息元素。列表可能是空的
-  （刚 ``clear`` 过），从元素里取 owner 会在最需要判断归属的时候取不到。
-* **同会话写串行化**用 ``SET NX EX`` + Lua compare-and-delete，而不是「先 GET 再 DEL」：
-  后者在锁超时后可能删掉**别人**的锁，于是两个写者交错 —— 正是锁要防的事。
-* **读失败与「不存在」必须区分**：读失败记 ``memory_unavailable`` 并降级；
-  「不存在」才是 ``404``。两者混在一起会让 Redis 抖动变成用户可见的 404。
+* 归属写在独立键（``ctx:owner:{id}``）而不是塞进消息元素：列表可能是空的（刚 ``clear``
+  过），从元素里取 owner 会在最需要判断归属的时候取不到。
+* 同会话写串行化用 ``SET NX EX`` + Lua compare-and-delete，而不是「先 GET 再 DEL」：
+  后者在锁超时后可能删掉别人的锁，于是两个写者交错 —— 正是锁要防的事。
+* 读失败与「不存在」必须区分：读失败记 ``memory_unavailable`` 并降级；「不存在」才是
+  ``404``。两者混在一起会让 Redis 抖动变成用户可见的 404。
 """
 
 from __future__ import annotations
@@ -34,13 +33,12 @@ _OWNER_PREFIX = "ctx:owner:"
 _SUMMARY_PREFIX = "ctx:summary:"
 _LOCK_PREFIX = "lock:ctx:"
 
-#: 分布式锁的 TTL（``docs/07`` §2.1：5s）。锁只在「读-改-写列表」期间持有，
-#: 单次操作远小于 5s；TTL 的存在是为了进程崩溃后锁能自动释放。
+#: 分布式锁的 TTL（``docs/07`` §2.1：5s）。锁只在「读-改-写列表」期间持有，单次操作
+#: 远小于 5s；TTL 是为了进程崩溃后锁能自动释放。
 LOCK_TTL_SECONDS = 5
 
 #: 释放锁的标准脚本：只有值仍是自己的 token 时才删（compare-and-delete）。
-#: 不用「GET 再 DEL」是因为锁可能已经超时并被别人重新持有，那时 DEL 删掉的是
-#: **别人的**锁，两个写者会同时进入临界区。
+#: 不用「GET 再 DEL」是因为锁可能已超时并被别人重新持有，那时 DEL 删的是别人的锁。
 _RELEASE_SCRIPT = """
 if redis.call('get', KEYS[1]) == ARGV[1] then
     return redis.call('del', KEYS[1])
@@ -73,10 +71,10 @@ class RedisCommands(Protocol):
 
 
 def create_redis_commands(settings: Settings) -> RedisCommands:
-    """按配置建立 Redis 连接（**懒导入**，实现见 :mod:`app.infrastructure.redis.client`）。
+    """按配置建立 Redis 连接（懒导入，实现见 :mod:`app.infrastructure.redis.client`）。
 
-    ``redis`` 不在基础依赖里：本地与测试用内存实现，只有 ``INFRA_BACKEND=real``
-    才需要它。缺失时给出可执行的提示，而不是一个 ``ModuleNotFoundError`` 堆栈。
+    ``redis`` 不在基础依赖里：本地与测试用内存实现，只有 ``INFRA_BACKEND=real`` 才需要它。
+    缺失时给出可执行的提示，而不是一个 ``ModuleNotFoundError`` 堆栈。
     """
     return create_redis_client(
         settings, hint="uv add redis 或将 INFRA_BACKEND 设为 memory（会话存储）"
@@ -240,8 +238,8 @@ class RedisConversationStore:
 
     async def clear(self, conversation_id: str, user_id: str) -> None:
         await self._assert_owner(conversation_id, user_id)
-        # owner 键保留：清空的是「上下文」而不是「会话归属」。一并删掉会让下一次
-        # 写入把会话当成新建，且期间任何人拿同一个 id 都能认领它。
+        # owner 键保留：清空的是「上下文」而不是「会话归属」。一并删掉会让下一次写入把会话
+        # 当成新建，且期间任何人拿同一个 id 都能认领它。
         await self._client.delete(
             self._ctx_key(conversation_id), self._summary_key(conversation_id)
         )

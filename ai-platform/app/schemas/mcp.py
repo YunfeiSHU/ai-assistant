@@ -1,11 +1,9 @@
 """MCP 相关数据模型（契约见 ``docs/05-MCP接入.md`` §5）。
 
-字段直接对应 ``docs/05`` 里的表格，**不加不减**：多一个字段就要在文档里说明它从哪来，
-少一个字段客户端就要猜 —— 这个接口的消费者是运维脚本与前端排障面板，它们没有猜的余地。
+字段直接对应 ``docs/05`` 里的表格，不加不减：多一个字段要在文档里说明来源，少一个
+客户端就要猜 —— 消费者是运维脚本与排障面板，没有猜的余地。
 
-列表响应用通用的 :class:`~app.schemas.common.Page` 而不是各自定义一个 ``XxxListResponse``：
-MCP 的列表接口没有超出「items / next_cursor / has_more」的需求，多定义一层只会
-让客户端的解析代码多一份。
+列表响应用通用的 :class:`~app.schemas.common.Page`，不各自定义 ``XxxListResponse``。
 """
 
 from __future__ import annotations

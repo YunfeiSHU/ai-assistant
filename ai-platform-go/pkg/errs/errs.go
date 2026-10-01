@@ -22,9 +22,7 @@ type Envelope struct {
 }
 
 // AppError 是网关内部流转的统一错误类型。
-//
-// 它是一个「可以安全地把 message 展示给客户端」的错误：内部原因放在 cause 里，
-// 只记日志，不进响应体（REQ-NFR-005）。
+// message 可以安全展示给客户端；内部原因放在 cause 里，只记日志，不进响应体（REQ-NFR-005）。
 type AppError struct {
 	code           Code
 	message        string
@@ -35,7 +33,7 @@ type AppError struct {
 	status         int
 	upstreamStatus int
 	cause          error
-	// upstream 标记该错误来自 ai-platform（透传），用于决定是否追加
+	// upstream 标记该错误来自 ai-platform（透传），决定是否追加
 	// details.gateway（docs/02-§4.2 第 4 条）与指标标签。
 	upstream bool
 }
@@ -126,9 +124,9 @@ func (e *AppError) WithCause(err error) *AppError {
 }
 
 // WithRetryAfter 返回带 `Retry-After` 秒数的副本。
-//
-// 只有 `429` 会把它写进响应头与信封（见 httpx.writeError）—— 这是 HTTP 既有约定，不该给 503 配 `Retry-After` 再指望客户端理解；
-// 用秒数而非时间点：客户端与服务端的时钟差可以到分钟级，绝对时间会让「等 3 秒」变成「等 40 秒」或「立刻重试」。
+// 只有 429 会把它写进响应头与信封（见 httpx.writeError）—— 这是 HTTP 既有约定。
+// 用秒数而非时间点：客户端与服务端的时钟差可以到分钟级，绝对时间会让「等 3 秒」
+// 变成「等 40 秒」或「立刻重试」。
 func (e *AppError) WithRetryAfter(seconds int) *AppError {
 	clone := *e
 	if seconds < 0 {
@@ -165,8 +163,8 @@ func Wrapf(code Code, cause error, format string, args ...any) *AppError {
 }
 
 // InvalidArgument 构造 400，details.fields 承载字段级原因（docs/02-§4.1）。
-//
-// fields 为空时**不写** `details.fields`：写 `"fields": null` 会让客户端的「有字段错误吗」判断变得不可靠（null 在 JS 里是 falsy，在其它语言里不是）。
+// fields 为空时不写 `details.fields`：`"fields": null` 会让客户端的「有字段错误吗」
+// 判断变得不可靠（null 在 JS 里是 falsy，在其它语言里不是）。
 func InvalidArgument(fields []FieldError) *AppError {
 	err := New(CodeInvalidArgument)
 	if len(fields) == 0 {
@@ -194,9 +192,8 @@ type FieldError struct {
 func NotFound(code Code) *AppError { return New(code) }
 
 // UpstreamError 构造「原样透传上游」的错误（接缝 J2，docs/02-§4.2）。
-//
-// status 用上游真实状态码；message / details / retryable / traceID 全部取上游原值。
-// **不修改 details 原有键**，只在没有 gateway 键时追加 `details.gateway`（§4.2 第 4 条）。
+// status / message / details / retryable / traceID 全部取上游原值；不修改 details
+// 原有键，只在没有 gateway 键时追加 `details.gateway`（§4.2 第 4 条）。
 func UpstreamError(code Code, message string, status int, retryable bool, traceID string, details map[string]any) *AppError {
 	if status <= 0 || status > 599 {
 		if st, ok := LookupStatus(code); ok {
@@ -232,9 +229,8 @@ func As(err error) (*AppError, bool) {
 	return nil, false
 }
 
-// From 把任意错误归一化成 *AppError。
-//
-// 已经是 *AppError 的原样返回；nil 返回 nil；其余归到 INTERNAL_ERROR。
+// From 把任意错误归一化成 *AppError：已经是 *AppError 的原样返回，nil 返回 nil，
+// 其余归到 INTERNAL_ERROR。
 func From(err error) *AppError {
 	if err == nil {
 		return nil

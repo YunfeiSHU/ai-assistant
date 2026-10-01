@@ -1,15 +1,10 @@
 // 本文件把 `internal/data/quota.go` 的 PO 世界翻译成 biz 的领域世界。
 //
-// 分成两层（`QuotaRepo` 直出 PO，`QuotaStore` 出 biz 类型）而不是把两者合并：
+// 分两层而不合并：`QuotaRepo` 的签名与 SQL 一一对应（列名直接当参数），对账与迁移脚本可直接用；
+// `QuotaStore` 只暴露 biz 需要的语义 —— biz 不应该知道有 `limit_value` 这一列。
 //
-//   - `QuotaRepo` 的方法签名与 SQL 一一对应（`used` / `limit_value` 这种列名
-//     直接当参数），对账与迁移脚本想用哪个用哪个；
-//   - `QuotaStore` 只暴露 biz 需要的语义。biz 不应该知道有 `limit_value` 这一列。
-//
-// 这里唯一的业务判断在 `ListUsersWithPeriod`：它要挑出「台账里有存量指标」
-// 或者「最近有活跃」的用户，用于每日重建 Redis。SQL 里同时出现
-// `metric IN (...)` 与 `period IN (...)`，是因为两类用户的判据不同 ——
-// 存量指标永远挂在 `current` 周期上，而每日指标挂在 `YYYY-MM-DD` 上。
+// `ListUsersWithPeriod` 的 SQL 同时出现 `metric IN (...)` 与 `period IN (...)`，
+// 是因为两类用户的判据不同：存量指标挂在 `current` 周期，每日指标挂在 `YYYY-MM-DD`。
 package data
 
 import (
@@ -50,10 +45,8 @@ func (s *QuotaStore) ListByPeriod(ctx context.Context, userID, period string) ([
 }
 
 // Upsert 见 biz.QuotaRepo。
-//
-// `Limit` 为 nil 时**不覆盖**库里已有的 limit_value：limit 来自套餐配置，
-// 对账任务只负责 `used`，把 limit 一并写成 NULL 会把套餐信息抹掉
-// （在下一次请求写回前，用户看到的是「无上限」）。
+// `Limit` 为 nil 时不覆盖库里已有的 limit_value：limit 来自套餐配置，对账只负责 `used`，
+// 写成 NULL 会把套餐信息抹掉（在下一次请求写回前，用户看到的是「无上限」）。
 func (s *QuotaStore) Upsert(ctx context.Context, row biz.QuotaRow) error {
 	repo := s.repo
 	if row.Limit == nil {
@@ -117,10 +110,8 @@ func (s *QuotaStore) SumUsage(ctx context.Context, userID string, from, to time.
 }
 
 // ListUsersWithPeriod 见 biz.QuotaRepo。
-//
-// 只取「台账里存在该周期行」的用户，而不是全表扫 users 表：
-// 新注册且从未发起过请求的用户没有配额行，也**不需要**被重建
-// （缺行时用的是套餐默认上限，Redis 里没有键 == 用量 0，语义一致）。
+// 只取「台账里存在该周期行」的用户而不是全表扫 users：从未发起请求的用户没有配额行，
+// 也不需要被重建（缺行时用套餐默认上限，Redis 无键 == 用量 0，语义一致）。
 func (s *QuotaStore) ListUsersWithPeriod(ctx context.Context, period string, limit int) ([]string, error) {
 	if limit <= 0 {
 		limit = 1000

@@ -17,24 +17,17 @@ import (
 	"github.com/YunfeiSHU/ai-assistant/ai-platform-go/pkg/otelx"
 )
 
-// 本文件是 `ChatStream` 的 **HTTP/SSE 兜底通道**（`AI_GRPC_ENABLED=false` 时启用），
-// 与 httpchat.go 的关系同 `Chat` 的两条通道：共用请求映射、响应映射与错误信封解析。
-//
-// 它存在的理由与 `httpchat.go` 完全一样（docs/04-§2.1 的 REQ-ORCH-002 第 3 条），
-// 但多一层价值：AI 侧只起 HTTP 服务时也能联调流式，而流式恰恰是最需要在
-// 没有 gRPC 环境时也能手动验的东西。
+// 本文件是 `ChatStream` 的 HTTP/SSE 兜底通道（`AI_GRPC_ENABLED=false` 时启用），
+// 与 httpchat.go 共用请求映射、响应映射与错误信封解析。
+// 理由同 `httpchat.go`（REQ-ORCH-002 第 3 条），并多一层价值：AI 侧只起 HTTP 服务时也能联调流式。
 
 // sseMaxLineBytes 是单行上限。
-//
-// 超长行必须**报错**而不是截断：截断后的 JSON 一定解析失败，于是症状会变成
-// 「偶发丢一帧」——而真相是上游写坏了流。真正可能大的是 `reference` 帧
-// （几条 KB），1MB 已经远超合理范围。
+// 超长行必须报错而不是截断：截断后的 JSON 一定解析失败，症状会变成「偶发丢一帧」，
+// 而真相是上游写坏了流。可能大的是 `reference` 帧（几条 KB），1MB 已远超合理范围。
 const sseMaxLineBytes = 1 << 20
 
 // sseEventMessage 是 SSE 规范里「没有 `event:` 字段」时的默认事件名。
-//
-// 网关不认识它（会走未知事件透传），但必须显式命名 —— 丢掉名字会让
-// 客户端在 switch 里落进 default，而事件名本身是有信息量的。
+// 网关不认识它（走未知事件透传），但必须显式命名 —— 丢掉名字会让客户端落进 default。
 const sseEventMessage = "message"
 
 // httpChatStreamer 用 HTTP/SSE 实现 `biz.ChatStreamer`。
@@ -50,13 +43,9 @@ var _ biz.ChatStreamer = (*httpChatStreamer)(nil)
 
 // NewChatStreamerHTTP 构造 HTTP/SSE 通道的流式客户端。
 //
-// 与 `NewChatOrchestratorHTTP` 一样接收 `apiPrefix`（网关自己的 `App.APIPrefix`）：
-// 两侧前缀同名是透传通道的前提（docs/04-§7），把它做成参数而不是硬编码，
-// 是为了让这个前提只有一处体现。
-//
-// 它自己新建一个 `*http.Client`（与 `NewProxy` 的那个不同池），
-// 不复用 `biz.AIProxy` 的原因很具体：那个接口的契约是「把响应体完整读完再交回」
-// （返回 `AIProxyResponse{Body []byte}`），而流式要的是**尚未读完的响应体**。
+// 收 `apiPrefix` 的理由同 `NewChatOrchestratorHTTP`（两侧前缀同名是透传的前提，docs/04-§7）。
+// 它自建 `*http.Client` 而不复用 `biz.AIProxy`：那个接口的契约是「把响应体完整读完再交回」
+// （返回 `AIProxyResponse{Body []byte}`），而流式要的是尚未读完的响应体；
 // 把 `Do` 改成能返回流，等于让每个透传调用方都去关心「这个响应该不该读完」。
 func NewChatStreamerHTTP(apiPrefix string, opt Options) biz.ChatStreamer {
 	if opt.Log == nil {
@@ -72,12 +61,9 @@ func NewChatStreamerHTTP(apiPrefix string, opt Options) biz.ChatStreamer {
 }
 
 // ChatStream 实现 biz.ChatStreamer。
-//
-// 超时归属与 gRPC 通道一致：**整轮/空闲/首字节超时全部由 biz 负责**，
-// 这里只把请求上下文交出去（`http.NewRequestWithContext`）。
-// 不设 `Client.Timeout`：它是「整个请求（含读完 body）」的上限，
-// 对 SSE 这种长连接等于「到点就掐」，而且它给出的错误是 `context.DeadlineExceeded`
-// 而非「谁的超时」，会让 biz 归错类。
+// 超时归属与 gRPC 通道一致：整轮/空闲/首字节超时全由 biz 负责，这里只交出去请求上下文。
+// 不设 `Client.Timeout`：它是对「整个请求（含读完 body）」的上限，对 SSE 等于「到点就掉」，
+// 而且给出的错误看不出「谁的超时」，会让 biz 归错类。
 func (s *httpChatStreamer) ChatStream(parent context.Context, req biz.ChatRequest) (biz.ChatEventStream, error) {
 	upstreamURL, err := s.base.join(s.path)
 	if err != nil {
@@ -93,7 +79,7 @@ func (s *httpChatStreamer) ChatStream(parent context.Context, req biz.ChatReques
 			WithCause(err)
 	}
 
-	// 独立的 cancel：`Close()` 需要能**主动**掐掉上游（biz 提前放弃时）。
+	// 独立的 cancel：`Close()` 需要能主动掐掉上游（biz 提前放弃时）；
 	// 只 close resp.Body 对 HTTP/2 可能不够及时，cancel 一定能。
 	ctx, cancel := context.WithCancel(parent)
 
@@ -113,13 +99,12 @@ func (s *httpChatStreamer) ChatStream(parent context.Context, req biz.ChatReques
 	if traceID := strings.TrimSpace(req.TraceID); traceID != "" {
 		httpReq.Header.Set("X-Trace-Id", traceID)
 	}
-	// 与 http.go 同理：标准头 + 自有头一起发，否则 Jaeger 里会分成两条 trace。
+	// 同 http.go：标准头 + 自有头一起发，否则 Jaeger 里会分成两条 trace。
 	if tp := otelx.TraceparentHeader(ctx, req.TraceID); tp != "" {
 		httpReq.Header.Set("traceparent", tp)
 	}
-	// 同样刻意不设 Accept-Encoding：手动设置会关掉 Go 的透明解压，
-	// 而流式响应一旦被压缩，我们就得自己解 —— 那是只为了「看起来更省流量」
-	// 而引入的一整层 buffer 语义（压缩会破坏增量性，gzip 必须攒够一块才能吐）。
+	// 同样不设 Accept-Encoding：手动设置会关掉 Go 的透明解压，而流式响应一旦被压缩就得自己解 ——
+	// 压缩破坏增量性（gzip 要攒够一块才能吐），等于引入一整层 buffer 语义。
 
 	resp, err := s.http.Do(httpReq)
 	if err != nil {
@@ -146,9 +131,8 @@ func (s *httpChatStreamer) ChatStream(parent context.Context, req biz.ChatReques
 			WithDetail("upstream_status", resp.StatusCode)
 	}
 
-	// Content-Type 必须真的是 SSE。若上游因为任何原因回了 200 + JSON
-	// （例如路径写错落到了 `/chat` 上），不检查的话表现是「流里一帧都没有，
-	// 最后落一条空的 partial」—— 一个完全无法从现象反推原因的故障。
+	// Content-Type 必须真的是 SSE。若上游回了 200 + JSON（例如路径写错落到 `/chat` 上），
+	// 不检查的话表现是「流里一帧都没有，最后落一条空的 partial」，现象无法反推原因。
 	if ct := resp.Header.Get("Content-Type"); !strings.Contains(ct, "text/event-stream") {
 		defer func() { _ = resp.Body.Close() }()
 		cancel()
@@ -177,8 +161,7 @@ func traceID(req biz.ChatRequest) string { return strings.TrimSpace(req.TraceID)
 func (s *httpChatStreamer) mapOpenError(ctx context.Context, err error, traceID string) error {
 	switch {
 	case errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, context.Canceled):
-		// 客户端断开：不是网关或上游的问题，别归类成 AI_UNAVAILABLE
-		// 而拉高熔断计数（M5 才会真的用这个计数，但分类从现在就要对）。
+		// 客户端断开：不是网关或上游的问题，别归类成 AI_UNAVAILABLE 而拉高熔断计数。
 		return errs.New(errs.CodeAIUnavailable).
 			WithTraceID(traceID).
 			WithDetail("reason", "client_canceled").
@@ -214,15 +197,11 @@ type httpChatEventStream struct {
 var _ biz.ChatEventStream = (*httpChatEventStream)(nil)
 
 // Events 返回事件通道，供 biz 消费。
-//
-// 通道由后台解码协程写入，**收尾时关闭**：读到关闭即表示上游流已结束
-// （正常由 done 帧结束，异常见 Err）。消费方不应向该通道写入。
+// 通道由后台解码协程写入、收尾时关闭：读到关闭即表示上游流已结束（正常由 done 帧结束，异常见 Err）。
 func (s *httpChatEventStream) Events() <-chan biz.StreamEvent { return s.events }
 
 // Err 返回流结束的原因；正常收尾返回 nil。
-//
-// 必须在 Events 关闭**之后**读取才有意义（关闭前它可能还是 nil），
-// 加锁是为了与解码协程的写入互斥。
+// 必须在 Events 关闭之后读取才有意义（关闭前它可能还是 nil），加锁是为了与解码协程的写入互斥。
 func (s *httpChatEventStream) Err() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -255,9 +234,8 @@ func (s *httpChatEventStream) pump() {
 		frame, err := s.decoder.next()
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				// 上游正常关流。这里**不**判断有没有收到 done ——
-				// 那是 biz 的事（它据此区分 completed / partial），
-				// 传输层越权判断会让这条规则出现在两个地方。
+				// 上游正常关流。这里不判断有没有收到 done —— 那是 biz 的事
+				//（它据此区分 completed / partial），传输层越权判断会让这条规则出现在两个地方。
 				return
 			}
 			s.setErr(s.mapReadError(err))
@@ -304,21 +282,18 @@ type sseFrame struct {
 	Data  []byte
 }
 
-// sseDecoder 逐行解析 SSE（WHATWG EventSource 规则的一个**子集**）。
-//
+// sseDecoder 逐行解析 SSE（WHATWG EventSource 规则的一个子集）。
 // 实现了：注释行忽略、`field: value` 的一个前导空格、多行 `data:` 用 `\n` 拼接、
 // 空行派发、未知字段忽略、`event` 缺省为 `message`。
-// 没实现：`Last-Event-ID` / `retry`（网关不重连）、`\r` 单独作行结束符
-// （规范里是历史遗留写法，AI 侧只产 `\n`；支持它意味着要自建行缓冲，
-//
-//	而收益是零 —— 那种流在真实链路上不会被产生）。
+// 没实现：`Last-Event-ID` / `retry`（网关不重连）、`\r` 单独作行结束符（AI 侧只产 `\n`，
+// 支持它得自建行缓冲而收益为零）。
 type sseDecoder struct {
 	sc    *bufio.Scanner
 	event string
 	data  bytes.Buffer
 	// dataSeen 记录「是否已经有 data 行」。用它而不是 `data.Len() > 0`：
-	// 第一行恰好是空 payload（`data:`）时长度也是 0，之后的行会漏掉分隔用的
-	// `\n`，于是 `data:\ndata: b` 会拼成 `b` 而不是 `\nb`。
+	// 首行是空 payload（`data:`）时长度也是 0，后续行会漏掉分隔用的 `\n`，
+	// 于是 `data:\ndata: b` 会拼成 `b` 而不是 `\nb`。
 	dataSeen bool
 }
 
@@ -329,9 +304,8 @@ func newSSEDecoder(r io.Reader) *sseDecoder {
 }
 
 // next 返回下一帧；流结束时返回 io.EOF。
-//
-// 返回 `io.EOF` 而不是 `(nil, nil)`：调用方必须能区分「流结束」与「这一行
-// 还没构成一帧」（注释行、保活空行），否则会在循环里空转。
+// 返回 `io.EOF` 而不是 `(nil, nil)`：调用方必须能区分「流结束」与「这一行还没构成一帧」
+// （注释行、保活空行），否则会在循环里空转。
 func (d *sseDecoder) next() (*sseFrame, error) {
 	for {
 		if !d.sc.Scan() {
@@ -345,8 +319,7 @@ func (d *sseDecoder) next() (*sseFrame, error) {
 
 		if line == "" {
 			if d.event == "" && !d.dataSeen {
-				// 连续空行（有些实现用空行保活）。不派发空事件：
-				// 派发出去会变成一帧 data 为空的 `message` 事件。
+				// 连续空行（有些实现用空行保活）。不派发空事件 —— 那会变成一帧 data 为空的 `message`。
 				continue
 			}
 			frame := &sseFrame{Event: d.event, Data: append([]byte(nil), d.data.Bytes()...)}
@@ -362,7 +335,7 @@ func (d *sseDecoder) next() (*sseFrame, error) {
 			continue // 注释行：规范要求忽略（反向代理有时会插入）
 		}
 		field, value, _ := strings.Cut(line, ":")
-		// 规范：冒号后**最多**去掉一个空格，后面的空格是值的一部分。
+		// 规范：冒号后最多去掉一个空格，后面的空格是值的一部分。
 		value = strings.TrimPrefix(value, " ")
 		switch field {
 		case "event":
@@ -374,23 +347,20 @@ func (d *sseDecoder) next() (*sseFrame, error) {
 			d.data.WriteString(value)
 			d.dataSeen = true
 		default:
-			// `id` / `retry` / 未知字段：忽略。
-			// 不认识就丢是**规范要求**的行为，与 biz 的「未知事件必须透传」
-			// 不冲突 —— 后者说的是 `event:` 类型，不是这里的分帧字段。
+			// `id` / `retry` / 未知字段：忽略。这是规范要求的行为，与 biz 的
+			//「未知事件必须透传」不冲突 —— 后者说的是 `event:` 类型，不是这里的分帧字段。
 		}
 	}
 }
 
 // mapSSEFrame 把一帧 SSE 映射成 biz 事件。
-//
-// 返回 `ok=false` 表示这一帧被**有意丢弃**（心跳、非法 JSON、未知且空的分帧）。
+// 返回 `ok=false` 表示这一帧被有意丢弃（心跳、非法 JSON、未知且空的分帧）。
 // 丢帧一律留痕：静默丢是真出问题时最难查的那类。
 func mapSSEFrame(f *sseFrame, log *slog.Logger, ctx context.Context) (biz.StreamEvent, bool) {
 	switch f.Event {
 	case "ping":
-		// docs/04-§2.3 的映射表：`ping` **不映射**（心跳由传输层自带）。
-		// 网关自己会按 15s 间隔发 `event: ping`，把上游的也转出去
-		// 只会让客户端收到两路心跳。
+		// docs/04-§2.3 的映射表：`ping` 不映射（心跳由传输层自带）。
+		// 网关自己按 15s 间隔发 `event: ping`，把上游的也转出去会让客户端收到两路心跳。
 		return nil, false
 
 	case "meta":
@@ -400,8 +370,7 @@ func mapSSEFrame(f *sseFrame, log *slog.Logger, ctx context.Context) (biz.Stream
 			Model          string `json:"model"`
 			CreatedAt      string `json:"created_at"`
 			Degraded       bool   `json:"degraded"`
-			// 上游的 HTTP 版 `meta` 没有降级原因（只有布尔），这里留字段是为了
-			// 「哪天 AI 侧补上就不用改代码」。缺失时为空，不影响落库。
+			// 上游 HTTP 版 meta 没有降级原因（只有布尔），留字段是为了「哪天 AI 侧补上就不用改代码」。
 			DegradedReasons []string `json:"degraded_reasons"`
 		}
 		if !decodeFrame(f, &payload, log, ctx) {
@@ -423,8 +392,8 @@ func mapSSEFrame(f *sseFrame, log *slog.Logger, ctx context.Context) (biz.Stream
 		if !decodeFrame(f, &payload, log, ctx) {
 			return nil, false
 		}
-		// biz 侧要的是**数组本身**（与非流式 `references` 列同形），
-		// 而 SSE 的 data 是 `{"references": [...]}` 的包一层结构。
+		// biz 侧要的是数组本身（与非流式 `references` 列同形），
+		// 而 SSE 的 data 是 `{"references": [...]}` 的包一层的结构。
 		refs := bytes.TrimSpace(payload.References)
 		if len(refs) == 0 {
 			refs = []byte("[]")
@@ -441,9 +410,9 @@ func mapSSEFrame(f *sseFrame, log *slog.Logger, ctx context.Context) (biz.Stream
 		return biz.StreamTokenEvent{Delta: payload.Delta}, true
 
 	case "tool_call":
-		// ⚠️ 与 gRPC 的 `tool_call` **字段名不同**：HTTP 版直接给对象
+		// ⚠️ 与 gRPC 的 `tool_call` 字段名不同：HTTP 版直接给对象
 		// （AI 侧 `_tool_call_payload` 返回 `"arguments": {...}`），
-		// 而 proto 因为没有「任意 JSON」类型只能传字符串 `arguments_json`。
+		// proto 因为缺「任意 JSON」类型只能传字符串 `arguments_json`。
 		// 两边都归一到 biz 的「对象」形态，落库形状才能一致。
 		var payload struct {
 			CallID    string          `json:"call_id"`
@@ -528,16 +497,14 @@ func mapSSEFrame(f *sseFrame, log *slog.Logger, ctx context.Context) (biz.Stream
 		}, true
 
 	default:
-		// 未知事件**原样透传**（docs/04-§4.1）。这里直接给原始 data 字节：
-		// 网关不知道它的语义，就不该重新序列化（重新序列化会把数字精度、
-		// 字段顺序、以及我们不认识的嵌套结构都改一遍）。
+		// 未知事件原样透传（docs/04-§4.1）。给原始 data 字节而不重新序列化 ——
+		// 网关不知道它的语义，重新序列化会动数字精度、字段顺序与嵌套结构。
 		return biz.StreamUnknownEvent{Name: f.Event, Data: f.Data}, true
 	}
 }
 
 // decodeFrame 把帧的 data 解析进 out；失败时留痕并返回 false。
-//
-// 单帧解析失败**不终止整条流**：一帧坏数据不该让用户已经等了几秒的回答全丢。
+// 单帧解析失败不终止整条流：一帧坏数据不该让用户已经等了几秒的回答全丢。
 // 但必须留痕 —— 静默少一帧的症状是「正文里少了一小段」，几乎不可能事后定位。
 func decodeFrame(f *sseFrame, out any, log *slog.Logger, ctx context.Context) bool {
 	if err := json.Unmarshal(f.Data, out); err != nil {

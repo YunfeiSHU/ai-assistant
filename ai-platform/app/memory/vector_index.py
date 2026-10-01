@@ -1,13 +1,11 @@
 """长期记忆的向量索引（``ai_platform_memories`` 集合，``REQ-MEM-005`` / ``REQ-MEM-006``）。
 
-为什么**不复用** chunk 的 :class:`~app.rag.vectorstore.base.VectorStore`：
-那个端口的过滤条件是 ``(user_id, kb_ids, doc_ids)``，而记忆既不属于知识库也不
-属于文档。硬塞进去就得传一组恒为空的 ``kb_ids``，读代码的人会以为「记忆是挂在
-知识库下的」；将来想给集合加一个「按 kind 过滤」的能力，也会被那个签名挡住。
+不复用 chunk 的 :class:`~app.rag.vectorstore.base.VectorStore`：那个端口的过滤条件是
+``(user_id, kb_ids, doc_ids)``，而记忆既不属于知识库也不属于文档。硬塞进去就得传一组恒为
+空的 ``kb_ids``，读代码的人会以为「记忆是挂在知识库下的」。
 
-职责边界：**这里只管向量**。正文、置信度、命中计数都在
-:mod:`app.memory.long_term` 的关系库侧。两边靠 ``mem_id`` 对齐 —— 因此
-:meth:`MemoryVectorIndex.delete` 必须与关系库删除成对调用（``REQ-MEM-007``
+职责边界：这里只管向量；正文、置信度、命中计数都在 :mod:`app.memory.long_term` 的关系库侧。
+两边靠 ``mem_id`` 对齐 —— 因此 ``delete`` 必须与关系库删除成对调用（``REQ-MEM-007``
 要求「双删」），漏一边的表现是「列表里没有了，但检索还能命中」。
 """
 
@@ -40,9 +38,9 @@ class MemoryVectorIndex(Protocol):
     ) -> None:
         """按 ``mem_id`` upsert（重跑抽取 MUST NOT 产生重复向量）。
 
-        ``kind`` 是写进集合的标量字段（``docs/09`` §3.2）。它不属于向量本身，
-        但必须与向量写成**同一次请求** ——分成两次写入的话，中间失败就会出现
-        「向量在、kind 是旧的」，而 ``docs/07`` §5.3 的偏好过滤会据此漏掉它。
+        ``kind`` 是写进集合的标量字段（``docs/09`` §3.2）。它与向量必须写成同一次请求：
+        分成两次的话，中间失败会出现「向量在、kind 是旧的」，而 ``docs/07`` §5.3 的
+        偏好过滤会据此漏掉它。
         """
         ...
 
@@ -68,9 +66,8 @@ class MemoryVectorIndex(Protocol):
 class InMemoryMemoryVectorIndex:
     """进程内实现（暴力余弦，精确且确定性）。
 
-    与 chunk 侧的内存实现同一个取舍：本地/测试数据量在千级以内，暴力扫描没有
-    召回率损失，且同一输入永远得到同一结果 —— 用近似索引会让「去重阈值」这类
-    断言依赖索引构建时机，出现偶发失败。
+    与 chunk 侧的内存实现同一个取舍：本地/测试数据量在千级以内，暴力扫描没有召回率损失，
+    且同一输入永远得到同一结果 —— 用近似索引会让「去重阈值」这类断言依赖索引构建时机。
     """
 
     def __init__(self, *, dim: int) -> None:

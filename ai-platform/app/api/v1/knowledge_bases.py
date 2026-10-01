@@ -1,10 +1,10 @@
 """知识库路由（``docs/06`` §2 / §3.1 / §5.1）。
 
-路径里同时出现 ``/knowledge-bases/{kb_id}/documents`` 与 ``/documents/{doc_id}``，
-所以这个文件里**只**注册 KB 自己的路径（含 KB 下的文档子资源），文档根路径放在
-``documents.py``，任务放在 ``tasks.py``。全部用 ``APIRouter`` 且
-``redirect_slashes=False``：否则 ``GET /knowledge-bases/`` 会被 307 到 ``/knowledge-bases``，
-而 307 会保留方法，前端拿到一个「看起来是重定向」但语义不清的响应。
+路径里同时出现 ``/knowledge-bases/{kb_id}/documents`` 与 ``/documents/{doc_id}``，所以
+这个文件里只注册 KB 自己的路径（含 KB 下的文档子资源），文档根路径在 ``documents.py``，
+任务在 ``tasks.py``。全部用 ``APIRouter`` 且 ``redirect_slashes=False``：否则
+``GET /knowledge-bases/`` 会被 307 到 ``/knowledge-bases``，而 307 会保留方法，
+前端拿到一个「看起来是重定向」但语义不清的响应。
 """
 
 from __future__ import annotations
@@ -222,8 +222,8 @@ async def search_knowledge_base(
 def _parse_metadata(raw: str | None) -> dict[str, Any]:
     """解析表单里的 JSON 元数据。
 
-    解析失败直接 ``400`` 而不是忽略：用户显式传了一个坏 JSON，静默丢掉的后果是
-    「元数据没生效但上传成功」，比报错难查得多。
+    解析失败直接 400 而不是忽略：用户显式传了一个坏 JSON，静默丢掉的后果是「元数据没生效
+    但上传成功」，比报错难查得多。
     """
     if not raw:
         return {}

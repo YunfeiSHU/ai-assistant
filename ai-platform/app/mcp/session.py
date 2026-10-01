@@ -1,17 +1,16 @@
 """MCP 传输层：把 stdio / streamable_http 两种连接方式收敛成同一个接口。
 
-``docs/05`` §2.1 的两种 transport 在 SDK 里的用法差别很大（一个要管理子进程，
-一个要管理 HTTP 会话），但**上层（客户端 / 管理器 / 工具适配）看到的应当是同一件事**：
-「能列工具、能调工具、能关掉」。所以这里只暴露 :class:`McpTransportSession`。
+``docs/05`` §2.1 的两种 transport 在 SDK 里的用法差别很大（一个要管理子进程，一个要管理 HTTP
+会话），但上层（客户端 / 管理器 / 工具适配）看到的应当是同一件事：「能列工具、能调工具、能关掉」。
+所以这里只暴露 :class:`McpTransportSession`。
 
 两个安全要求落在本模块：
 
-1. **子进程环境变量按白名单传递**（``docs/05`` §6）。直接把 ``os.environ`` 交给
-   MCP Server，等于把 ``OPENAI_API_KEY`` / ``JWT_SECRET`` 送给一个第三方进程。
-   白名单 + 配置显式追加，才是「只给它需要的」。
+1. **子进程环境变量按白名单传递**（``docs/05`` §6）：直接把 ``os.environ`` 交给 MCP Server，
+   等于把 ``OPENAI_API_KEY`` / ``JWT_SECRET`` 送给一个第三方进程。
 2. **结果归一化 + 截断**（``docs/05`` §4）：``content[]`` 拼成文本，超过
-   ``tool_result_max_chars`` 截断。这一步必须做在这里而不是工具层 ——
-   工具层拿到的是已经展开的字符串，再截断就会把结构化信息丢掉。
+   ``tool_result_max_chars`` 截断。必须做在这里而不是工具层 —— 工具层拿到的是已经展开的
+   字符串，再截断就会把结构化信息丢掉。
 """
 
 from __future__ import annotations
@@ -201,11 +200,10 @@ async def _stdio_session(config: McpServerConfig) -> AsyncIterator[McpTransportS
 async def _http_session(config: McpServerConfig) -> AsyncIterator[McpTransportSession]:
     """streamable_http 传输：连接远端 Server。
 
-    SDK 的签名是 ``streamable_http_client(url, *, http_client=None, ...)``：
-    **headers 与超时只能通过自建的 HTTP 客户端传入**（MCP 2.2.0 没有 ``headers=``）。
-    所以这里显式构造 ``httpx2.AsyncClient`` —— 顺手把「握手超时」与「单次调用超时」
-    分开：客户端超时取 ``timeout_seconds``，``initialize`` 另受 ``connect_timeout_seconds``
-    约束。
+    SDK 的签名是 ``streamable_http_client(url, *, http_client=None, ...)``：headers 与超时
+    只能通过自建的 HTTP 客户端传入（MCP 2.2.0 没有 ``headers=``）。所以这里显式构造
+    ``httpx2.AsyncClient`` —— 顺手把「握手超时」与「单次调用超时」分开：客户端超时取
+    ``timeout_seconds``，``initialize`` 另受 ``connect_timeout_seconds`` 约束。
     """
     import httpx2
     from mcp.client.streamable_http import streamable_http_client

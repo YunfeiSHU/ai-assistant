@@ -1,19 +1,16 @@
 """工具层的类型与基类（契约见 ``docs/04-Agent与工具调用.md`` §2 / §3）。
 
-这一层刻意**不依赖 LLM**：工具的 Schema 校验、超时、并发、截断、SSRF 防护
-全都能在不启动模型的情况下单测。Agent Loop 只依赖这里的抽象。
+这一层刻意**不依赖 LLM**：Schema 校验、超时、并发、截断、SSRF 防护全都能在不启动模型的情况下
+单测，Agent Loop 只依赖这里的抽象。
 
 三个关键设计：
 
-1. **`parameters` 由 pydantic 输入模型生成**（:func:`json_schema_of`），
-   不手写第二份 JSON Schema。「校验用的 schema」与「发给上游的 schema」必须是同一份，
-   否则迟早出现「模型按 schema 传参、我们按另一份校验」的错位。
-2. **工具产出结构化 ``payload``，不产出渲染好的文本**。引用编号需要**全局**
-   分配（同一次 Agent 运行里第一个片段永远是 ``[1]``），而工具看不到全局状态，
-   所以渲染与编号由 Agent Loop 负责（见 ``app/agent/loop.py``）。
-3. **参数校验失败是一种「可回复的工具结果」**，不是异常：它必须回注给模型让它改参数
-   重试（``REQ-AGENT-006``）。所以 :class:`ToolArgumentError` 由执行器捕获并转成
-   ``invalid_arguments``，而不是冒泡成 500。
+1. **``parameters`` 由 pydantic 输入模型生成**（:func:`json_schema_of`），不手写第二份 JSON Schema
+   —— 「校验用的 schema」与「发给上游的 schema」必须是同一份。
+2. **工具产出结构化 ``payload``，不产出渲染好的文本**：引用编号需要全局分配（同一次 Agent 运行里
+   第一个片段永远是 ``[1]``），而工具看不到全局状态，所以渲染与编号由 Agent Loop 负责。
+3. **参数校验失败是一种「可回复的工具结果」**，不是异常：它必须回注给模型让它改参数重试
+   （``REQ-AGENT-006``），所以 :class:`ToolArgumentError` 由执行器捕获并转成 ``invalid_arguments``。
 """
 
 from __future__ import annotations
@@ -56,8 +53,8 @@ SUMMARY_MAX_CHARS = 500
 def namespace_tool(server: str, tool: str) -> str:
     """把 MCP 工具命名空间化为 ``mcp__{server}__{tool}``。
 
-    ``-`` / ``.`` 一律替换为 ``_``：它们合法出现在 MCP server 名里，
-    但不被上游 function name 规则接受。
+    ``-`` / ``.`` 一律替换为 ``_``：它们合法出现在 MCP server 名里，但不被上游
+    function name 规则接受。
     """
     safe_server = re.sub(r"[^a-zA-Z0-9_]", "_", server)
     safe_tool = re.sub(r"[^a-zA-Z0-9_]", "_", tool)
@@ -67,8 +64,8 @@ def namespace_tool(server: str, tool: str) -> str:
 def json_schema_of(model: type[BaseModel]) -> dict[str, Any]:
     """由 pydantic 模型生成上游可用的 JSON Schema。
 
-    删掉 pydantic 自动补的 ``title``：它们对模型没有信息量，却会占掉可观的 token
-    （每个字段一行），而且有些上游网关对 schema 里的未知关键字比较敏感。
+    删掉 pydantic 自动补的 ``title``：对模型没有信息量却会占掉可观的 token（每个字段一行），
+    而且有些上游网关对 schema 里的未知关键字比较敏感。
     """
     schema = model.model_json_schema()
     _strip_titles(schema)
@@ -88,8 +85,8 @@ def _strip_titles(node: Any) -> None:
 def clip(text: str, limit: int, *, marker: str = "…[truncated]") -> str:
     """按字符截断并留痕。
 
-    截断必须**有标记**：模型看到半截 JSON 会以为工具返回了坏数据，
-    看到标记才知道「还有更多，需要就换更窄的查询」。
+    截断必须有标记：模型看到半截 JSON 会以为工具返回了坏数据，看到标记才知道「还有更多，
+    需要就换更窄的查询」。
     """
     if limit <= 0 or len(text) <= limit:
         return text
@@ -99,8 +96,7 @@ def clip(text: str, limit: int, *, marker: str = "…[truncated]") -> str:
 class ToolArgumentError(ValueError):
     """参数不符合工具 Schema（``REQ-AGENT-006``）。
 
-    这是**可回复的错误**：执行器会把它转成 ``invalid_arguments`` 的工具结果，
-    让模型改参数重试，而不是让本次请求失败。
+    这是**可回复的错误**：执行器会把它转成 ``invalid_arguments`` 的工具结果，让模型改参数重试。
     """
 
     def __init__(self, message: str, detail: Any = None) -> None:
@@ -160,8 +156,8 @@ class ToolSpec:
 class ToolContext:
     """调用上下文。
 
-    ``user_id`` 是所有数据访问的隔离键：``kb_retrieve`` 必须应用与 ``/chat``
-    完全相同的隔离（``docs/04`` §3.1），否则工具会变成越权读取的入口。
+    ``user_id`` 是所有数据访问的隔离键：``kb_retrieve`` 必须应用与 ``/chat`` 完全相同的隔离
+    （``docs/04`` §3.1），否则工具会变成越权读取的入口。
     """
 
     user_id: str
@@ -180,8 +176,8 @@ class ToolContext:
 class ToolOutcome:
     """一次调用的结果。
 
-    ``payload`` 是**结构化**结果（回注给模型的 JSON）；``summary`` 是面向用户展示的
-    一句话摘要，不允许泄漏内部路径、连接串（``docs/04`` §4.3）。
+    ``payload`` 是结构化结果（回注给模型的 JSON）；``summary`` 是面向用户展示的一句话摘要，
+    不允许泄露内部路径、连接串（``docs/04`` §4.3）。
     """
 
     status: ToolStatus = "ok"
@@ -231,8 +227,8 @@ class BuiltinTool(ABC):
     """内置工具的基类。
 
     子类只需声明 ``name`` / ``description`` / ``input_model`` 并实现 :meth:`run`。
-    Schema、参数校验、描述长度校验都由基类统一处理 —— 让 5 个工具各自写一遍
-    参数校验，就一定会有一个写错。
+    Schema、参数校验、描述长度校验都由基类统一处理 —— 让 5 个工具各自写一遍参数校验，
+    就一定会有一个写错。
     """
 
     #: 工具名（必须匹配 :data:`TOOL_NAME_PATTERN`）
@@ -284,9 +280,8 @@ class BuiltinTool(ABC):
     async def invoke(self, arguments: dict[str, Any], ctx: ToolContext) -> ToolOutcome:
         """校验后执行。
 
-        这里做了两次 ``model_validate``（一次在本方法，一次在 :meth:`validate`）——
-        参数是几字段的小 dict，开销可忽略；换来的是「直接调用 ``invoke`` 也安全」
-        这个性质，执行器与调试接口不必都记得先校验。
+        这里做了两次 ``model_validate``（一次在本方法、一次在 :meth:`validate`）—— 参数是几字段的
+        小 dict，开销可忽略；换来的是「直接调用 ``invoke`` 也安全」。
         """
         validated = self.validate(arguments)
         return await self.run(self.input_model.model_validate(validated), ctx)
@@ -314,9 +309,9 @@ def _clean_errors(errors: Sequence[Any]) -> list[dict[str, Any]]:
 def _describe(errors: list[dict[str, Any]], *, limit: int = 3) -> str:
     """把校验错误压成一句话，作为 ``ToolArgumentError.message``。
 
-    为什么要拼进 message 而不是只放在 ``detail`` 里：上游模型只看得到 ``message``
-    （``detail`` 是结构化字段，很多上游会把它截掉）。把「哪个字段、错在哪」写进
-    message，模型才有可能一次改对参数——否则它只会看到「参数不符合 Schema」并原样重试。
+    为什么拼进 message 而不只放 ``detail``：上游模型只看得到 ``message``（``detail`` 是结构化
+    字段，很多上游会把它截掉）。把「哪个字段、错在哪」写进 message，模型才有可能一次改对参数 ——
+    否则它只会看到「参数不符合 Schema」并原样重试。
     """
     if not errors:
         return "参数不符合工具 Schema"
@@ -333,8 +328,8 @@ def _describe(errors: list[dict[str, Any]], *, limit: int = 3) -> str:
 def payload_summary(payload: dict[str, Any], *, limit: int = SUMMARY_MAX_CHARS) -> str:
     """默认摘要：JSON 文本截断。
 
-    子类可以覆写成更友好的一句话（如 ``kb_retrieve`` 的「命中 3 个片段」）——
-    但默认值必须是 JSON 而不是空串，否则日志里只有「调用过」，没有「拿到了什么」。
+    子类可以覆写成更友好的一句话（如 ``kb_retrieve`` 的「命中 3 个片段」），但默认值必须是
+    JSON 而不是空串，否则日志里只有「调用过」，没有「拿到了什么」。
     """
     return clip(json.dumps(payload, ensure_ascii=False, default=str), limit)
 

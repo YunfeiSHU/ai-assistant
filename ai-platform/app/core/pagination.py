@@ -1,10 +1,8 @@
-"""游标分页的编解码。
+"""游标分页的编解码（契约见 ``docs/02-接口规范与错误码.md`` §7.1）。
 
-契约见 ``docs/02-接口规范与错误码.md`` §7.1：游标对客户端**不透明**，
-服务端用 ``(created_at, id)`` 二元组编码，保证同一时间戳下不漏不重。
-
-为什么不用 offset：offset 分页在「边翻页边插入」时会重复或漏项，而本项目
-的文档 / 任务 / 记忆列表天然会被后台任务持续写入。
+游标对客户端不透明，服务端用 ``(created_at, id)`` 二元组编码，保证同一时间戳下不漏不重。
+不用 offset：offset 分页在「边翻页边插入」时会重复或漏项，而本项目的文档 / 任务 /
+记忆列表天然会被后台任务持续写入。
 """
 
 from __future__ import annotations
@@ -21,11 +19,10 @@ _SEPARATOR = "|"
 def parse_stamp(value: str | datetime) -> datetime:
     """把实体里的时间戳（``...Z`` / ISO 字符串 / ``datetime``）统一成带时区 ``datetime``。
 
-    存在的理由：**时间戳一旦当字符串比较就会出错**。
-    ``"2026-09-28T09:15:45.604Z"`` 与 ``"2026-09-28T09:15:45+00:00"`` 表示同一时刻，
-    字符串比较却在第 20 个字符处按 ``'.' > '+'`` 判出先后；``decode_cursor`` 解出来的是
-    ``datetime``，随手 ``isoformat()`` 成字符串再比，就会把**同一毫秒创建的记录全部判为
-    「已经翻过去了」**——列表翻页静默丢数据，而且不报任何错。
+    必须归一：时间戳当字符串比较就会出错。``"2026-09-28T09:15:45.604Z"`` 与
+    ``"2026-09-28T09:15:45+00:00"`` 是同一时刻，字符串比较却在第 20 个字符处
+    按 ``'.' > '+'`` 判出先后 —— 把同一毫秒创建的记录全部判为「已翻过去了」，
+    列表静默丢数据且不报错。
     """
     if isinstance(value, datetime):
         moment = value
@@ -37,7 +34,7 @@ def parse_stamp(value: str | datetime) -> datetime:
 def encode_cursor(created_at: datetime | str, resource_id: str) -> str:
     """把 ``(created_at, id)`` 编码为不透明游标。
 
-    入参是 ``datetime`` 还是字符串都先经 :func:`parse_stamp` 归一 —— 否则同一个位置
+    入参是 ``datetime`` 还是字符串都先经 :func:`parse_stamp` 归一，否则同一位置
     会随入参类型产出两条不同的游标串，排查时会误以为「位置变了」。
     """
     stamp = parse_stamp(created_at).isoformat()
@@ -72,9 +69,8 @@ def decode_cursor(cursor: str) -> tuple[datetime, str]:
 def cursor_position(created_at: str | datetime, resource_id: str) -> tuple[datetime, str]:
     """列表排序与游标比较的统一键 ``(created_at, id)``。
 
-    两个用途必须是**同一个键**：排序用它、游标比较也用它，否则会出现
-    「排序按秒、比较按毫秒」这类错位。同一时间戳下用 ``id`` 兜底，
-    保证顺序稳定（Windows 上 ``time.Now`` 粒度本来就粗）。
+    排序与游标比较必须是同一个键，否则会出现「排序按秒、比较按毫秒」这类错位。
+    同一时间戳下用 ``id`` 兜底保证顺序稳定（Windows 上 ``time.Now`` 粒度本来就粗）。
     """
     return parse_stamp(created_at), resource_id
 

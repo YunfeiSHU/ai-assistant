@@ -1,13 +1,8 @@
 // 保留期清理与每日对账（docs/05-§5、docs/02-§5.2）。
 //
-// 这一组动作有一个共同的特征：**它们都只能"最终一致"**。
-// 清理晚一天没关系，对账晚一小时也没关系，但任何一条「跑失败了却当成功」
-// 都会累积成不可逆的数据问题（保留期违规、账目长期偏差）。因此：
-//
-//   - 每一步都独立执行、独立记日志，一步失败不影响下一步；
-//   - 返回一份 `RetentionReport`，让调用方（与运维）能看见每一类的实际行数 ——
-//     「跑了但什么都没删」和「没跑」在日志里必须能区分开；
-//   - 时间窗口全部用**注入的时钟**计算，便于单测断言「保留 90 天」这类边界。
+// 这一组动作只能「最终一致」：晚一天没关系，但「跑失败了却当成功」会累积成
+// 不可逆的数据问题。因此每一步独立执行/记日志，返回 `RetentionReport` 让
+// 「跑了但什么都没删」与「没跑」在日志里可区分；时间窗口全用注入时钟，便于单测边界。
 package biz
 
 import (
@@ -18,10 +13,8 @@ import (
 )
 
 // RetentionRepo 是保留期清理所需的数据库动作。
-//
-// 刻意声明成「按类别的删除」而不是一个通用 `Delete(table, cond)`：
-// 通用删除会让「哪些表可以被定时任务删」这个决定散落在调用点，
-// 而这里的每一类都有明确的保留期依据（docs/05-§5）。
+// 声明成「按类别的删除」而非通用 `Delete(table, cond)`：后者会让「哪些表可被
+// 定时任务删」散落在调用点，而每类删除都有明确的保留期依据（docs/05-§5）。
 type RetentionRepo interface {
 	// PurgeDeletedConversations 物理清理软删超过保留期的会话（含其消息，分批）。
 	PurgeDeletedConversations(ctx context.Context, before time.Time, limit int) (int64, error)
@@ -32,9 +25,7 @@ type RetentionRepo interface {
 }
 
 // UsagePurger 清理过期的用量明细（实现是 M5 的 QuotaService）。
-//
-// 窄接口而不是直接依赖 `*QuotaService`：清理任务只需要「按时间删」这一件事，
-// 把它绑到整个配额服务上会让本模块的单测必须构造一个完整的配额服务。
+// 用窄接口而非 `*QuotaService`：清理任务只需要「按时间删」，免得单测构造整个配额服务。
 type UsagePurger interface {
 	PurgeUsageBefore(ctx context.Context, before time.Time, limit int) (int64, error)
 }
@@ -57,10 +48,8 @@ const (
 	UsageRetentionDaysDefault = 90
 	// AuditRetentionDays 是审计日志的保留天数下限（≥180）。
 	AuditRetentionDays = 180
-	// retentionBatchLimit 是单次删除的批大小。
-	//
-	// 分批而不是 `DELETE ... LIMIT` 不限量：一次删几十万行会长时间持有行锁，
-	// 而这张库同时还在服务在线请求（表现为「清理任务一跑，接口就抖动」）。
+	// retentionBatchLimit 是单次删除的批大小。分批以免一次删几十万行长时间持锁
+	//（表现为「清理任务一跑，接口就抖动」）。
 	retentionBatchLimit = 1000
 	// reconcileBatchLimit 是每日重建单轮处理的用户数上限。
 	reconcileBatchLimit = 5000
@@ -127,9 +116,7 @@ func NewRetentionService(d RetentionDeps) *RetentionService {
 }
 
 // RetentionReport 是一次清理的实际结果（每一项都是行数）。
-//
-// 用具体字段而不是 `map[string]int64`：日志与告警要按字段名引用，
-// map 的键拼错是编译期发现不了的（而这里拼错的表现是「面板上少一条曲线」）。
+// 用具体字段而非 `map[string]int64`：日志/告警按字段名引用，map 键拼错编译期发现不了。
 type RetentionReport struct {
 	Conversations   int64
 	UsageRecords    int64
@@ -138,12 +125,9 @@ type RetentionReport struct {
 	OrphanMessages  int64
 }
 
-// Start 启动后台循环（两个：每小时的「到点了吗」检查，与对账/清理本身）。
-//
-// 不引入第三方调度库：需要的只是「每天在某个整点跑一次」，
-// 而 `time.Ticker` + 一个「今天跑过了吗」的字符串比较就够了 ——
-// 引入 cron 表达式解析会让「跑一次」变成「按一个配置字符串跑」，
-// 而那个字符串写错时的表现是**静默不跑**。
+// Start 启动后台循环（每小时的「到点了吗」检查 + 对账/清理本身）。
+// 不引入 cron 库：`time.Ticker` + 「今天跑过了吗」的字符串比较就够，
+// cron 表达式写错时的表现是静默不跑。
 func (s *RetentionService) Start(ctx context.Context) {
 	go s.loop(ctx)
 }
@@ -151,8 +135,7 @@ func (s *RetentionService) Start(ctx context.Context) {
 func (s *RetentionService) loop(ctx context.Context) {
 	ticker := time.NewTicker(s.d.CheckInterval)
 	defer ticker.Stop()
-	// 启动时先跑一次检查：否则在「进程存活不足一小时」的场景里
-	// （本地开发、滚动重启）任务永远不会被触发。
+	// 启动时先跑一次：否则「进程存活不足一小时」的场景（本地开发、滚动重启）永不触发。
 	s.tick(ctx)
 	for {
 		select {
@@ -169,9 +152,8 @@ func (s *RetentionService) tick(ctx context.Context) {
 	today := now.Format("2006-01-02")
 
 	if now.Hour() == s.d.RebuildHour && s.lastRebuildDay != today {
-		// 先记「今天跑过」，再执行：反过来的话，任务本身报错时会每分钟重试一次，
-		// 而重建是**以 MySQL 覆盖 Redis**——重复执行会把这一刻之后的
-		// 实时计数抹掉（用户刚发的那次请求凭空消失）。
+		// 先记「今天跑过」再执行：反过来时任务报错会每分钟重试，而重建是
+		//「以 MySQL 覆盖 Redis」——重复执行会抹掉之后的实时计数。
 		s.lastRebuildDay = today
 		s.rebuild(ctx, now)
 	}
@@ -183,10 +165,8 @@ func (s *RetentionService) tick(ctx context.Context) {
 	}
 }
 
-// RunOnce 执行一轮清理与一致性检查，返回各类的实际行数。
-//
-// 返回 error 只表示「一个都没跑成」（通常是数据库不可用）：
-// 单项失败会记 WARN 并继续 —— 会话清理失败不该阻止审计清理。
+// RunOnce 执行一轮清理与一致性检查。返回 error 只表示「一个都没跑成」（通常 DB 不可用）：
+// 单项失败记 WARN 并继续 —— 会话清理失败不该阻止审计清理。
 func (s *RetentionService) RunOnce(ctx context.Context) (RetentionReport, error) {
 	now := s.d.Clock().UTC()
 	var report RetentionReport
@@ -202,8 +182,7 @@ func (s *RetentionService) RunOnce(ctx context.Context) (RetentionReport, error)
 			ran++
 		}
 
-		// 幂等记录「过期即删」：它的过期时刻写在行里（`expires_at`），
-		// 所以传的是 `now` 而不是 now-N 天。
+		// 幂等记录「过期即删」：过期时刻写在行里（expires_at），故传 `now` 而非 now-N 天。
 		n, err = s.d.Repo.PurgeExpiredIdempotency(ctx, now, retentionBatchLimit)
 		if err != nil {
 			s.warn(ctx, "retention.idempotency_failed", err)
@@ -220,8 +199,7 @@ func (s *RetentionService) RunOnce(ctx context.Context) (RetentionReport, error)
 			report.OrphanMessages = orphans
 			s.d.Metrics.SetOrphanRows("message", orphans)
 			if orphans > 0 {
-				// ERROR 而不是 WARN：孤儿行的成因一定是某个逻辑缺陷
-				// （有人绕过仓储删了会话），它不是「正常的数据演化」。
+				// ERROR 而非 WARN：孤儿行一定是逻辑缺陷（绕过仓储删了会话），不是正常数据演化。
 				s.log().ErrorContext(ctx, "retention.orphan_rows",
 					slog.String("table", "message"),
 					slog.Int64("rows", orphans),
@@ -266,9 +244,7 @@ func (s *RetentionService) RunOnce(ctx context.Context) (RetentionReport, error)
 	return report, nil
 }
 
-// Rebuild 以 MySQL 为准重建 Redis 计数（docs/02-§5.2 的「权威性」一条）。
-//
-// 返回重建的用户数；未接线配额时返回 (0, nil) —— 「没配」不是错误。
+// Rebuild 以 MySQL 为准重建 Redis 计数（docs/02-§5.2）。未接线配额时返回 (0, nil)。
 func (s *RetentionService) Rebuild(ctx context.Context, at time.Time) (int, error) {
 	if s.d.Quota == nil {
 		return 0, nil

@@ -1,12 +1,11 @@
 """RAG 存储端口（KB / 文档 / 切片 / 对象存储）。
 
-**为什么先定端口再写实现**：``docs/09`` §2 已经把六张表的结构定死了，但 M3 的
-出口标准是「S2、S4 跑通」，本地不一定有 MySQL / MinIO。端口 + 内存实现让整条
-入库与检索链路**在没有任何容器的情况下可跑、可测**；等接真库时只换实现，
-业务代码一行不动。
+**先定端口再写实现**：``docs/09`` §2 已经把六张表的结构定死，但 M3 的出口标准是「S2、S4
+跑通」，本地不一定有 MySQL / MinIO。端口 + 内存实现让整条入库与检索链路在没有任何容器的
+情况下可跑、可测；等接真库时只换实现，业务代码一行不动。
 
-字段与 ``docs/09`` 的 DDL **逐列对齐**（含软删列与计数列），这样 SQL 实现是
-机械翻译，不会出现「内存版没这个概念、SQL 版多一列」的语义漂移。
+字段与 ``docs/09`` 的 DDL **逐列对齐**（含软删列与计数列），这样 SQL 实现是机械翻译，不会
+出现「内存版没这个概念、SQL 版多一列」的语义漂移。
 """
 
 from __future__ import annotations
@@ -15,9 +14,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
-# 两个仓储都有名为 ``list`` 的方法，会在类作用域里遮蔽内建 ``list``，
-# 导致返回注解 `list[X]` 被当成方法对象（mypy: not valid as a type）。
-# 这里在**模块级**定义别名（此时 ``list`` 还是内建），实体名用前向引用字符串。
+# 两个仓储都有名为 ``list`` 的方法，会在类作用域里遮蔽内建 ``list``，导致返回注解
+# ``list[X]`` 被当成方法对象（mypy: not valid as a type）。所以在模块级定义别名。
 _KBPage = tuple[list["KnowledgeBase"], bool]
 _DocumentPage = tuple[list["Document"], bool]
 _Documents = list["Document"]
@@ -88,15 +86,13 @@ class Document:
     page_count: int | None = None
     chunk_count: int = 0
     char_count: int = 0
-    #: 切分器产出的切片数（**截断前**）。``chunk_count`` 是实际入库数，
-    #: 两者不等就说明被 ``MAX_DOC_CHUNKS`` 截断了（见 ``truncated``）。
-    #: ``None`` = 还没走到切分（PENDING/PARSING），而不是「0 片」。
+    #: 切分器产出的切片数（**截断前**）。``chunk_count`` 是实际入库数，两者不等就说明被
+    #: ``MAX_DOC_CHUNKS`` 截断了。``None`` = 还没走到切分（PENDING/PARSING），而不是「0 片」。
     chunks_total: int | None = None
     #: 是否因 ``MAX_DOC_CHUNKS`` 丢弃了尾部切片。
     #:
-    #: 这是**必须让调用方看见**的事实：8MB 测试正文实测切出 16,969 片、只入库
-    #: 10,000 片（丢 41% 正文），而截断前只打了一条 warning、接口照旧 202 ——
-    #: 「入库成功」因此是假的（见 ``docs/10`` 的 UP-01）。
+    #: 这是**必须让调用方看见**的事实：8MB 测试正文实测切出 16,969 片、只入库 10,000 片
+    #: （丢 41% 正文），而截断前只打了一条 warning、接口照旧 202 —— 「入库成功」因此是假的。
     truncated: bool = False
     chunk_size: int = 512
     chunk_overlap: int = 64
@@ -199,10 +195,10 @@ class KnowledgeBaseRepo(Protocol):
     async def get_internal(self, kb_id: str) -> KnowledgeBase | None:
         """**不过滤 ``user_id``** 的读取，仅供 Worker 内部维护计数与状态。
 
-        为什么必须单独开一个方法：Worker 手里只有 ``kb_id``（来自任务载荷），没有
-        发起人的 ``user_id``。若让它拿某个哨兵值去调带隔离的 ``get``，会得到一个
-        永久的「找不到」，于是计数永远更新不了——而且不报错。把「内部访问」显式
-        命名出来，代码审阅时一眼能看出这是刻意绕过隔离，而不是写错了。
+        必须单独开一个方法：Worker 手里只有 ``kb_id``（来自任务载荷），没有发起人的
+        ``user_id``。若让它拿某个哨兵值去调带隔离的 ``get``，会得到一个永久的「找不到」，
+        于是计数永远更新不了 —— 而且不报错。把「内部访问」显式命名出来，代码审阅时一眼
+        能看出这是刻意绕过隔离，而不是写错了。
         """
         ...
 
@@ -275,8 +271,8 @@ class ChunkRepo(Protocol):
     async def replace_for_document(self, doc_id: str, chunks: Sequence[Chunk]) -> int:
         """用给定切片**整体替换**该文档的切片，返回写入条数。
 
-        整体替换（而不是增量追加）是为了让「重跑入库任务」天然幂等：
-        ``docs/09`` §6 要求重试可幂等补齐，增量写会留下重复行。
+        整体替换（而不是增量追加）是为了让「重跑入库任务」天然幂等：``docs/09`` §6 要求重试
+        可幂等补齐，增量写会留下重复行。
         """
         ...
 
@@ -303,8 +299,8 @@ class ChunkRepo(Protocol):
 class RagRepositories:
     """三个仓储的组合，便于整体注入。
 
-    不把三个仓储塞进一个大接口：SQL 实现会按表拆分（各自的 SQL 不同），而内存
-    实现共享一份状态。组合类型让两种实现都能自然满足调用方需求。
+    不把三个仓储塞进一个大接口：SQL 实现会按表拆分（各自的 SQL 不同），而内存实现共享一份
+    状态。组合类型让两种实现都能自然满足调用方需求。
     """
 
     knowledge_bases: KnowledgeBaseRepo
@@ -336,8 +332,8 @@ class ObjectStore(Protocol):
 def build_object_key(user_id: str, kb_id: str, doc_id: str, filename: str) -> str:
     """拼对象路径：``{user_id}/{kb_id}/{doc_id}/{sanitized_filename}``。
 
-    文件名清洗是**安全要求**而不只是整洁（``AC-DATA-05``）：``../`` 必须被剥掉，
-    否则上传可以写到别人的目录里去。
+    文件名清洗是安全要求而不只是整洁（``AC-DATA-05``）：``../`` 必须被剥掉，否则上传可以
+    写到别人的目录里去。
     """
     return f"{user_id}/{kb_id}/{doc_id}/{sanitize_filename(filename)}"
 

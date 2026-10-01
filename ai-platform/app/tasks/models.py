@@ -1,9 +1,8 @@
 """异步任务模型与状态机（契约见 ``docs/08-异步任务.md`` §2 / §3）。
 
-状态机是这一层的核心价值：任务状态被多处代码改（接口建任务、Runner 投递、
-Worker 领取、进度上报、重试、取消），如果每个调用点自己判断「现在该不该改」，
-迟早出现「已 SUCCEEDED 的任务被改成 FAILED」这种脏数据。
-所以允许的迁移集中成一张表，非法迁移一律抛错。
+任务状态被多处代码改（接口建任务、Runner 投递、Worker 领取、进度上报、重试、取消），
+如果每个调用点自己判断「现在该不该改」，迟早出现「已 SUCCEEDED 的任务被改成 FAILED」
+这种脏数据。所以允许的迁移集中成一张表，非法迁移一律抛错。
 """
 
 from __future__ import annotations
@@ -50,22 +49,22 @@ class ResourceType(StrEnum):
 #: 终态：不可再变更（``FAILED`` 不算 —— 它还能重试回 ``QUEUED``）
 TERMINAL_STATUSES: frozenset[TaskStatus] = frozenset({TaskStatus.SUCCEEDED, TaskStatus.CANCELED})
 
-#: 「在飞」状态：还在流程里（未到终态也**不是** ``FAILED``）。
+#: 「在飞」状态：还在流程里（未到终态也不是 ``FAILED``）。
 #:
-#: 与 :data:`TERMINAL_STATUSES` 的区别很重要：``FAILED`` 从状态机看是「未终结」
-#: （能重试），但它**不在队列里**。用过载判断（``INGEST_QUEUE_MAX``）或补偿扫描时
-#: 把它算进去，会出现「攒了一堆失败任务 → 新上传被 503 拦住」这种自相矛盾的行为。
+#: 与 :data:`TERMINAL_STATUSES` 的区别很重要：``FAILED`` 从状态机看是「未终结」（能重试），
+#: 但它不在队列里。用过载判断（``INGEST_QUEUE_MAX``）或补偿扫描时把它算进去，会出现
+#: 「攒了一堆失败任务 → 新上传被 503 拦住」这种自相矛盾的行为。
 ACTIVE_STATUSES: frozenset[TaskStatus] = frozenset(
     {TaskStatus.PENDING, TaskStatus.QUEUED, TaskStatus.RUNNING}
 )
 
-#: 允许的状态迁移。刻意用显式白名单而不是「判断是否终态」：
-#: 后者表达不了「FAILED 只能回 QUEUED」这类约束。
+#: 允许的状态迁移。刻意用显式白名单而不是「判断是否终态」：后者表达不了
+#: 「FAILED 只能回 QUEUED」这类约束。
 #:
-#: ``PENDING → FAILED`` 是**投递补偿**路径专用（``docs/08`` §5.1：「重投 3 次仍失败
-#: → FAILED + MQ_UNAVAILABLE」）。它不在 §2 的状态图里，但 §5.1 的验收要求必须
-#: 有这条边 —— 否则「永远投不出去的任务」只能停在 PENDING，而 PENDING 不是终态，
-#: 既不会被任何人处理，也不满足「要么成功、要么有一个可重试的失败」。
+#: ``PENDING → FAILED`` 是投递补偿路径专用（``docs/08`` §5.1：「重投 3 次仍失败 →
+#: FAILED + MQ_UNAVAILABLE」）。它不在 §2 的状态图里，但 §5.1 的验收要求必须有这条边
+#: —— 否则「永远投不出去的任务」只能停在 PENDING，而 PENDING 不是终态，既不会被任何人
+#: 处理，也不满足「要么成功、要么有一个可重试的失败」。
 ALLOWED_TRANSITIONS: dict[TaskStatus, frozenset[TaskStatus]] = {
     TaskStatus.PENDING: frozenset({TaskStatus.QUEUED, TaskStatus.CANCELED, TaskStatus.FAILED}),
     TaskStatus.QUEUED: frozenset({TaskStatus.RUNNING, TaskStatus.CANCELED}),
@@ -115,9 +114,9 @@ class Task:
     stage: str | None = None
     #: 切片总数（切分阶段一次算定）/ 已完成切片数（``docs/10`` UP-02）。
     #:
-    #: ``progress`` 是给进度条用的百分比，只能表达「阶段内的大致位置」；
-    #: 这两个计数才能回答「还要多久」，并让「截断」在**任务侧**也可验证：
-    #: ``chunks_total`` 与文档的 ``chunk_count`` 不等即为被 ``MAX_DOC_CHUNKS`` 截断。
+    #: ``progress`` 是给进度条用的百分比，只能表达「阶段内的大致位置」；这两个计数才能回答
+    #: 「还要多久」，并让「截断」在任务侧也可验证：``chunks_total`` 与文档的 ``chunk_count``
+    #: 不等即为被 ``MAX_DOC_CHUNKS`` 截断。
     chunks_total: int = 0
     chunks_done: int = 0
     retry_count: int = 0
@@ -177,8 +176,8 @@ class Task:
 def ensure_transition(task: Task, target: TaskStatus) -> None:
     """校验状态迁移是否合法。
 
-    非法迁移抛 ``409 CONFLICT``：这是**调用方用错了状态机**，不是服务器错误，
-    但也不该被静默忽略（静默忽略会让「任务卡在 RUNNING」这类问题无从排查）。
+    非法迁移抛 ``409 CONFLICT``：这是调用方用错了状态机，不是服务器错误，但也不该被静默
+    忽略（静默忽略会让「任务卡在 RUNNING」这类问题无从排查）。
     """
     if target not in ALLOWED_TRANSITIONS[task.status]:
         raise AppError(
