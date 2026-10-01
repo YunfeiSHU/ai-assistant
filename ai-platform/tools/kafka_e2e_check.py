@@ -34,8 +34,8 @@ import os
 import sys
 import time
 
-from app.config import Settings
-from app.core.errors import AppError
+from app.core.config import Settings
+from app.core.exceptions import AppError
 from app.core.logging import setup_logging
 from app.tasks.events import TaskEvent, TaskEventBus, build_task_event_bus, make_publisher
 from app.tasks.models import ResourceType, TaskStatus, TaskType

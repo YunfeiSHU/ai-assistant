@@ -55,3 +55,7 @@ Thumbs.db
 # ---------- 日志 ----------
 *.log
 logs/
+
+
+Python项目代码调整规范.md
+.vscode

@@ -92,8 +92,13 @@ CREATE TABLE IF NOT EXISTS `document` (
   `object_key`     VARCHAR(1024) NOT NULL COMMENT 'MinIO key',
   `content_sha256` CHAR(64)      NOT NULL,
   `status`         VARCHAR(16)   NOT NULL COMMENT 'PENDING|PARSING|CHUNKING|EMBEDDING|INDEXED|FAILED',
+  -- chunk_count = 实际入库数；chunks_total = 切分产出数（截断前）。
+  -- 两者不等（且 truncated=1）就是「被 MAX_DOC_CHUNKS 截断了」——
+  -- 静默截断会让「入库成功」变成假的（docs/10 的 UP-01）。
   `chunk_count`    INT           NOT NULL DEFAULT 0,
   `char_count`     INT           NOT NULL DEFAULT 0,
+  `chunks_total`   INT           NULL COMMENT '切分产出切片数（截断前）；NULL=还没走到切分',
+  `truncated`      TINYINT(1)    NOT NULL DEFAULT 0 COMMENT '是否因 MAX_DOC_CHUNKS 丢弃尾部切片',
   `chunk_size`     INT           NOT NULL,
   `chunk_overlap`  INT           NOT NULL,
   `task_id`        VARCHAR(32)   NULL,
@@ -158,6 +163,13 @@ CREATE TABLE IF NOT EXISTS `task` (
   `payload`       JSON         NULL,
   `progress`      SMALLINT     NOT NULL DEFAULT 0,
   `stage`         VARCHAR(32)  NULL,
+  -- 切片计数（docs/10 UP-02）：进度条的分母/分子。
+  -- 只对 document_ingest / kb_reindex 类任务有意义，其他类型恒为 0。
+  -- 注：当前任务仓储的实现在 Redis（app/tasks/redis_store.py），这两列是为
+  -- 「换回 MySQL 权威存储」预留的；加在这里是为了避免「代码有字段、DDL 没列」的
+  -- 漂移（历史上已因同一原因补过一次 document_chunk.metadata）。
+  `chunks_total`  INT          NOT NULL DEFAULT 0 COMMENT '本次待向量化切片数（截断后）',
+  `chunks_done`   INT          NOT NULL DEFAULT 0 COMMENT '已完成向量化的切片数',
   `retry_count`   INT          NOT NULL DEFAULT 0,
   `max_retries`   INT          NOT NULL DEFAULT 3,
   `version`       BIGINT       NOT NULL DEFAULT 0 COMMENT '乐观锁',
