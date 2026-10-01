@@ -8,6 +8,7 @@ dependencies = [
     "beautifulsoup4>=4.15.0",
     "fastapi>=0.141.1",
     "flagembedding>=1.4.2",
+    "grpcio>=1.84.0",
     "langchain>=1.4.2",
     "langchain-community>=0.4.2",
     "langchain-milvus>=0.4.0",
@@ -53,6 +54,7 @@ packages = ["app"]
 
 [dependency-groups]
 dev = [
+    "grpcio-tools>=1.84.0",
     "mypy>=2.3.1",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
@@ -64,6 +66,15 @@ dev = [
 line-length = 100
 target-version = "py312"
 src = ["app"]
+# 两类文件不参与 lint / format：
+#   1) protobuf 生成物（由 tools/gen_grpc_stubs.ps1 重新生成）—— 格式化会在下次生成时被覆盖；
+#   2) Markdown 文档 —— ruff 0.16 起会连同其中的 Python 代码块一起格式化，属文档示例而非源码。
+extend-exclude = [
+    "**/*_pb2.py",
+    "**/*_pb2.pyi",
+    "**/*_pb2_grpc.py",
+    "**/*.md",
+]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "RUF"]
