@@ -1,19 +1,15 @@
 """任务投递器：把「建好任务」变成「任务被执行」（``docs/08`` §1 / §2）。
 
-三种模式对应三种真实部署形态，而不是三个复杂度档位：
+三种模式对应三种真实部署形态：``none``（只建任务不执行，本地只调接口或用测试断言
+「任务已创建、但向量尚未写入」时用，``AC-RAG-04``）、``inline``（进程内后台任务，本地单进程
+开发用）、``kafka``（投递到 Kafka 由独立 Worker 消费，生产形态）。
 
-* ``none``   —— 只建任务、不执行。Worker 未部署（本地只调接口）或测试要断言
-  「任务已创建、但向量尚未写入」时用（``AC-RAG-04``）。
-* ``inline`` —— 进程内后台任务。本地单进程开发用，避免为了跑通入库还要起 Kafka。
-* ``kafka``  —— 投递到 Kafka，由独立 Worker 消费（``python -m app.worker``）。生产形态。
+投递与状态的关系：``PENDING → QUEUED`` 必须发生在「任务行已提交」且「消息已投递成功」之后
+（``docs/08`` §2）。顺序反了会出现两种数据不一致 —— 消息已发出但任务行还没提交（Worker 查不到
+任务），或任务标记为 QUEUED 但消息发送失败（任务永远卡住、没有 Worker 会捡它）。
 
-**投递与状态的关系**：``PENDING → QUEUED`` 必须发生在「任务行已提交」**且**
-「消息已投递成功」之后（``docs/08`` §2）。顺序反了会出现两种数据不一致——
-消息已发出但任务行还没提交（Worker 查不到任务），或任务标记为 QUEUED 但消息
-发送失败（任务永远卡住、没有 Worker 会捡它）。
-
-**投递失败不能只是把错误抛给用户**：抛 ``503 MQ_UNAVAILABLE`` 之后任务仍是
-``PENDING``，它不会自己好起来 —— 所以 ``TASK_RUNNER=kafka`` 时应用 MUST 同时跑
+投递失败不能只是把错误抛给用户：抛 ``503 MQ_UNAVAILABLE`` 之后任务仍是 ``PENDING``，它不会
+自己好起来 —— 所以 ``TASK_RUNNER=kafka`` 时应用 MUST 同时跑
 :class:`~app.tasks.compensation.TaskCompensator`（``docs/08`` §5.1）。
 """
 
@@ -79,11 +75,10 @@ class InlineTaskRunner:
     async def submit(self, task: Task) -> None:
         """确保任务被执行（幂等，同一任务不会在本进程内重复跑）。
 
-        状态门限刻意是 ``PENDING | QUEUED`` 而不是只允许 ``PENDING``：
-        ``docs/08`` §4.4 要求重试时先置 ``QUEUED`` 再投递，于是投递时任务已经是
-        ``QUEUED``。只收 ``PENDING`` 会把重试的任务静默跳过——接口返回 200、
-        状态是 ``QUEUED``、日志也没有异常，但没有任何东西会执行它。
-        真正要挡住的是「已在执行 / 已终态」与「重复投递」。
+        状态门限刻意是 ``PENDING | QUEUED`` 而不是只允许 ``PENDING``：``docs/08`` §4.4 要求
+        重试时先置 ``QUEUED`` 再投递，于是投递时任务已经是 ``QUEUED``。只收 ``PENDING`` 会把
+        重试的任务静默跳过 —— 接口返回 200、状态是 ``QUEUED``、日志也没有异常，但没有任何东西
+        会执行它。真正要挡住的是「已在执行 / 已终态」与「重复投递」。
         """
         current = await self._tasks.get(task.id)
         if current.status not in (TaskStatus.PENDING, TaskStatus.QUEUED):
@@ -131,7 +126,7 @@ class InlineTaskRunner:
             logger.warning("task.runner_failed", extra={"task_id": task_id, "error": str(exc)})
         finally:
             self._inflight.discard(task_id)
-            # 指标只在得到**终态**时记（``docs/10`` §5.2：``ai_task_total`` 是终态计数）。
+            # 指标只在得到终态时记（``docs/10`` §5.2：``ai_task_total`` 是终态计数）。
             # canceled 也会走到这里：它同样是「一次任务结束了」，只是结果不同。
             if status not in {"unknown", str(TaskStatus.PENDING), str(TaskStatus.RUNNING)}:
                 get_metrics().record_task(
@@ -156,12 +151,11 @@ class InlineTaskRunner:
 class KafkaTaskRunner:
     """投递到 Kafka（``TASK_RUNNER=kafka``，``docs/09`` §5.2）。
 
-    只做两件事，顺序固定：**先确认消息落地，再改状态**。反过来的话，「标记为
-    QUEUED 但消息没发出去」的任务会一直等着一个不存在的消息，而补偿扫描要等
-    ``grace_seconds`` 之后才会救它。
+    只做两件事，顺序固定：先确认消息落地，再改状态。反过来的话，「标记为 QUEUED 但消息没
+    发出去」的任务会一直等着一个不存在的消息，而补偿扫描要等 ``grace_seconds`` 之后才会救它。
 
-    主题与分区键的推导在 :mod:`app.tasks.transport`（连同「消息体只含
-    ``task_id`` + ``attempt``」这条约定一起单测）。
+    主题与分区键的推导在 :mod:`app.tasks.transport`（连同「消息体只含 ``task_id`` +
+    ``attempt``」这条约定一起单测）。
     """
 
     def __init__(self, tasks: TaskService, producer: TaskProducer) -> None:
@@ -192,9 +186,8 @@ def build_task_runner(
 ) -> TaskRunner:
     """按 ``TASK_RUNNER`` 选择投递方式。
 
-    ``producer`` 允许注入：契约/单测要用一个「不落地的生产者」断言投递顺序与
-    投递失败语义，而不是真的起一个 Kafka（与 ``docs/11`` §3 里 MCP 用替身
-    替掉传输层是同一条纪律）。
+    ``producer`` 允许注入：契约/单测要用一个「不落地的生产者」断言投递顺序与投递失败语义，
+    而不是真的起一个 Kafka。
     """
     mode = settings.task_runner
     if mode == "kafka":
@@ -207,8 +200,8 @@ def build_task_runner(
 def require_kafka_runner(runner: TaskRunner) -> KafkaTaskRunner:
     """断言投递器是 Kafka 版（启动期用）。
 
-    写成一个函数而不是把 ``isinstance`` 散在各处：``TASK_RUNNER=kafka`` 却没装出
-    Kafka 投递器 = 任务永远不会被执行，这种事必须在启动期就炸出来。
+    写成一个函数而不是把 ``isinstance`` 散在各处：``TASK_RUNNER=kafka`` 却没装出 Kafka 投递器
+    = 任务永远不会被执行，这种事必须在启动期就炸出来。
     """
     if not isinstance(runner, KafkaTaskRunner):
         raise AppError(

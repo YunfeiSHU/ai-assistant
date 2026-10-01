@@ -1,20 +1,18 @@
 """任务消息传输层（Kafka 生产/消费端口，``docs/08`` §5.1 / ``docs/09`` §5.2）。
 
-**为什么把「消息长什么样」和「怎么发」分开**：``docs/09`` §5.2 有一条硬约束 ——
-消息体 MUST 只含 ``{"task_id": ..., "attempt": 1}``，业务参数一律从库里读。
-把它写成一个**可单测的编解码函数**，就能用一条断言钉住「有人顺手往消息里塞 payload」
-这件迟早会发生的事；塞进去之后的表现是「改了库里的参数但消息里还是老的」，
-而这种不一致靠读代码几乎发现不了。
+把「消息长什么样」和「怎么发」分开：``docs/09`` §5.2 硬约束消息体 MUST 只含
+``{"task_id": ..., "attempt": 1}``，业务参数一律从库里读。写成可单测的编解码函数，就能用
+一条断言钉住「有人顺手往消息里塞 payload」这件迟早会发生的事 —— 塞进去之后的表现是「改了
+库里的参数但消息里还是老的」，靠读代码几乎发现不了。
 
 三处容易被忽略的约定：
 
-* **主题名即任务类型**：``ai.task.<type>``。docs/09 §5.2 列出的四个主题与这个规则
-  完全一致，所以不必维护一张会漂移的映射表 —— 新增类型自动有确定的主题；
-* **分区键按类型分档**：``memory_extract`` 用 ``user_id``（同一用户的抽取必须串行，
-  否则两条消息并发 merge 同一行记忆），其余用 ``resource_id``；
-* **一次只取一条消息再提交 offset**：``commit()`` 提交的是「已返回记录的当前位置」，
-  一次取一批会让「前一条还没处理完就提交了后一条的位置」—— 那是 at-most-once，
-  会**静默丢任务**（``docs/08`` §5.4：offset 提交必须在状态落库之后）。
+* **主题名即任务类型**（``ai.task.<type>``）：docs/09 §5.2 列出的四个主题与这个规则完全一致，
+  所以直接推导而不查表 —— 查表漏一行的表现是「任务建好了但投到了不存在的主题」；
+* **分区键按类型分档**：``memory_extract`` 用 ``user_id``（同一用户的抽取必须串行，否则两条
+  消息并发 merge 同一行记忆），其余用 ``resource_id``；
+* **一次只取一条消息再提交 offset**：``commit()`` 提交的是「已返回记录的当前位置」，一次取一批
+  会让「前一条还没处理完就提交了后一条的位置」—— 那是 at-most-once，会**静默丢任务**。
 """
 
 from __future__ import annotations
@@ -45,9 +43,7 @@ def topic_for(type_: TaskType | str) -> str:
     """任务类型 → 主题名。
 
     ``docs/09`` §5.2 的四个主题（``ai.task.document_ingest`` / ``document_delete`` /
-    ``summary_build`` / ``memory_extract``）与 ``ai.task.<type>`` 完全一致，所以直接
-    推导而不是查表 —— 查表漏一行的表现是「任务建好了但投到了不存在的主题」，
-    而推导不可能漏。
+    ``summary_build`` / ``memory_extract``）与 ``ai.task.<type>`` 完全一致，所以直接推导。
     """
     return f"{TOPIC_PREFIX}{type_}"
 
@@ -57,13 +53,11 @@ USER_PARTITIONED: frozenset[TaskType] = frozenset({TaskType.MEMORY_EXTRACT})
 
 
 def partition_key(task: Task) -> str:
-    """分区键。
+    """分区键：``memory_extract`` 用 ``user_id``（同一用户的抽取串行，避免并发 merge 同一行
+    记忆），其余用 ``resource_id``（``docs/08`` §5.1：同一资源不并发处理）。
 
-    * ``memory_extract`` → ``user_id``（同一用户的抽取串行，避免并发 merge 同一行记忆）；
-    * 其余 → ``resource_id``（``docs/08`` §5.1：同一资源不并发处理）。
-
-    两者都是 ``docs`` 明确要求的，冲突时以 docs/09 §5.2 的分区键列优先 ——
-    它按主题逐个写明，比 docs/08 的通用规则更具体。
+    两者都是 docs 明确要求的，冲突时以 docs/09 §5.2 的分区键列优先 —— 它按主题逐个写明，
+    比 docs/08 的通用规则更具体。
     """
     if task.type in USER_PARTITIONED:
         return task.user_id
@@ -74,10 +68,9 @@ def partition_key(task: Task) -> str:
 class TaskMessage:
     """一条任务消息（``{"task_id", "attempt"}`` + 传输元数据）。
 
-    ``type`` / ``topic`` / ``partition_key`` 都是**传输层的产物**（分别由主题名与
-    消息 key 解出），不写进消息体 —— 消息体越小，能漂移的地方就越少。
-    ``partition`` / ``offset`` 是提交位点的依据（见
-    :class:`~app.worker.offsets.OffsetTracker`：并发消费时必须按分区的**连续水位线**
+    ``type`` / ``topic`` / ``partition_key`` 都是传输层的产物（分别由主题名与消息 key 解出），
+    不写进消息体 —— 消息体越小，能漂移的地方就越少。``partition`` / ``offset`` 是提交位点的
+    依据（见 :class:`~app.worker.offsets.OffsetTracker`：并发消费时必须按分区的**连续水位线**
     提交，按完成顺序提交会跳消息）。
     """
 
@@ -223,9 +216,9 @@ def _require_aiokafka(component: str) -> Any:
 class KafkaTaskProducer:
     """Kafka 生产者（**常驻连接**）。
 
-    早期实现是「每条消息 start/stop 一个 producer」：那既丢掉批处理与长连接，
-    又让每次投递多付一次 TCP+TLS 握手；更要紧的是 ``stop()`` 失败会被吞掉 ——
-    表现为「消息发出去了但状态没改」或反之，两个方向都不好查。
+    早期实现是「每条消息 start/stop 一个 producer」：既丢掉批处理与长连接，又让每次投递
+    多付一次 TCP+TLS 握手；更要紧的是 ``stop()`` 失败会被吞掉 —— 表现为「消息发出去了但
+    状态没改」或反之，两个方向都不好查。
     """
 
     def __init__(self, settings: Settings) -> None:
@@ -320,8 +313,8 @@ class KafkaTaskConsumer:
             # 必须手动提交：docs/08 §5.4 要求「状态落库成功之后」才提交 offset。
             # 自动提交会把「正在跑的任务」的 offset 提前提交掉 —— 进程崩了就是丢任务。
             enable_auto_commit=False,
-            # 从最早开始：新消费组若不设，``auto_offset_reset`` 默认 latest，
-            # 会让「先建任务、后起 Worker」的场景下那批任务被永久跳过。
+            # 从最早开始：新消费组不设的话 ``auto_offset_reset`` 默认 latest，会让
+            # 「先建任务、后起 Worker」的场景下那批任务被永久跳过。
             auto_offset_reset="earliest",
         )
         await consumer.start()

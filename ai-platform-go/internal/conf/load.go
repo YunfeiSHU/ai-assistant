@@ -10,21 +10,17 @@ import (
 	"strings"
 	"time"
 
-	// 内嵌 IANA 时区数据（约 450KB）。
-	//
-	// 不加这一行时，`time.LoadLocation("Asia/Shanghai")` 依赖宿主机的 zoneinfo：
-	// 在 scrub/distroless 镜像里会失败，于是 QUOTA_TIMEZONE 静默回退 UTC ——
-	// 表现是「配额在早上 8 点重置」而不是 0 点，且**不报任何错**。
-	// 用 450KB 换掉这一类环境相关的静默偏差是划算的。
+	// 内嵌 IANA 时区数据（约 450KB）。不加这一行时 `time.LoadLocation("Asia/Shanghai")`
+	// 依赖宿主机 zoneinfo，在 scratch/distroless 镜像里会失败，于是 QUOTA_TIMEZONE
+	// 静默回退 UTC —— 表现是「配额在早上 8 点重置」而不是 0 点，且不报任何错。
 	_ "time/tzdata"
 
 	"github.com/joho/godotenv"
 )
 
 // DefaultPlanLimits 是内置的免费档限额（docs/02-§5.1）。
-//
-// 它只是**默认值**：真正的限额来自 `QUOTA_PLAN_MAP`，MUST NOT 把限额判断
-// 硬编码在业务代码里（否则调额度要改代码 + 重新发版）。
+// 它只是默认值：真正的限额来自 `QUOTA_PLAN_MAP`，MUST NOT 硬编码在业务代码里
+// （否则调额度要改代码 + 重新发版）。
 func DefaultPlanLimits() map[string]map[string]int64 {
 	return map[string]map[string]int64{
 		"free": {
@@ -47,8 +43,7 @@ func DefaultPlanLimits() map[string]map[string]int64 {
 }
 
 // Load 读取配置：`.env` → 环境变量 → 默认值，然后做启动期校验。
-//
-// `.env` 只在变量**不存在**时补齐（godotenv.Load 的语义即如此），
+// `.env` 只在变量不存在时补齐（godotenv.Load 的语义即如此），
 // 因此容器里注入的同名环境变量永远优先。
 func Load() (*Config, error) {
 	if err := loadDotEnv(); err != nil {
@@ -76,10 +71,8 @@ func Load() (*Config, error) {
 }
 
 // EnvFileEnvVar 是指定 .env 路径的环境变量名。
-//
-// 存在的理由：.env 的默认位置是**进程工作目录**，而从 IDE、任务、
-// CI 里启动时工作目录往往不是项目根 —— 「.env 明明写了却没生效」
-// 几乎全部是这个问题。用绝对路径显式指定就绕开了它。
+// .env 的默认位置是进程工作目录，而从 IDE / 任务 / CI 启动时工作目录往往不是
+// 项目根 —— 「.env 明明写了却没生效」几乎全部是这个问题。
 const EnvFileEnvVar = "ENV_FILE"
 
 func loadDotEnv() error {
@@ -95,7 +88,7 @@ func loadDotEnv() error {
 		return fmt.Errorf("读取 %s 失败: %w", path, err)
 	}
 	if err := godotenv.Load(path); err != nil {
-		// 有文件但解析失败**必须**报错：静默回退到默认值会让「配置写错」
+		// 有文件但解析失败必须报错：静默回退到默认值会让「配置写错」
 		// 表现成「配置没生效」，而默认值常常也能启动，于是带着错配置上线。
 		return fmt.Errorf("解析 %s 失败: %w", path, err)
 	}
@@ -222,8 +215,8 @@ func loadApp(l *loader) App {
 
 func loadMySQL(l *loader) MySQL {
 	return MySQL{
-		// ⚠️ 这里**不能**放带口令的默认值（历史上放过，等于把开发机凭据提交进仓库）。
-		// 空值时由 Validate 在启动期报错；本地开发由 `.env` 提供（loadDotEnv 会自动加载）。
+		// ⚠️ 这里不能放带口令的默认值（历史上放过，等于把开发机凭据提交进仓库）。
+		// 空值时由 Validate 在启动期报错；本地开发由 `.env` 提供。
 		DSN:                    l.str("MYSQL_DSN", ""),
 		MaxOpenConns:           l.intVal("MYSQL_MAX_OPEN_CONNS", 20),
 		MaxIdleConns:           l.intVal("MYSQL_MAX_IDLE_CONNS", 10),
@@ -360,9 +353,8 @@ func normalisePrefix(p string) string {
 func (c *Config) IsProd() bool { return c.App.Env == "prod" }
 
 // Validate 做启动期校验。
-//
-// 原则：**能在启动期发现的配置错误 MUST 在启动期失败**（REQ-NFR-009）。
-// 拖到请求期才暴露的配置问题，表现往往是「偶发 401」「偶发 503」，极难定位。
+// 原则：能在启动期发现的配置错误 MUST 在启动期失败（REQ-NFR-009）——拖到请求期
+// 才暴露的配置问题，表现往往是「偶发 401」「偶发 503」，极难定位。
 func (c *Config) Validate() error {
 	var problems []string
 	add := func(format string, args ...any) {
@@ -464,10 +456,8 @@ func (c *Config) Validate() error {
 		add("REDIS_URL 不合法: %v", err)
 	}
 
-	// MySQL DSN **没有内置默认值**（与 JWT_SECRET 同一策略）：它内含口令，
-	// 写进源码就等于把凭据提交进仓库 —— 本文件曾经把开发机口令当默认值，
-	// 而日志里同时又对它做脱敏（redactDSN），自相矛盾。
-	// 由 `.env`（本地）或环境变量（容器）提供；缺失时在启动期失败，而不是连库时才报错。
+	// MySQL DSN 没有内置默认值（与 JWT_SECRET 同一策略）：它内含口令，写进源码
+	// 就等于把凭据提交进仓库。缺失时在启动期失败，而不是连库时才报错。
 	if strings.TrimSpace(c.MySQL.DSN) == "" {
 		add("MYSQL_DSN 必填（形如 user:pass@tcp(host:3306)/db?parseTime=true）；出于安全考虑没有内置默认值")
 	}
@@ -525,9 +515,7 @@ func validateRedisURL(raw string) error {
 	return nil
 }
 
-// Redacted 返回可安全写入日志的配置摘要。
-//
-// 凭据一律替换为 `***`（REQ-NFR-005：secret MUST NOT 出现在日志中）。
+// Redacted 返回可安全写入日志的配置摘要：凭据一律替换为 `***`（REQ-NFR-005）。
 func (c *Config) Redacted() map[string]any {
 	return map[string]any{
 		"env":              c.App.Env,

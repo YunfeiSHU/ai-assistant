@@ -1,14 +1,10 @@
 """检索管线：召回 → 重排 → 阈值 → 相邻合并（``docs/06`` §5.2，``REQ-RAG-006``）。
 
-``docs/06`` §5.2 的六条规则在这里逐条落地。值得单独说明的是**步骤顺序**：
+步骤顺序有两处不可调换：阈值必须在重排之后 —— 向量余弦与交叉编码器打分虽都大致落在
+0..1，但分布不同（余弦 0.7 其实算很相关），两者绝不能混着比较；相邻合并放在阈值之后 ——
+先合并再过滤会出现「一条合并结果里一半内容低于阈值，却因另一半分数高而整体留下」。
 
-* **阈值必须在重排之后**。向量余弦相似度与交叉编码器打分虽然都大致落在 0..1，
-  但分布不同：对着向量分用 0.5 做阈值会大面积误杀（余弦 0.7 其实算很相关），
-  而对着重排分用 0.5 才符合直觉。同理，两者绝不能混着比较。
-* **相邻合并放在阈值之后**。先合并再过滤会出现「一条合并结果里一半内容低于阈值，
-  却因为另一半分数高而整体留下」，用户看到的引用就包含不相关内容。
-* 合并取**较小**的 ``chunk_id``（§5.2 第 4 条），保证引用编号在多次检索之间稳定——
-  否则同一次提问刷新两次会看到不同的引用 ID。
+合并取较小的 ``chunk_id``（§5.2 第 4 条），保证引用编号在多次检索之间稳定。
 """
 
 from __future__ import annotations
@@ -81,7 +77,7 @@ class Retriever:
 
         Raises:
             RetrievalUnavailable: 向量库/Embedding 不可用。由上层转成
-                ``degraded_reasons=["rag_unavailable"]``，**不能让对话失败**。
+                ``degraded_reasons=["rag_unavailable"]``，不能让对话失败。
         """
         detail = await self.retrieve_detailed(
             query=query,
@@ -116,8 +112,8 @@ class Retriever:
                 doc_ids=doc_ids,
                 top_k=max(1, top_k),
             )
-        # 指标在**召回之后**立刻记：它度量的是向量库那一段，不包含重排。
-        # 若把两者合计成一项，就无法回答「是召回慢了还是重排慢了」这个第一问题。
+        # 指标在召回之后立刻记：它度量的是向量库那一段，不包含重排。若把两者合计成
+        # 一项，就无法回答「是召回慢了还是重排慢了」这个第一问题。
         get_metrics().observe_retrieve(kb_count=len(kb_ids), seconds=time.perf_counter() - started)
         get_metrics().observe_recalled(len(candidates))
         if not candidates:
@@ -166,10 +162,9 @@ class Retriever:
             raise
         except Exception as exc:
             raise RetrievalUnavailable(f"向量检索失败：{exc}") from exc
-        # 在这里兜住 ``vector_score``：向量库只负责「召回什么、分数多少」，
-        # 「这个分数叫什么」由检索层统一命名。交给每个 store 实现各自记得填，
-        # 迟早会漏——漏了的表现是 ``/search`` 的 ``vector_score`` 恒为 0，
-        # 而 ``score`` 是 0.4，看起来像「重排把分数改了」，其实只是没人赋值。
+        # 在这里兜住 ``vector_score``：向量库只负责「召回什么、分数多少」，「这个分数叫什么」
+        # 由检索层统一命名。交给每个 store 实现各自记得填，迟早会漏 —— 漏了的表现是
+        # ``/search`` 的 ``vector_score`` 恒为 0 而 ``score`` 是 0.4，看起来像「重排把分数改了」。
         return [replace(chunk, vector_score=chunk.score) for chunk in recalled]
 
     async def _rerank(
@@ -181,8 +176,8 @@ class Retriever:
     ) -> tuple[list[RetrievedChunk], bool]:
         """重排并回填分数。
 
-        返回 ``(结果, 是否真的重排)``。退化时 **保留向量分数**：把分数统一成 0 会
-        让后面的阈值过滤把所有结果都丢掉，等于「重排坏了就检索不到东西」。
+        返回 ``(结果, 是否真的重排)``。退化时保留向量分数：把分数统一成 0 会让后面的
+        阈值过滤把所有结果都丢掉，等于「重排坏了就检索不到东西」。
         """
         if not with_rerank:
             get_metrics().observe_rerank(device="none", skipped=True, seconds=0.0)
@@ -227,8 +222,8 @@ class Retriever:
     def _merge_adjacent(chunks: list[RetrievedChunk]) -> list[RetrievedChunk]:
         """合并同文档内 ``chunk_index`` 相邻的条目（§5.2 第 4 条）。
 
-        输入已按分数降序，所以合并结果继承其中**更高的分数**与更靠前的位置——
-        这正是「取较小 ``chunk_id``」的效果，且不依赖输入顺序是否恰好按 index 排列。
+        输入已按分数降序，所以合并结果继承其中更高的分数与更靠前的位置 —— 这正是
+        「取较小 ``chunk_id``」的效果，且不依赖输入顺序是否恰好按 index 排列。
         """
         if len(chunks) <= 1:
             return list(chunks)
@@ -265,8 +260,8 @@ class Retriever:
 def _merge_pair(left: RetrievedChunk, right: RetrievedChunk) -> RetrievedChunk:
     """把两条相邻切片拼成一条。
 
-    ``chunk_id`` 取 ``chunk_index`` 较小的一方：向量库里一条合并结果需要有个稳定
-    身份，而按分数取会让「分数因重排模型换版而变」导致引用 ID 变化。
+    ``chunk_id`` 取 ``chunk_index`` 较小的一方：向量库里一条合并结果需要有个稳定身份，
+    而按分数取会让「分数因重排模型换版而变」导致引用 ID 变化。
     """
     first, second = (left, right) if left.chunk_index <= right.chunk_index else (right, left)
     text = f"{first.text}{_MERGE_SEPARATOR}{second.text}"
@@ -292,8 +287,8 @@ def merge_token_budget(
     """按 token 预算裁剪 RAG 上下文（§5.2 第 5 条：超限按分数从低到高丢弃）。
 
     Returns:
-        ``(保留的片段, 是否发生了裁剪)``。至少保留一条——全丢等于「检索到了但
-        一个字都没给模型」，用户会看到模型凭空作答（幻觉最容易发生的场景）。
+        ``(保留的片段, 是否发生了裁剪)``。至少保留一条 —— 全丢等于「检索到了但一个字
+        都没给模型」，用户会看到模型凭空作答（幻觉最容易发生的场景）。
     """
     if not chunks:
         return [], False

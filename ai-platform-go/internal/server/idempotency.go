@@ -25,16 +25,12 @@ const contextKeyIdempotency = "gw.idempotency_key"
 const HeaderIdempotencyKey = "Idempotency-Key"
 
 // maxIdempotencyKeyLen 是幂等键的长度上限。
-//
-// 与 request id 同理：不限长的值会被拼进 Redis Key 与数据库列，
-// 超长值等于给调用方一个「撑爆 Key 空间 / 撑爆索引」的手段。
+// 与 request id 同理：不限长的值会被拼进 Redis Key 与数据库列，超长值等于给调用方一个撑爆索引的手段。
 const maxIdempotencyKeyLen = 128
 
 // IdempotencyKey 中间件：提取 `Idempotency-Key` 头并放进上下文。
-//
-// 只做提取（不做校验失败即拒绝）：因为并非所有接口都支持幂等，
-// 在不支持的接口上因为「多传了一个头」而报错是不合理的。
-// 支持幂等的接口 SHOULD 用 IdempotencyKeyOf 读取并在非法时自行报错。
+// 只做提取而不在非法时拒绝：并非所有接口都支持幂等，在不支持的接口上因为「多传了一个头」
+// 而报错不合理。支持幂等的接口 SHOULD 用 IdempotencyKeyOf 读取并自行报错。
 func IdempotencyKey() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if raw := c.GetHeader(HeaderIdempotencyKey); raw != "" {
@@ -55,10 +51,8 @@ func IdempotencyKeyOf(c *gin.Context) string {
 }
 
 // ValidateIdempotencyKey 校验幂等键格式。
-//
-// 契约建议用 UUID，但只做「长度 + 字符集」的宽松校验：
-// 强制 UUID 会让有意使用「业务单号」做幂等键的客户端无法接入，
-// 而幂等的正确性并不依赖键的形状（只要同一个键映射到同一结果）。
+// 契约建议用 UUID，但这里只做「长度 + 字符集」的宽松校验：强制 UUID 会让用业务单号
+// 做幂等键的客户端无法接入，而幂等的正确性并不依赖键的形状（同一个键映射到同一结果）。
 func ValidateIdempotencyKey(key string) error {
 	if key == "" {
 		return nil
@@ -81,29 +75,21 @@ func ValidateIdempotencyKey(key string) error {
 }
 
 // IdempotencyReplayHeader 标记「本次响应来自幂等回放」。
-//
-// 契约没有要求这个头，但它让「重试真的走了回放」这件事在客户端和
-// 验收脚本里可观测 —— 否则一个不生效的幂等实现与一个生效的实现
-// 在响应体上完全一样（这正是幂等最容易被写错又看不出来的地方）。
+// 契约没有要求这个头，但它让「重试真的走了回放」可观测 —— 否则不生效的实现与
+// 生效的实现在响应体上完全一样（这正是幂等最容易被写错又看不出来的地方）。
 const IdempotencyReplayHeader = "Idempotency-Replayed"
 
 // Idempotency 中间件：把写接口的响应摘要落进 `idempotency_record`，
 // 同一个键再次到达时直接回放（docs/02-§7）。
 //
-// 为什么做成**响应缓冲**中间件而不是在每个 handler 里各写一遍：
+// 做成响应缓冲中间件而不是每个 handler 各写一遍：回放必须包含失败响应 ——
+// `POST .../messages` 在 AI 不可用时返回 503，而用户的提问已经落库，不记住这个 503，
+// 客户端重试会在台账里多出一条重复提问；缓冲让中间件自己拿到「状态码 + 响应体」这一对。
 //
-//   - 回放必须包含失败响应。`POST .../messages` 在 AI 不可用时返回 503，
-//     而用户的提问**已经落库** —— 不记住这个 503，客户端重试就会
-//     在台账里多出一条重复提问，正是本机制要防的事；
-//   - 缓冲让中间件自己拿到「状态码 + 响应体」这一对，无需每个 handler 各写一遍
-//     （代价是回放的是**存下来的**字节，见下面关于 JSON 列规范化的说明）。
+// 回放不是字节相等：快照落在 MySQL 原生 `JSON` 列上，读写时会规范化键序与空白，
+// 契约要的「回放首次响应（含状态码）」语义等价即满足（细节见 data.idemRepo.Recall）。
 //
-// 注意回放**不是字节相等**：快照落在共享表的 `response_body` 上，而那是 MySQL
-// 原生 `JSON` 列，会在读写时规范化文档（键序、空白）。契约（docs/02-§7）要的是
-// 「回放首次响应（含状态码）」，语义等价即满足；细节见 data.idemRepo.Recall。
-//
-// 因此它只挂在**非流式 JSON** 路由上：SSE 的响应没有「结束」这个时刻，
-// 缓冲它会同时破坏实时性和内存占用（而且 SSE 帧不是 JSON 文档，存不进该列）。
+// 因此只挂在非流式 JSON 路由上：SSE 没有「结束」这个时刻，缓冲它会破坏实时性与内存占用。
 func Idempotency(store biz.IdempotencyStore, log *slog.Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		key := IdempotencyKeyOf(c)
@@ -116,21 +102,20 @@ func Idempotency(store biz.IdempotencyStore, log *slog.Logger) gin.HandlerFunc {
 			return
 		}
 
-		// 路径用**路由模板**：具体路径会让「同一个键被复用到另一个会话」
-		// 变成两条互不相关的记录，看不出误用（见 biz.IdempotencyKey 的说明）。
+		// 路径用路由模板：具体路径会让「同一个键被复用到另一个会话」
+		// 变成两条互不相关的记录，看不出误用（见 biz.IdempotencyKey）。
 		route := c.FullPath()
 		userID := middleware.UserID(c)
 		if route == "" || userID == "" {
-			// 拼不出唯一键就不做幂等。身份缺失是鉴权中间件的职责
-			//（它会给出 401），在这里再造一个 401 只会掩盖真正的失败点。
+			// 拼不出唯一键就不做幂等。身份缺失是鉴权中间件的职责（它会给出 401）。
 			c.Next()
 			return
 		}
 
 		hash, ok := bufferAndHashBody(c)
 		if !ok {
-			// 读不出请求体（多为超过 MAX_JSON_BODY_MB）：交给下游按正常
-			// 路径报 413，而不要在这里自己造一个错误码。
+			// 读不出请求体（多为超过 MAX_JSON_BODY_MB）：交给下游按正常路径报 413，
+			// 不要在这里自己造一个错误码。
 			c.Next()
 			return
 		}
@@ -139,16 +124,15 @@ func Idempotency(store biz.IdempotencyStore, log *slog.Logger) gin.HandlerFunc {
 		ik := biz.IdempotencyKey{UserID: userID, Method: c.Request.Method, Path: route, Key: key}
 		stored, hit, err := store.Recall(ctx, ik)
 		if err != nil {
-			// 存储不可用**不阻断业务**：幂等是「更好」，不是「前提」。
-			// 但必须告警 —— 静默降级会让客户端以为重试是安全的。
+			// 存储不可用不阻断业务（幂等是「更好」不是「前提」），但必须告警 ——
+			// 静默降级会让客户端以为重试是安全的。
 			logx.From(ctx, log).WarnContext(ctx, "idempotency.recall_failed", slog.String("error", err.Error()))
 			c.Next()
 			return
 		}
 		if hit {
 			if stored.RequestHash != hash {
-				// 同键不同体是**误用**：直接回放会让调用方拿到一个
-				// 与本次请求无关的结果，而且看起来一切正常。
+				// 同键不同体是误用：直接回放会让调用方拿到与本请求无关的结果，而且看起来一切正常。
 				httpx.Fail(c, errs.New(errs.CodeConflict).
 					WithMessage("Idempotency-Key 已用于另一个请求体").
 					WithDetail("reason", "idempotency_key_reused"))
@@ -161,19 +145,16 @@ func Idempotency(store biz.IdempotencyStore, log *slog.Logger) gin.HandlerFunc {
 		buf := &bufferingWriter{ResponseWriter: c.Writer}
 		real := buf.ResponseWriter
 		c.Writer = buf
-		// defer 的还原是给 **panic 路径** 用的，不是给正常路径用的：
-		// 中间件链里 Recovery 在最外层，它靠 `httpx.Fail(c, ...)` 写 500 —— 写的是
-		// `c.Writer`。handler panic 时 `c.Next()` 会把栈直接掀到 Recovery，
-		// 下面的还原语句一行都不会执行，于是 Recovery 的 500 信封被写进**这个缓冲**
-		// 而永远不会 flush：客户端拿到的是「200 + 空响应体」。
-		// 比 500 更糟 —— 错误被伪装成成功，客户端还会拿同一个键重试。
-		// （panic 产生的 500 也就**不会**进幂等快照，这是有意的：那个响应由外层生成，
-		// 此刻缓冲里没有它，而「把 panic 500 也缓存 24h」没有任何好处。）
+		// defer 的还原是给 panic 路径用的，不是给正常路径用的：Recovery 在最外层，
+		// 它靠 `httpx.Fail(c, ...)` 写 500（写的是 `c.Writer`）。handler panic 时
+		// `c.Next()` 把栈直接掀到 Recovery，下面的还原语句一行都不会执行，于是那个 500
+		// 信封被写进这个缓冲且永远不 flush —— 客户端拿到「200 + 空响应体」，比 500 更糟，
+		// 而且它还会拿同一个键重试。（panic 500 因此不会进幂等快照：那一刻缓冲里没有它。）
 		defer func() { c.Writer = real }()
 
 		c.Next()
-		// 还原真实 writer 之后才能落库与写出：AccessLog 在更外层，
-		// 它读的是 c.Writer.Status()；writeBuffered 也必须写到真实连接上。
+		// 还原真实 writer 之后才能落库与写出：AccessLog 在更外层读 c.Writer.Status()，
+		// writeBuffered 也必须写到真实连接上。
 		c.Writer = real
 
 		now := clockx.Now()
@@ -187,8 +168,8 @@ func Idempotency(store biz.IdempotencyStore, log *slog.Logger) gin.HandlerFunc {
 		switch {
 		case rememberErr == nil:
 		case errors.Is(rememberErr, biz.ErrIdemRace):
-			// 另一个并发请求先落库了。本次响应照常返回（副作用已经发生、
-			// 无法回滚），但后续同键请求会回放**先到者**的结果 —— 这点必须告警，
+			// 另一个并发请求先落库了。本次响应照常返回（副作用已发生无法回滚），
+			// 但后续同键请求会回放先到者的结果 —— 必须告警，
 			// 否则「两个请求得到两个不同的会话」会变成一条无法解释的现象。
 			logx.From(ctx, log).WarnContext(ctx, "idempotency.race",
 				slog.String("path", route),
@@ -201,15 +182,10 @@ func Idempotency(store biz.IdempotencyStore, log *slog.Logger) gin.HandlerFunc {
 	}
 }
 
-// bufferAndHashBody 把请求体读进内存、算出指纹，并把 body **原样放回**。
-//
-// 必须放回去：下游 handler 还要 `BindJSON`，body 只能被读一次。
-//
-// 读取失败（超过 BodyLimit 的 MaxBytesError）时用 MultiReader 把
-// 「已读到的部分 + 原始 reader」拼回去：原始 MaxBytesReader 会再次
-// 抛出同一个错，于是下游的 httpx.BindJSON 仍然能把它识别成 413。
-// 若简单地放弃并保留一个已读废的 body，客户端会得到一个
-// 「body 不完整」的 400 —— 把「请求太大」误导成「JSON 写坏了」。
+// bufferAndHashBody 把请求体读进内存、算出指纹，并把 body 原样放回（下游还要 `BindJSON`）。
+// 读取失败（超过 BodyLimit 的 MaxBytesError）时用 MultiReader 把「已读到的部分 + 原始 reader」
+// 拼回去：原始 MaxBytesReader 会再次抛出同一个错，下游的 httpx.BindJSON 仍能识别成 413。
+// 若保留一个已读废的 body，客户端会得到「body 不完整」的 400，把「请求太大」误导成「JSON 写坏了」。
 func bufferAndHashBody(c *gin.Context) (string, bool) {
 	if c.Request.Body == nil {
 		return cryptox.SHA256Hex(""), true
@@ -224,18 +200,13 @@ func bufferAndHashBody(c *gin.Context) (string, bool) {
 	return cryptox.SHA256Hex(string(raw)), true
 }
 
-// replayStored 原样写回存下来的响应。
+// replayStored 原样写回存下来的响应（docs/02-§7：命中则回放首次响应，含状态码）。
 //
-// 回放的是「状态码 + 响应体」这一对（docs/02-§7：命中则回放首次响应（含状态码））：
-//
-//   - `Content-Type` 必须显式补上。首次响应里它是 gin 的 `c.JSON` 设的，
-//     而那是**另一个请求**的 header map，回放请求上不存在 ——
-//     此时让 net/http 去嗅探 body，`{"id":...}` 会被判成 `text/plain`，
-//     于是客户端的 `res.json()` 在重试路径上突然失败。
-//     这里写死 JSON 是安全的：能挂幂等的只有非流式 JSON 路由（见上面的说明）。
-//   - `Location` 等其它响应头**不回放**：表里没有存响应头，而契约只要求
-//     「响应（含状态码）」一致。客户端拿到 `201` 后去 `GET /conversations?limit=1`
-//     或直接按 `id` 取详情即可（`id` 在响应体里）。
+// `Content-Type` 必须显式补上：首次响应里它是 gin 的 `c.JSON` 设的，而那是另一个请求的
+// header map，回放请求上不存在 —— 让 net/http 嗅探 body 会把 `{"id":...}` 判成 `text/plain`，
+// 客户端的 `res.json()` 就在重试路径上突然失败。写死的 JSON 是安全的：能挂幂等的只有非流式 JSON 路由。
+// `Location` 等其它响应头不回放：表里没存响应头，契约只要求「响应（含状态码）」一致
+// （`id` 在响应体里，客户端可以按它取详情）。
 func replayStored(c *gin.Context, resp *biz.IdempotentResponse) {
 	c.Header(IdempotencyReplayHeader, "true")
 	if len(resp.Body) > 0 {
@@ -258,21 +229,18 @@ func writeBuffered(c *gin.Context, buf *bufferingWriter) {
 }
 
 // bufferingWriter 把响应拦在内存里，不写给连接。
-//
-// 它嵌入 `gin.ResponseWriter` 而不是 `http.ResponseWriter`：
-// 前者还要求 `Status()/Size()/Written()/WriteHeaderNow()/Pusher()`，
-// 嵌入能让这些方法原样转发给真实 writer（特别是 Header()，
-// 必须与下游共用同一个 map，否则 `c.Header(...)` 设的头会丢）。
+// 嵌入 `gin.ResponseWriter` 而不是 `http.ResponseWriter`：前者还要求
+// `Status()/Size()/Written()/WriteHeaderNow()/Pusher()`，嵌入能把它们原样转发；
+// 尤其是 `Header()` 必须与下游共用同一个 map，否则 `c.Header(...)` 设的头会丢。
 type bufferingWriter struct {
 	gin.ResponseWriter
 	status int
 	body   bytes.Buffer
 }
 
-// WriteHeader 记录状态码但不写出。后到的状态码不再覆盖先到的：
-// 与 net/http 的语义一致（第一次生效），否则重放时会写出一个与首次不同的状态码。
+// WriteHeader 记录状态码但不写出。
+// 后到的状态码不覆盖先到的（与 net/http 一致），否则重放时会写出与首次不同的状态码。
 func (w *bufferingWriter) WriteHeader(code int) {
-	// 后到的状态码不再覆盖先到的：与 net/http 的语义一致（第一次生效）。
 	if w.status == 0 {
 		w.status = code
 	}
@@ -290,7 +258,6 @@ func (w *bufferingWriter) WriteString(s string) (int, error) { return w.body.Wri
 // Status 返回业务状态码；从未设置过时按 200 处理（与 net/http 一致）。
 func (w *bufferingWriter) Status() int {
 	if w.status == 0 {
-		// 没显式设过状态码就是 200（与 net/http 一致）。
 		return http.StatusOK
 	}
 	return w.status

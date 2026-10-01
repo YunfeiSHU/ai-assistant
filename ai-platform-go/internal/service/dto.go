@@ -8,10 +8,8 @@ import (
 )
 
 // 响应 DTO（规范 §三.2：`Biz Result → Response DTO` 发生在 service）。
-//
-// 这些是**契约**(docs/02-§6)的逐字实现：JSON 字段名、时间格式都不能改，
-// 改了就是破坏客户端。它们之所以不放在 biz，是因为 biz 不知道
-// 「今天有没有 HTTP」（M3 起还要接 gRPC），也不知道字段该怎么序列化。
+// 这些是契约（docs/02-§6）的逐字实现：JSON 字段名、时间格式都不能改。
+// 不放 biz 是因为 biz 不知道「今天有没有 HTTP」（M3 起还要接 gRPC），也不知道字段该怎么序列化。
 
 // UserResponse 是对外暴露的用户视图（docs/02-§6.1 / §6.2）。
 //
@@ -29,9 +27,8 @@ type UserResponse struct {
 }
 
 // ToUserResponse 把领域对象映射成对外视图。
-//
-// 逐字段显式赋值是刻意的：如果直接 `json.Marshal(领域对象)`，
-// `PasswordHash` / `TokenVersion` 会被一起写出去，而且**不会报错**。
+// 逐字段显式赋值是刻意的：直接 `json.Marshal(领域对象)` 会把 `PasswordHash` / `TokenVersion`
+// 一起写出去，而且不会报错。
 func ToUserResponse(u *biz.User) *UserResponse {
 	if u == nil {
 		return nil
@@ -71,11 +68,8 @@ func ToTokenResponse(p *biz.TokenPair) *TokenResponse {
 	}
 }
 
-// Page 是列表接口的统一响应体（docs/02-§2.1）：
-// `{items, next_cursor, has_more}`。
-//
-// `NextCursor` 用指针：契约里它是 `null` 而不是空串 ——
-// 空串会被客户端当成一个（必然解析失败的）游标值。
+// Page 是列表接口的统一响应体（docs/02-§2.1）：`{items, next_cursor, has_more}`。
+// `NextCursor` 用指针：契约里它是 `null` 而不是空串，空串会被客户端当成一个（必然解析失败的）游标值。
 type Page[T any] struct {
 	Items      []T     `json:"items"`
 	NextCursor *string `json:"next_cursor"`
@@ -95,11 +89,8 @@ func NewPage[T any](items []T, nextCursor string, hasMore bool) Page[T] {
 }
 
 // ConversationResponse 是会话对象（docs/03-§1）。
-//
-// `user_id` 保留：它是会话模型的一等字段（docs/03-§1 的表里就有），
-// 而这里的会话一定是调用者自己的，所以不构成信息泄露 ——
-// 反过来「列表里每条都缺 user_id」会让客户端在缓存／合并多个用户的
-// 会话时需要额外字段才能区分。
+// `user_id` 保留：它是会话模型的一等字段，而这里的会话一定是调用者自己的，
+// 不构成信息泄露；反过来缺了它，客户端缓存／合并多个用户的会话时就得另找字段区分。
 type ConversationResponse struct {
 	ID            string            `json:"id"`
 	UserID        string            `json:"user_id"`
@@ -156,10 +147,8 @@ func ToConversationResponses(items []biz.Conversation) []*ConversationResponse {
 }
 
 // MessageResponse 是消息对象（docs/03-§4.3 的示例形状）。
-//
-// `references` / `tool_calls` 用 `json.RawMessage` 原样透传：
-// 它们的结构由 ai-platform 定义，网关多解析一层就多一处
-// 「AI 改字段名 → 网关挂掉」的隐患。
+// `references` / `tool_calls` 用 `json.RawMessage` 原样透传：结构由 ai-platform 定义，
+// 网关多解析一层就多一处「AI 改字段名 → 网关挂掉」的隐患。
 type MessageResponse struct {
 	ID              string            `json:"id"`
 	ConversationID  string            `json:"conversation_id"`
@@ -181,9 +170,7 @@ type MessageResponse struct {
 }
 
 // ToMessageResponse 把领域对象映射成对外视图。
-//
-// 两个「空值必须写成 `[]` 而不是 `null`」的地方在这里统一掉：
-// 客户端遍历 `references` 时不会去判空（契约里它是数组）。
+// 「空值必须写成 `[]` 而不是 `null`」的地方在这里统一掉：客户端遍历 `references` 时不会去判空。
 func ToMessageResponse(m *biz.Message) *MessageResponse {
 	if m == nil {
 		return nil
@@ -223,10 +210,8 @@ func ToMessageResponses(items []biz.Message) []*MessageResponse {
 }
 
 // SendMessageResponse 是 `POST /conversations/{id}/messages` 的响应体。
-//
-// 契约（docs/03-§4.3）只规定了请求字段与「成功码 200」，**没有**规定响应体形状，
-// 所以这里显式给出两个字段而不是只回 assistant：客户端渲染一轮对话
-// 需要两条消息的 id 与 seq（重新拉分页时要能用它们定位）。
+// 契约（docs/03-§4.3）只规定了请求字段与成功码 200，没规定响应体形状，
+// 所以显式给出两个字段而不是只回 assistant：客户端渲染一轮对话需要两条消息的 id 与 seq。
 type SendMessageResponse struct {
 	UserMessage      *MessageResponse `json:"user_message"`
 	AssistantMessage *MessageResponse `json:"assistant_message"`

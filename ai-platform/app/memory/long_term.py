@@ -1,13 +1,11 @@
 """长期记忆实体与仓储（``REQ-MEM-004`` / ``REQ-MEM-005`` / ``REQ-MEM-007``）。
 
-存储结构见 ``docs/07`` §5 与 ``docs/09``：关系库存**正文与元数据**
-（``user_memory`` 表），向量库存**语义索引**（``ai_platform_memories`` 集合）。
-两者必须成对增删 —— 只删一边的表现是「列表里没有了，但检索还能命中」，
-而这类不一致没有任何报错，只能靠人肉发现。
+存储结构见 ``docs/07`` §5 与 ``docs/09``：关系库存正文与元数据（``user_memory`` 表），
+向量库存语义索引（``ai_platform_memories`` 集合）。两者必须成对增删 —— 只删一边的表现是
+「列表里没有了，但检索还能命中」，而且没有任何报错。
 
-因此这里的写入路径刻意只暴露一个方法 :meth:`MemoryRepo.add`，把「精确去重」
-放在仓储内部：调用方（抽取器 / ``memory_save`` 工具 / ``POST /memories``）
-不需要各自记得「先查哈希」—— 漏一次就会产生重复记忆。
+因此写入路径只暴露 :meth:`MemoryRepo.add`，把「精确去重」放在仓储内部：调用方不需要
+各自记得「先查哈希」—— 漏一次就会产生重复记忆。
 """
 
 from __future__ import annotations
@@ -45,9 +43,8 @@ class MemoryRecord:
     #: 来源会话（审计用，``REQ-MEM-007``）；手动创建时为空
     source_conversation_id: str = ""
     #: 来源：``auto``（轮末抽取 / ``memory_save`` 工具）或 ``manual``（``POST /memories``）。
-    #: 落到 ``user_memory.source`` 列（``docs/09`` §2.5）。区分两者是审计要求：
-    #: 「用户自己写的记忆」与「系统推出来的记忆」在排查“为什么模型记得这个”时
-    #: 结论完全不同，而一旦都记为 ``auto`` 就再也分不出来了。
+    #: 区分两者是审计要求：「用户自己写的」与「系统推出来的」在排查「为什么模型记得这个」
+    #: 时结论完全不同，而一旦都记为 ``auto`` 就再也分不出来了。
     source: str = "auto"
     #: ``kind=fact`` 可设置过期时间；到期后不再注入（保留记录并标记 ``expired``）
     expires_at: str | None = None
@@ -69,8 +66,8 @@ class MemoryRecord:
     def is_expired_at(self, moment_iso: str) -> bool:
         """给定时刻是否已过期（``expires_at`` 为空表示永不过期）。"""
         deadline = self.expires_at
-        # 先取出局部变量再比较：直接在属性上做 ``and`` 链，mypy 不肯把
-        # 「属性非 None」的判断带到第二个操作数上（属性随时可能变）
+        # 先取局部变量再比较：直接在属性上做 ``and`` 链，mypy 不肯把「属性非 None」
+        # 的判断带到第二个操作数上（属性随时可能变）
         return deadline is not None and deadline <= moment_iso
 
     def to_dict(self) -> dict[str, object]:
@@ -92,12 +89,11 @@ class MemoryRecord:
 def normalise_content(content: str) -> str:
     """记忆正文的规范化形式（精确去重的比较基准）。
 
-    只把连续空白压成一个空格，**不**删除空格 —— 词边界是内容的一部分，
-    「用户偏好简洁回答」与「用户偏好 简洁回答」不该被当成同一条。
+    只把连续空白压成一个空格，不删除空格 —— 词边界是内容的一部分。
 
-    这里是**唯一**的规范化定义：仓储的唯一索引、抽取器的批内去重都调它。
-    两处各写一遍迟早会出现「看起来一样但不相等」，表现为同一条记忆被存两遍
-    （或者反过来：批内没去重、却被存储当成重复丢掉）。
+    这里是唯一的规范化定义：仓储的唯一索引、抽取器的批内去重都调它。两处各写一遍
+    迟早会出现「看起来一样但不相等」，表现为同一条记忆被存两遍（或反过来：批内没去重、
+    却被存储当成重复丢掉）。
     """
     return " ".join(content.split())
 
@@ -105,8 +101,8 @@ def normalise_content(content: str) -> str:
 def content_sha256(content: str) -> str:
     """记忆正文的规范化哈希（对应表里的唯一索引 ``uk_mem_user_hash``）。
 
-    「我喜欢简洁回答」与「我喜欢简洁回答  」是同一句话。若直接对原文哈希，
-    精确去重会被一个空格绕过，于是同一偏好会被抽成两条。
+    「我喜欢简洁回答」与「我喜欢简洁回答  」是同一句话。若直接对原文哈希，精确去重会被
+    一个空格绕过，于是同一偏好会被抽成两条。
     """
     return sha256_hex(normalise_content(content))
 
@@ -116,8 +112,8 @@ class MemoryWriteResult:
     """写入结果。
 
     ``created=False`` 表示命中了精确去重（``hit_count`` 已 +1、``updated_at`` 已刷新）。
-    把它显式返回而不是返回 ``None``，是因为 ``AC-MEM-08`` 要断言
-    「同一句话抽两次 → 仍只有 1 条，且 ``hit_count=2``」。
+    显式返回而不是返回 ``None``，是因为 ``AC-MEM-08`` 要断言「同一句话抽两次 →
+    仍只有 1 条，且 ``hit_count=2``」。
     """
 
     record: MemoryRecord
@@ -133,11 +129,10 @@ class MemoryRepo(Protocol):
         ...
 
     async def find_by_hash(self, user_id: str, content: str) -> MemoryRecord | None:
-        """按规范化内容的哈希查已有记忆（精确去重的**读取**侧）。
+        """按规范化内容的哈希查已有记忆（精确去重的读取侧）。
 
-        为什么需要它而不只用 :meth:`add` 的返回值：语义去重必须在写入**之前**做。
-        若先写入再去语义查重，命中时得把刚插进去的那条删掉，就会出现中间态
-        （并发读者能看到重复条目）。
+        语义去重必须在写入之前做：若先写入再去语义查重，命中时得把刚插进去的那条删掉，
+        就会出现中间态（并发读者能看到重复条目）。
         """
         ...
 
@@ -160,8 +155,8 @@ class MemoryRepo(Protocol):
     ) -> tuple[list[MemoryRecord], bool]:
         """分页列出；返回 ``(items, has_more)``。
 
-        故意不叫 ``list``：方法名一旦叫 ``list``，本类后续所有 ``list[X]`` 注解
-        都会被解析成这个方法（mypy ``valid-type``），而报错位置在几十行之外。
+        故意不叫 ``list``：方法名一旦叫 ``list``，本类后续所有 ``list[X]`` 注解都会被解析成
+        这个方法（mypy ``valid-type``），而报错位置在几十行之外。
         """
         ...
 
@@ -199,8 +194,8 @@ class _State:
 class InMemoryMemoryRepo:
     """:class:`MemoryRepo` 的进程内实现。
 
-    刻意实现唯一索引语义（同一用户同一内容哈希只存一条）与容量上限，
-    否则「本地全绿、上真库报唯一键冲突」这类问题只能等上线才发现。
+    刻意实现唯一索引语义（同一用户同一内容哈希只存一条）与容量上限，否则
+    「本地全绿、上真库报唯一键冲突」这类问题只能等上线才发现。
     """
 
     def __init__(self, *, max_items: int = 500) -> None:

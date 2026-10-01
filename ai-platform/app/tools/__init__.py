@@ -1,11 +1,11 @@
 """工具层装配（``REQ-AGENT-002``）。
 
-这个模块是「工具从哪来」的唯一答案：内置工具在这里注册，MCP 工具在 M6 由
-``app/mcp`` 调用 :meth:`ToolRegistry.register` 加入同一个注册表。
+这个模块是「工具从哪来」的唯一答案：内置工具在这里注册，MCP 工具由 ``app/mcp`` 调用
+:meth:`ToolRegistry.register` 加入同一个注册表。
 
-装配期的校验刻意做在**启动路径**上（:func:`build_tool_registry` 抛异常 = 应用起不来），
-因为「工具名冲突」「schema 不是合法 JSON Schema」这类问题一旦带进运行期，表现为
-「模型偶尔调错工具」，几乎无法定位。
+装配期校验刻意做在**启动路径**上（:func:`build_tool_registry` 抛异常 = 应用起不来）：
+「工具名冲突」「schema 不是合法 JSON Schema」带进运行期会表现为「模型偶尔调错工具」，
+几乎无法定位。
 """
 
 from __future__ import annotations
@@ -49,10 +49,10 @@ def build_tool_registry(
     Args:
         settings: 配置。
         retriever: ``kb_retrieve`` 依赖的检索器（与 ``/chat`` 共用同一个实例）。
-        memory: 长期记忆服务（``memory_save`` / ``memory_search``）；
-            ``None`` 时不注册并记 warning —— 传入 ``None`` 只应发生在**测试**里，
-            生产装配缺了它就会让「用户要求记住」静默失效。
-        extra_tools: 额外注册的工具（测试注入 / M6 的 MCP 工具）。
+        memory: 长期记忆服务（``memory_save`` / ``memory_search``）；``None`` 时不注册并记
+            warning —— 传入 ``None`` 只应发生在测试里，生产装配缺了它就会让「用户要求记住」
+            静默失效。
+        extra_tools: 额外注册的工具（测试注入 / MCP 工具）。
 
     Raises:
         ToolRegistrationError: 重名、名字不合规、描述超长、schema 非法。
@@ -104,9 +104,9 @@ def build_tool_service(
 def validate_tool_spec(spec: ToolSpec) -> None:
     """校验单个工具定义；不合格即抛（启动失败，``AC-AGENT-07``）。
 
-    公开导出是因为 **MCP 工具也要走同一套校验**：不能因为工具来自第三方 Server
-    就跳过描述长度 / schema 形状的检查 —— 否则「模型看到一份坏 schema」这类问题
-    只会在线上表现为「某个工具偶尔调不对」。
+    公开导出是因为 **MCP 工具也要走同一套校验**：不能因为工具来自第三方 Server 就跳过
+    描述长度 / schema 形状的检查，否则「模型看到一份坏 schema」只会表现为「某个工具偶尔
+    调不对」。
     """
     if not TOOL_NAME_PATTERN.match(spec.name):
         raise ToolRegistrationError(
@@ -130,9 +130,9 @@ def validate_tool_spec(spec: ToolSpec) -> None:
 def _validate_denylist(settings: Settings, registry: ToolRegistry) -> None:
     """黑名单里出现不存在的工具名时记 warning——不失败。
 
-    ``tool_denylist`` / ``tool_write_allowlist`` 是**运维配置**，它的生命周期比
-    代码长：先按发布计划写好 ``memory_save``、再等该工具上线是正常操作。所以这里
-    只警告不报错；真正需要「配了就必须存在」的是装配期断言（:meth:`ToolRegistry.require`）。
+    ``tool_denylist`` / ``tool_write_allowlist`` 是运维配置，它的生命周期比代码长：先按发布
+    计划写好 ``memory_save``、再等该工具上线是正常操作。所以这里只警告不报错；真正需要
+    「配了就必须存在」的是装配期断言（:meth:`ToolRegistry.require`）。
     """
     unknown = [name for name in settings.tool_denylist if name not in registry]
     if unknown:

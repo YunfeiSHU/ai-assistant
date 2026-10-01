@@ -8,15 +8,13 @@ import (
 )
 
 // ErrInvalidJSON 表示 JSON 列里的内容不是预期结构。
-//
-// 这类错误**必须**报出来而不是静默忽略：一旦把 `{}` 读成空数组，
-// 上层看到的是「没有引用来源」而不是「数据坏了」，排障会跑偏。
+// 必须报出来而不是静默忽略：一旦把 `{}` 读成空数组，上层看到的是「没有引用来源」
+// 而不是「数据坏了」，排障会跑偏。
 var ErrInvalidJSON = errors.New("data: JSON 列内容不合法")
 
 // JSONList 映射语义为 `string[]` 的 JSON 列（conversation.kb_ids 等）。
-//
-// nil 与空切片都能写（写 NULL 或 `[]`），读回来时保持区分：
-// 上层据此无法得知「没设置」还是「设成了空」，因此两边都按「空」处理。
+// nil 与空切片都能写（写 NULL 或 `[]`），但读回来时上层无法区分「没设置」与「设成了空」，
+// 因此两边都按「空」处理。
 type JSONList []string
 
 // Value 实现 driver.Valuer。
@@ -63,15 +61,12 @@ func (l JSONList) OrEmpty() []string {
 }
 
 // JSONMap 映射语义为 `map[string]string` 的 JSON 列（conversation.metadata）。
-//
-// 与 JSONRaw 的区别：metadata 的**键与值都有长度上限**（≤ 64 字符），
-// 而校验只能对具体类型做 —— 存成不透明字符串就没法校验了。
+// 不用 JSONRaw 是因为 metadata 的键与值都有长度上限（≤ 64 字符），
+// 而校验只能对具体类型做 —— 存成不透明字符串就没法校验。
 type JSONMap map[string]string
 
 // NewJSONMap 把 map 包成列值；nil 也输出 `{}`。
-//
-// 刻意不写 NULL：契约里 metadata 默认是 `{}`，写 NULL 会让读取侧的
-// 「没设过」与「设成了空对象」变成两种状态，多出一处判空分支。
+// 刻意不写 NULL：契约里 metadata 默认是 `{}`，写 NULL 会让读取侧多出一处判空分支。
 func NewJSONMap(m map[string]string) JSONMap {
 	if m == nil {
 		return JSONMap{}
@@ -122,9 +117,8 @@ func (m JSONMap) OrEmpty() map[string]string {
 }
 
 // Usage 映射 message.usage 列（docs/03-§4.1）。
-//
-// 这不是「不透明 JSON」：网关要从它取 `total_tokens` 累加配额（接缝 J7），
-// 因此必须强类型解析 —— 把字段名拼错会变成「配额永远不涨」。
+// 不用 JSONRaw：网关要从它取 `total_tokens` 累加配额（接缝 J7），必须强类型解析 ——
+// 字段名拼错会变成「配额永远不涨」。
 type Usage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
@@ -166,18 +160,15 @@ func (u *Usage) Scan(src any) error {
 }
 
 // IsZero 报告 usage 是否为空（全部字段为 0）。
-//
-// 用于「没有 usage 帧就不累加 token 配额」的判断：
-// 上游可能返回 usage 帧但字段缺省，把它当成 0 会让配额白扣一次。
+// 用于「没有 usage 就不累加 token 配额」的判断：上游可能返回 usage 帧但字段缺省，
+// 当成 0 会让配额白扣一次。
 func (u *Usage) IsZero() bool {
 	return u == nil || (u.PromptTokens == 0 && u.CompletionTokens == 0 && u.TotalTokens == 0)
 }
 
 // JSONRaw 是对「不透明 JSON」列的封装（网关不解释内容的那些）。
-//
-// refs / tool_calls / metadata / degraded_reasons 用它：
-// 这些结构由 ai-platform 定义（docs/03-§3.1 / docs/06-§6），
-// 网关只做原样存与原样取 —— 一旦网关开始解析它们，
+// refs / tool_calls / metadata / degraded_reasons 用它：这些结构由 ai-platform 定义
+// （docs/03-§3.1 / docs/06-§6），网关只做原样存与原样取 —— 一旦开始解析，
 // AI 侧改字段就会变成网关的故障。
 type JSONRaw struct {
 	// Raw 是原始 JSON 文本；空串表示「未设置」（写 NULL）。

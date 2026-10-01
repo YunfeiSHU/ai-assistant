@@ -15,18 +15,14 @@ import (
 )
 
 // ConvCursor 是会话列表的游标载荷。
-//
-// 必须包含**排序键的全部列**（pinned + last_message_at + id）：
-// 只带 last_message_at 时，翻页期间有一条会话被置顶，就会出现
-// 「第一页的末条」与「第二页的首条」之间漏掉或重复记录。
+// 必须包含排序键的全部列（pinned + last_message_at + id）：只带 last_message_at 时，
+// 翻页期间有一条会话被置顶，就会在页与页之间漏掉或重复记录。
 type ConvCursor struct {
 	// Pinned 必须是 bool 而不是 0/1 字符串：它与 SQL 里的比较必须同类型。
 	Pinned bool `json:"pinned"`
-	// LastMessageAt 为空串表示该会话**还没有消息**（列是 NULL）。
-	//
-	// 不能省掉这一段：MySQL 里 NULL 在 DESC 排序中排最后，
-	// 于是「从未发过消息的会话」全在同一 pinned 组的末尾，
-	// 游标必须能表达「我已经翻到 NULL 那一段了」。
+	// LastMessageAt 为空串表示该会话还没有消息（列是 NULL）。
+	// 不能省掉这一段：MySQL 里 NULL 在 DESC 排序中排最后，从未发过消息的会话
+	// 全在同一 pinned 组的末尾，游标必须能表达「已经翻到 NULL 那一段了」。
 	LastMessageAt string `json:"last_message_at"`
 	ID            string `json:"id"`
 }
@@ -74,10 +70,8 @@ func (r *conversationRepo) Create(ctx context.Context, c *biz.Conversation) erro
 }
 
 // GetOwned 取属于该用户的未删除会话。
-//
 // 「越权」与「不存在」返回同一个 biz.ErrNotFound → 上层统一 404
-// （AC-CONV-02：用 B 的 token 访问 A 的会话必须是 404 而不是 403，
-// 否则 403 本身就泄漏了「这个 id 存在」）。
+// （AC-CONV-02：用 B 的 token 访问 A 的会话必须是 404 而不是 403，否则 403 本身就泄露了「这个 id 存在」）。
 func (r *conversationRepo) GetOwned(ctx context.Context, userID, id string) (*biz.Conversation, error) {
 	var po conversationPO
 	err := r.data.DB.GORM.WithContext(ctx).
@@ -90,10 +84,8 @@ func (r *conversationRepo) GetOwned(ctx context.Context, userID, id string) (*bi
 }
 
 // List 按游标分页列出会话（docs/03-§2.2）。
-//
-// 排序 `pinned DESC, last_message_at DESC, id DESC`，与 `idx_conv_user_list`
-// 的列顺序一致。多取一条用来判断 has_more —— 比再跑一次 COUNT 便宜，
-// 而且不会因为并发写入而与结果集不一致。
+// 排序 `pinned DESC, last_message_at DESC, id DESC` 与 `idx_conv_user_list` 的列顺序一致。
+// 多取一条判断 has_more：比再跑一次 COUNT 便宜，也不会因并发写入而与结果集不一致。
 func (r *conversationRepo) List(ctx context.Context, userID string, in biz.ListConversationsInput) (*biz.ConversationList, error) {
 	limit := in.Limit
 	if limit <= 0 || limit > biz.PageLimitMax {
@@ -155,15 +147,13 @@ func (r *conversationRepo) List(ctx context.Context, userID string, in biz.ListC
 }
 
 // applyConvCursor 把游标条件翻译成 SQL。
-//
-// 分成「游标落在 NULL 段」与「游标有真实时间」两种情况，是因为
-// MySQL 里 NULL 的比较结果恒为 NULL（既不真也不假），
-// `last_message_at < NULL` 一行都匹配不到 —— 写成一条统一的三值逻辑
-// 表达式会在「翻到没有消息的那一段」时**静默返回空页**。
+// 必须分成「游标落在 NULL 段」与「游标有真实时间」两种情况：MySQL 里 NULL 的比较结果恒为 NULL，
+// `last_message_at < NULL` 一行都匹配不到 —— 写成统一的三值逻辑表达式会在翻到
+// 「没有消息的那一段」时静默返回空页。
 func applyConvCursor(q *gorm.DB, cur *ConvCursor) *gorm.DB {
 	if cur.LastMessageAt == "" {
-		// NULL 在 DESC 里排最后：同一个 pinned 组内，游标之后的记录
-		// 只能是「同为 NULL 且 id 更小」的那些，以及 pinned 更小的组。
+		// NULL 在 DESC 里排最后：同一 pinned 组内，游标之后的记录
+		// 只能是「同为 NULL 且 id 更小」的，以及 pinned 更小的组。
 		return q.Where(
 			"pinned < ? OR (pinned = ? AND last_message_at IS NULL AND id < ?)",
 			cur.Pinned, cur.Pinned, cur.ID,
@@ -185,8 +175,7 @@ func (r *conversationRepo) Update(ctx context.Context, userID, id string, patch 
 		return res.Error
 	}
 	if res.RowsAffected == 0 {
-		// ⚠️ 这里**不能**直接判定为「不存在」：把 status 改成与当前相同的值时，
-		// MySQL 会因为「值没变」而报告 0 行（changed rows 为 0）。
+		// ⚠️ 不能直接判定为「不存在」：把 status 改成与当前相同的值时，MySQL 会因「值没变」报告 0 行。
 		// 所以再确认真实可见性，否则「取消归档一个本就 active 的会话」会变成 404。
 		return r.ensureVisible(ctx, userID, id)
 	}
@@ -194,9 +183,7 @@ func (r *conversationRepo) Update(ctx context.Context, userID, id string, patch 
 }
 
 // SetAutoTitle 在首条消息落库后写自动标题（仅当仍是 auto 且标题为空）。
-//
-// 条件落在 SQL 里而不是靠「先读后写」：并发下用户可能刚刚手工改过标题，
-// 先读后写会把那个改动覆盖掉（AC-CONV-04）。
+// 条件落在 SQL 里而不是先读后写：并发下用户可能刚手工改过标题，先读后写会覆盖掉那个改动（AC-CONV-04）。
 func (r *conversationRepo) SetAutoTitle(ctx context.Context, userID, id, title string, at time.Time) (bool, error) {
 	res := r.data.DB.GORM.WithContext(ctx).Model(&conversationPO{}).
 		Where("id = ? AND user_id = ? AND deleted_at IS NULL AND title_source = ? AND title = ''",
@@ -224,10 +211,8 @@ func (r *conversationRepo) ensureVisible(ctx context.Context, userID, id string)
 }
 
 // SoftDelete 软删会话。
-//
-// 消息不单独置位：查询侧统一 JOIN 会话的 `deleted_at IS NULL`
-// （docs/03-§6），这样「软删会话 → 消息立刻不可见」是原子的一步，
-// 不存在「会话删了但消息还能查到」的中间态。
+// 消息不单独置位：查询侧统一 JOIN 会话的 `deleted_at IS NULL`（docs/03-§6），
+// 这样「软删会话 → 消息立刻不可见」是原子的一步，不存在「会话删了但消息还能查到」的中间态。
 func (r *conversationRepo) SoftDelete(ctx context.Context, userID, id string, at time.Time) error {
 	res := r.data.DB.GORM.WithContext(ctx).Model(&conversationPO{}).
 		Where("id = ? AND user_id = ? AND deleted_at IS NULL", id, userID).
@@ -243,20 +228,14 @@ func (r *conversationRepo) SoftDelete(ctx context.Context, userID, id string, at
 
 // allocSeq 原子分配下一个消息序号（docs/03-§4.2）。
 //
-// ⚠️ MUST 在事务内调用：`LAST_INSERT_ID(expr)` 是**连接级**的，
-// 换连接执行 `SELECT LAST_INSERT_ID()` 会读到别的会话的值，
-// 表现为「seq 跳号/重复」，且不报任何错。
-//
+// ⚠️ MUST 在事务内调用：`LAST_INSERT_ID(expr)` 是连接级的，换连接执行
+// `SELECT LAST_INSERT_ID()` 会读到别的会话的值，表现为「seq 跳号/重复」且不报任何错。
 // 表名用常量拼接、不写字面量：这里曾经写成 `UPDATE \`conversationPO\“
 // （批量改名把类型名改进了字符串里），编译与单测都发现不了，
 // 只会在真跑 SQL 时报表不存在。
 //
-// 返回：
-//   - (seq, nil)                        分配成功；
-//   - (0, biz.ErrNotFound)              会话不存在 / 越权；
-//   - (0, biz.ErrConversationDeleted)   会话已软删；
-//   - (0, biz.ErrConversationArchived)  会话已归档；
-//   - (0, err)                          其它错误
+// 返回 (seq, nil) 表示成功；否则 seq 为 0，err 为 biz.ErrNotFound（不存在/越权）、
+// biz.ErrConversationDeleted、biz.ErrConversationArchived 或其它错误。
 func (r *conversationRepo) allocSeq(ctx context.Context, tx *gorm.DB, userID, id string, at time.Time) (int, error) {
 	res := tx.WithContext(ctx).Exec(
 		"UPDATE "+quoteIdent(TableConversation)+
@@ -270,7 +249,7 @@ func (r *conversationRepo) allocSeq(ctx context.Context, tx *gorm.DB, userID, id
 	}
 	if res.RowsAffected == 0 {
 		// 区分三种「0 行」：不存在 / 已归档 / 已软删。
-		// 都用**同事务**再查一次，保证判断与 UPDATE 基于同一可见性快照。
+		// 都用同事务再查一次，保证判断与 UPDATE 基于同一可见性快照。
 		var po conversationPO
 		err := tx.WithContext(ctx).Select("status", "deleted_at").
 			Where("id = ? AND user_id = ?", id, userID).
@@ -294,9 +273,8 @@ func (r *conversationRepo) allocSeq(ctx context.Context, tx *gorm.DB, userID, id
 		return 0, err
 	}
 	if seq <= 0 {
-		// 走到这里说明两条语句被分到了不同连接（事务没生效）。
-		// MUST 报错而不是放行：seq=0 会被写进 `uk_msg_conv_seq`，
-		// 第二条消息就会撞唯一键，表现为「莫名 500」。
+		// 走到这里说明两条语句被分到了不同连接（事务没生效）。MUST 报错而不是放行：
+		// seq=0 会被写进 `uk_msg_conv_seq`，第二条消息就会撞唯一键，表现为「莫名 500」。
 		return 0, errors.New("data: LAST_INSERT_ID 返回非正数（事务/连接被换掉了？）")
 	}
 	return seq, nil
@@ -304,8 +282,8 @@ func (r *conversationRepo) allocSeq(ctx context.Context, tx *gorm.DB, userID, id
 
 // ---- 映射（PO ↔ DO）----
 //
-// 转换只发生在 data 侧（规范 §三.2）：`kb_ids` 这类 JSON 列、
-// `metadata` 的 nil 与 `{}` 值差异都在这里统一掉，biz 拿到的是干净的领域对象。
+// `kb_ids` 这类 JSON 列、`metadata` 的 nil 与 `{}` 差异都在这里统一掉，
+// biz 拿到的是干净的领域对象（规范 §三.2）。
 
 func toConversationPO(c *biz.Conversation) *conversationPO {
 	return &conversationPO{
@@ -346,10 +324,8 @@ func toConversationDO(po *conversationPO) *biz.Conversation {
 }
 
 // conversationFields 把已校验的补丁翻成列映射。
-//
-// `Model` 用三态：Present 且 Value 为 nil 要**显式写 NULL**（回到全局默认模型），
-// 所以必须在 map 里放一个 nil 值 —— 「不放进 map」与「放进 nil」
-// 在 GORM 里是两个完全不同的动作：前者不改，后者把列置空。
+// `Model` 用三态：Present 且 Value 为 nil 要显式写 NULL（回到全局默认模型），
+// 所以必须在 map 里放一个 nil 值 —— 「不放进 map」与「放进 nil」在 GORM 里完全不同：前者不改，后者置空。
 func conversationFields(p biz.ConversationPatch, at time.Time) map[string]any {
 	fields := map[string]any{"updated_at": at}
 	if p.Title != nil {

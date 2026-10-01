@@ -1,7 +1,7 @@
 """Agent 路由（``docs/04`` §4.3）。
 
-`/agent/run` 与 `/agent/run/stream` 的请求体是 ``ChatRequest`` **强制
-``use_tools=true``** 并追加 ``max_steps`` / ``allowed_tools`` / ``denied_tools``。
+``/agent/run`` 与 ``/agent/run/stream`` 的请求体是 ``ChatRequest`` 强制
+``use_tools=true`` 并追加 ``max_steps`` / ``allowed_tools`` / ``denied_tools``。
 强制在 service 里完成（不依赖调用方传对），这里只负责「先准备再推流」。
 """
 

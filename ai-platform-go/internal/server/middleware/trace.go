@@ -13,15 +13,13 @@ import (
 const HeaderRequestID = "X-Request-Id"
 
 // maxRequestIDLen 是回显客户端 request id 的长度上限。
-//
-// 不回显超长/含控制字符的值：它会被写进日志与响应头，
-// 长度不限的话等于给了调用方一个日志放大与响应头注入的入口。
+// 不回显超长/含控制字符的值：它会被写进日志与响应头，长度不限等于给了调用方
+// 一个日志放大与响应头注入的入口。
 const maxRequestIDLen = 128
 
 // WithRequestID 中间件：回显客户端的 X-Request-Id，没有则生成 `req_*`。
-//
-// 生成的值用于把「客户端看到的一个响应」与「服务端的一批日志」串起来，
-// 与 trace_id（跨服务）不同：request_id 只在网关内部有意义。
+// 它把「客户端看到的一个响应」与「服务端的一批日志」串起来；与跳服务的 trace_id 不同，
+// request_id 只在网关内部有意义。
 func WithRequestID() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id := sanitiseRequestID(c.GetHeader(HeaderRequestID))
@@ -51,12 +49,9 @@ func sanitiseRequestID(raw string) string {
 // HeaderTraceID 是跨服务链路 id 的响应头（docs/06-§5.1）。
 const HeaderTraceID = "X-Trace-Id"
 
-// WithTrace 中间件：解析 W3C `traceparent`，缺失时新建 trace id。
-//
-// 格式：`00-<32hex trace-id>-<16hex span-id>-<2hex flags>`。
-// 只做「解析 + 生成 + 回写响应头」，OTel 的 span 上报在 M6 接入；
-// 但 trace_id 本身从 M1 起就必须稳定存在 —— 否则错误信封里的
-// `trace_id` 会是空串，而契约把它标成了必填。
+// WithTrace 中间件：解析 W3C `traceparent`（`00-<32hex trace-id>-<16hex span-id>-<2hex flags>`），
+// 缺失时新建 trace id，并回写响应头。trace_id 从 M1 起就必须稳定存在 ——
+// 否则错误信封里的 `trace_id` 会是空串，而契约把它标成了必填。
 func WithTrace() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		traceID, spanID := parseTraceparent(c.GetHeader("traceparent"))
@@ -72,10 +67,8 @@ func WithTrace() gin.HandlerFunc {
 }
 
 // parseTraceparent 按 W3C 规范解析；任何一处不合法都返回空（视为无上游 trace）。
-//
-// 宽容度很关键：这里有两条容易搞错的地方 ——
-//  1. `trace-id` 全 0 是**非法**的（规范明确禁止），必须判掉；
-//  2. 版本大于 00 时后续字段可能增多，只取前四段即可。
+// 两条容易搞错的地方：`trace-id` 全 0 是非法值（规范明确禁止）必须判掉；
+// 版本大于 00 时后续字段可能增多，只取前四段即可。
 func parseTraceparent(header string) (traceID, spanID string) {
 	header = strings.TrimSpace(header)
 	if header == "" {

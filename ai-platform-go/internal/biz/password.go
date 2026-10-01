@@ -7,10 +7,7 @@ import (
 )
 
 // WeakPasswords 是内置的常见弱口令集合（REQ-AUTH-001）。
-//
-// 只列最典型的几十个：完整字典动辄数十万条，个人项目引入它的成本
-// （内存、加载时间、更新流程）高于收益。真正有效的是**长度下限 + 限流 + 审计**，
-// 弱口令表只是兜住「12345678」这类必然出现的输入。
+// 只列最典型的几十个：完整字典成本高于收益，真正有效的是长度下限 + 限流 + 审计。
 var WeakPasswords = map[string]struct{}{
 	"12345678":    {},
 	"123456789":   {},
@@ -59,10 +56,8 @@ type PasswordPolicy struct {
 	MinLength int
 }
 
-// ValidatePassword 校验密码强度，返回 nil 表示通过。
-//
-// 返回的错误是字段级原因（`reason` 供 error.details.fields 使用），
-// 不直接给用户看 —— message 由调用方组装成中文。
+// ValidatePassword 校验密码强度，返回空 reason 表示通过。
+// reason 供 error.details.fields 使用，message 由调用方组装成中文。
 func ValidatePassword(password string, policy PasswordPolicy, email string) (reason, message string) {
 	minLen := policy.MinLength
 	if minLen < 8 {

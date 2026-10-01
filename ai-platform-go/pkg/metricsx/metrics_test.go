@@ -9,17 +9,14 @@ import (
 	"github.com/YunfeiSHU/ai-assistant/ai-platform-go/pkg/metricsx"
 )
 
-// docFamilies 是 `docs/06-§5.2` 指标表里**由本包负责注册**的族名（逐行抄录）。
+// docFamilies 是 `docs/06-§5.2` 指标表里由本包负责注册的族名（逐行抄录，2026-09-30）。
 //
 // `gw_db_pool_*` / `gw_redis_pool_*` 不在表里：它们在 `cmd/server` 里按依赖注入的
 // 连接池注册（本包拿不到 `*sql.DB`），族名随驱动而定。
 //
-// `gw_requests_total` 是**有意保持惰性**的：它带 route×method×status 三个标签，
-// 三个都是开放域（status 尤甚），预置只能靠编造组合；而它参与的是**比率型**
-// 告警（`status=~"5.."` 占比），不依赖「序列必须提前存在」。
-// 其余族要么没有标签，要么标签域有限（`initLabels` 已全部预置）。
-//
-// 抄录时间：2026-09-30。
+// `gw_requests_total` 有意保持惰性：它带 route×method×status 三个标签，都是开放域
+// （status 尤甚），预置只能靠编造组合；而它参与的是比率型告警（`status=~"5.."` 占比），
+// 不依赖「序列必须提前存在」。
 var docFamilies = []string{
 	"gw_request_duration_seconds",
 	"gw_auth_failures_total",
@@ -63,13 +60,11 @@ func collectedFamilies(t *testing.T, reg *prometheus.Registry) map[string]bool {
 // TestAllDocFamiliesVisibleAtStartup 断言「进程刚起来、一个业务请求都没发」时
 // §5.2 的全部指标族就已经能被抓到。
 //
-// 这条断言不是格式检查，它挡的是一类**静默失效**：
-// Prometheus 的 `*Vec` 直到某个标签组合被使用过才产出样本，而未出现的指标
-// 在 `docs/06-§5.5` 的告警规则里**不报错、只当空结果**。
-// 更隐蔽的是「一次性事件」那类：`gw_message_persist_failed_total` 若是靠第一次
-// 失败才诞生，则它的首个样本就已经是 1（丢掉了 0→1 的跳变），
-// 于是 `rate(...[5m])` 在随后的两次抓取之间恒为 0 —— **P1 告警永远不触发**。
-// 见 `Metrics.initLabels` 的注释。
+// 它挡的是一类静默失效：Prometheus 的 `*Vec` 直到某个标签组合被使用过才产出样本，
+// 而未出现的指标在 `docs/06-§5.5` 的告警规则里不报错、只当空结果。更隐蔽的是
+// 「一次性事件」：`gw_message_persist_failed_total` 若靠第一次失败才诞生，
+// 首个样本已经是 1（丢掉了 0→1 的跳变），于是 `rate(...[5m])` 恒为 0 ——
+// P1 告警永远不触发。见 `Metrics.initLabels` 的注释。
 func TestAllDocFamiliesVisibleAtStartup(t *testing.T) {
 	m := metricsx.New()
 	// 路由维度由 `server.NewEngine` 按 gin 注册表预热（本包不知道有哪些路由）。
@@ -83,13 +78,12 @@ func TestAllDocFamiliesVisibleAtStartup(t *testing.T) {
 	}
 }
 
-// TestVecFamilyPreSeededWithZero 断言预置的是**真实的 0 值样本**，
-// 而不是靠某个假样本撑场面：预置的计数器序列值必须恰好是 0。
+// TestVecFamilyPreSeededWithZero 断言预置的是真实的 0 值样本（而不是靠某个假样本
+// 撑场面）：预置的计数器序列值必须恰好是 0。
 //
 // 不用 `prometheus/testutil`：它会拖进 `go-cmp` / `godebug` 两个新间接依赖，
-// 而本仓库对 `go.mod` 的 go 指令有硬约束（`docs/08-§2`：不许被依赖顶高）。
-// `Gather()` 回来的是 `*dto.MetricFamily`，直接调它的 getter 即可，
-// 不需要显式 import `client_model`（它是 client_golang 的既有间接依赖）。
+// 而本仓库对 `go.mod` 的 go 指令有硬约束（`docs/08-§2`）。`Gather()` 回来的
+// `*dto.MetricFamily` 直接调 getter 即可，不需要显式 import `client_model`。
 func TestVecFamilyPreSeededWithZero(t *testing.T) {
 	m := metricsx.New()
 
@@ -116,10 +110,8 @@ func TestVecFamilyPreSeededWithZero(t *testing.T) {
 }
 
 // TestLabelDomainsMatchBizConstants 断言预置的标签值与 biz 侧的常量一致。
-//
-// 这里刻意用**字面量**再写一遍（而不是 import biz）：`metricsx` 是被依赖方，
-// 反向上依赖会让「改一个业务常量」不再被这层挡住 ——
-// 而标签值是跨系统契约（告警表达式按它写），改了必须有人被迫看一眼。
+// 刻意用字面量再写一遍（而不是 import biz）：`metricsx` 是被依赖方，反向依赖会让
+// 「改一个业务常量」不再被这层挡住，而标签值是跨系统契约（告警表达式按它写）。
 func TestLabelDomainsMatchBizConstants(t *testing.T) {
 	m := metricsx.New()
 
@@ -148,7 +140,7 @@ func TestLabelDomainsMatchBizConstants(t *testing.T) {
 	for _, f := range families {
 		counts[f.GetName()] = len(f.GetMetric())
 	}
-	// 每个维度恰好一条序列：多出来的就是「同义不同名」的重复维度
+	// 每个维度恰好一条序列：多出来的是「同义不同名」的重复维度
 	// （面板上会出现两条永远只有一条在动的曲线）。
 	if counts["gw_rate_limited_total"] != 7 {
 		t.Errorf("gw_rate_limited_total 序列数 = %d，期望 7（限流维度只有 7 个）",
@@ -160,8 +152,8 @@ func TestLabelDomainsMatchBizConstants(t *testing.T) {
 	}
 }
 
-// TestLabelNormalisation 断言标签归一化的两条语义：
-// 空串归 `unknown`，超长值截断但**不互相合并**。
+// TestLabelNormalisation 断言标签归一化的两条语义：空串归 `unknown`，
+// 超长值截断但不互相合并。
 func TestLabelNormalisation(t *testing.T) {
 	m := metricsx.New()
 
@@ -173,10 +165,9 @@ func TestLabelNormalisation(t *testing.T) {
 		t.Errorf("空串未归入 unknown：序列数 = %d，期望 3", cnt)
 	}
 
-	// 超长值：两个「前 32 字节相同」的路径必须各自成序列 ——
-	// 这正是 `route` 单独用更大上限 + 指纹后缀的原因
-	// （否则 `/conversations/:conversation_id` 与
-	// `/conversations/:conversation_id/messages` 会被合并成一条）。
+	// 超长值：两个「前 32 字节相同」的路径必须各自成序列 —— 这正是 `route` 单独用
+	// 更大上限 + 指纹后缀的原因（否则 `/:conversation_id` 与
+	// `/:conversation_id/messages` 会被合并成一条）。
 	m.ObserveRequest("/api/v1/conversations/:conversation_id", "GET", 200, time.Millisecond)
 	m.ObserveRequest("/api/v1/conversations/:conversation_id/messages", "POST", 201, time.Millisecond)
 	if cnt := familySeries(t, m, "gw_request_duration_seconds"); cnt != 2 {

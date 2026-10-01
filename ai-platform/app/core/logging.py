@@ -1,15 +1,11 @@
-"""结构化日志与敏感信息脱敏。
+"""结构化日志与敏感信息脱敏（契约见 ``docs/10`` §5.3）。
 
-契约见 ``docs/10-非功能需求与可观测性.md`` §5.3：
+单行 JSON（生产）或彩色文本（本地）；必备字段 ``ts`` / ``level`` / ``logger`` /
+``msg`` / ``trace_id`` / ``span_id`` / ``service``；``Authorization`` / ``api_key`` /
+``token`` / ``password`` 一律脱敏为 ``***``；禁止打印整段 Prompt 或完整文档内容。
 
-* 单行 JSON（生产）或彩色文本（本地）；
-* 必备字段 ``ts`` / ``level`` / ``logger`` / ``msg`` / ``trace_id`` / ``span_id`` / ``service``；
-* ``Authorization`` / ``api_key`` / ``token`` / ``password`` 一律脱敏为 ``***``；
-* 禁止打印整段 Prompt 或完整文档内容。
-
-实现要点：**脱敏发生在格式化阶段**（而不是写入阶段），因此不管是
-``logger.info("token=%s", raw)`` 还是 ``extra={"body": raw}`` 都会被覆盖 —— 只靠
-调用方自觉脱敏是不可靠的。
+脱敏发生在格式化阶段而不是写入阶段，所以 ``logger.info("token=%s", raw)`` 与
+``extra={"body": raw}`` 两条路径都会覆盖 —— 只靠调用方自觉脱敏不可靠。
 """
 
 from __future__ import annotations
@@ -95,8 +91,8 @@ MAX_LOG_FIELD_CHARS = 200
 def hash_identifier(value: str, pepper: str = "") -> str:
     """对 ``user_id`` 等标识做 HMAC-SHA256 并截断为 16 位 hex。
 
-    规范要求（docs/10 §5.1）``user_id`` MUST NOT 明文外泄；用 pepper 做 HMAC
-    而非裸 SHA256，避免攻击者用彩虹表反推小空间 ID。
+    规范要求（docs/10 §5.1）``user_id`` MUST NOT 明文外泄；用 pepper 做 HMAC 而非裸
+    SHA256，避免攻击者用彩虹表反推小空间 ID。
     """
     if not value:
         return ""
@@ -167,12 +163,9 @@ _NOISY_PREFIXES: frozenset[str] = frozenset(
 class ModuleNoiseFilter(logging.Filter):
     """低于 WARNING 的噪音库日志一律丢弃。
 
-    两条刻意的设计：
-
-    * 挂在 handler 上而不是只靠 ``setLevel``：前者对**启动之后才创建**的 logger
-      同样生效，也能拦住名字带变体（``httpx2``）或绕过层级判断的记录。
-    * **只丢 WARNING 以下**：这些库的 ERROR 往往正是我们排查上游故障的唯一线索
-      （比如「连接池耗尽」），连错误一起静音会让排障直接失明。
+    挂在 handler 上而不是只靠 ``setLevel``：前者对启动之后才创建的 logger 同样生效，
+    也能拦住名字带变体（``httpx2``）的记录。只丢 WARNING 以下是因为这些库的 ERROR
+    往往正是排查上游故障的唯一线索（如「连接池耗尽」），连错误一起静音会让排障失明。
     """
 
     def __init__(self, prefixes: frozenset[str] = _NOISY_PREFIXES) -> None:
@@ -182,7 +175,7 @@ class ModuleNoiseFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         if record.levelno >= logging.WARNING:
             return True
-        # 用**名字前缀**而不是「顶层包名等值」：本环境就存在 httpx2 这种变体包，
+        # 用名字前缀而不是「顶层包名等值」：本环境就存在 httpx2 这种变体包，
         # 只比对顶层名会漏拦。
         return not record.name.startswith(self._prefixes)
 

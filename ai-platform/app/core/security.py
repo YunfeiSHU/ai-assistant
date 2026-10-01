@@ -1,16 +1,12 @@
-"""鉴权：JWT 校验与当前用户解析。
+"""鉴权：JWT 校验与当前用户解析（契约见 ``docs/02-接口规范与错误码.md`` §2.1）。
 
-契约见 ``docs/02-接口规范与错误码.md`` §2.1：
+除白名单路径外所有接口 MUST 校验 JWT（签名、``exp``、``iss``、``aud``）；
+``AUTH_ENABLED=false`` 仅在非生产生效，此时用户来自 ``X-Debug-User-Id``。
+任何失败一律返回 ``401 UNAUTHENTICATED``（不区分无 token / 过期 / 签名错，防探测）；
+拿到 ``user_id`` 后 MUST 作为所有存储访问的过滤条件。
 
-1. 除白名单路径外所有接口 MUST 校验 JWT；
-2. 校验签名、``exp``、``iss``、``aud``；
-3. ``AUTH_ENABLED=false`` 仅在非生产生效，此时用户来自 ``X-Debug-User-Id``；
-4. 任何失败一律返回 ``401 UNAUTHENTICATED``（不区分无 token / 过期 / 签名错，防探测）；
-5. 拿到 ``user_id`` 后 MUST 作为**所有**存储访问的过滤条件。
-
-.. note::
-   JWT 由 Go 侧签发，Python 侧只验签不信内容之外的任何东西 —— 请求体里的
-   ``user_id`` 永远不参与授权（``REQ-NFR-007``）。
+JWT 由 Go 侧签发，本侧只验签不信内容之外的任何东西 —— 请求体里的 ``user_id``
+永远不参与授权（``REQ-NFR-007``）。
 """
 
 from __future__ import annotations
@@ -80,11 +76,7 @@ def create_access_token(
     expires_in: int = 3600,
     extra_claims: dict[str, Any] | None = None,
 ) -> str:
-    """签发一个测试/本地联调用的 HS256 token。
-
-    .. warning::
-       生产环境的 token 由 Go 侧签发；本函数仅用于本地联调与自动化测试。
-    """
+    """签发一个测试/本地联调用的 HS256 token。生产环境的 token 由 Go 侧签发。"""
     now = int(time.time())
     payload: dict[str, Any] = {
         "sub": user_id,
@@ -103,8 +95,7 @@ def create_access_token(
 def user_id_from_claims(claims: dict[str, Any]) -> str:
     """从 claims 提取并校验 ``user_id``。
 
-    ``sub`` 会被直接拼进 Redis Key / Milvus 表达式，故 MUST 通过安全字符校验
-    （docs/09-§4 的 Key 注入防护）。
+    ``sub`` 会被直接拼进 Redis Key / Milvus 表达式，故 MUST 通过安全字符校验。
     """
     subject = claims.get("sub")
     if not isinstance(subject, str) or not subject:

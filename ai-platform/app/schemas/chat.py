@@ -1,13 +1,12 @@
 """对话相关的数据模型（契约见 ``docs/03-对话与流式输出.md`` §3 / §4 / §5）。
 
-设计要点：
+响应体字段名与类型逐条对照文档，不做「顺手优化」—— 前端与验收用例都按文档写。
+流式事件的负载也定义在这里，保证 SSE 帧与 OpenAPI 描述同源，不会出现「文档一个字段名、
+代码另一个」的漂移。
 
-* 响应体字段名与类型**逐条对照文档**，不做「顺手优化」——前端与验收用例都按文档写。
-* 流式事件的负载也定义在这里，保证 SSE 帧与 OpenAPI 描述同源，不会出现
-  「文档一个字段名、代码另一个」的漂移。
-* 校验器只做**语法级**校验；语义级错误（空 query、``stream=true`` 等）由 service /
-  路由层抛 :class:`~app.core.exceptions.AppError`，这样才能返回文档要求的专属错误码
-  （``QUERY_EMPTY`` / ``INVALID_ARGUMENT``）。
+校验器只做语法级校验；语义级错误（空 query、``stream=true`` 等）由 service / 路由层抛
+:class:`~app.core.exceptions.AppError`，这样才能返回文档要求的专属错误码
+（``QUERY_EMPTY`` / ``INVALID_ARGUMENT``）。
 """
 
 from __future__ import annotations
@@ -76,7 +75,7 @@ class Usage(StrictModel):
     def _fill_total(self) -> Usage:
         """上游偶尔只给分项不给总数；在这里补齐，保证 ``total = prompt + completion``。
 
-        ``AC-CHAT-01`` 会断言这个恒等式，所以必须在出口处兜住，不能指望上游。
+        ``AC-CHAT-01`` 断言这个恒等式，所以必须在出口处兜住，不能指望上游。
         """
         if self.total_tokens == 0 and (self.prompt_tokens or self.completion_tokens):
             self.total_tokens = self.prompt_tokens + self.completion_tokens

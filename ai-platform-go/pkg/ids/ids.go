@@ -29,7 +29,7 @@ const (
 )
 
 // entropy 是 ULID 的熵源。用 crypto/rand 保证不可预测
-// （math/rand 的默认源可被推断，会话 ID 可预测等于越权风险）。
+// （math/rand 默认可被推断，会话 ID 可预测等于越权风险）。
 var entropy = ulid.Monotonic(rand.Reader, 0)
 
 // newIDFunc 允许测试注入确定性 ID（见 SetIDGeneratorForTest）。
@@ -40,9 +40,8 @@ func defaultNewID(prefix string) string {
 }
 
 // New 生成 `{prefix}_{ULID}`。
-//
-// 这里不做前缀白名单校验：调用方传的都是编译期常量；
-// 外部输入（如路径参数）要走 Validate，不要走 New。
+// 这里不做前缀白名单校验：调用方传的都是编译期常量；外部输入（如路径参数）
+// 要走 Validate，不要走 New。
 func New(prefix string) string {
 	return newIDFunc(prefix)
 }
@@ -70,9 +69,8 @@ var pattern = regexp.MustCompile(`^(u|rt|cv|msg|req|kb|doc|chk|task|mem)_[0-9A-H
 var ulidPattern = regexp.MustCompile(`^[0-9A-HJKMNP-TV-Z]{26}$`)
 
 // Validate 报告 s 是否是本系统约定的带前缀 ULID。
-//
-// 注意：这里**接受** AI 侧的前缀（kb/doc/chk/task/mem），因为网关需要校验
-// 透传接口上客户端传来的资源 ID 的形状，但网关本身不生成它们。
+// 注意：这里接受 AI 侧的前缀（kb/doc/chk/task/mem）—— 网关要校验透传接口上
+// 客户端传来的资源 ID 形状，但本身不生成它们。
 func Validate(s string) bool { return pattern.MatchString(s) }
 
 // ValidatePrefix 报告 s 是否是以 prefix 开头且体部合法的 ID。
@@ -88,7 +86,6 @@ func ValidatePrefix(s, prefix string) bool {
 func IsCrockfordBase32(s string) bool { return ulidPattern.MatchString(s) }
 
 // SetIDGeneratorForTest 注入确定性 ID 生成器，返回还原函数。
-//
 // 只供测试使用：生产路径上 ID 必须来自 crypto/rand。
 func SetIDGeneratorForTest(fn func(prefix string) string) func() {
 	prev := newIDFunc
@@ -97,9 +94,9 @@ func SetIDGeneratorForTest(fn func(prefix string) string) func() {
 }
 
 // NewHex 返回 n 字节随机数据的十六进制表示（trace id / span id 用）。
-//
-// 用 crypto/rand 而不是 math/rand：trace id 会出现在响应头与错误信封里，可预测的值让攻击者能伪造 `traceparent` 去污染别人的链路视图。
-// 随机源失败时返回全 0：长度仍然正确，链路只失去唯一性（不至于 panic）。
+// 用 crypto/rand 而不是 math/rand：trace id 会出现在响应头与错误信封里，
+// 可预测的值让攻击者能伪造 `traceparent` 污染别人的链路视图。
+// 随机源失败时返回全 0：长度仍然正确，只失去唯一性（不至于 panic）。
 func NewHex(nBytes int) string {
 	if nBytes <= 0 {
 		return ""

@@ -14,16 +14,14 @@ import (
 )
 
 // AttrForceSample 是「强制导出这条 trace」的 span 属性键。
-//
 // 由 HTTP 中间件在 `DEBUG=true` 或请求带 `X-Debug-Trace: 1` 时打在根 span 上
-// （docs/06-§5.1：这两种情况下采样率必须为 1.0）。
-// 之所以用属性而不是 context 值：采样发生在 span **结束**时，
-// 那时原始请求的 context 可能已经取消（客户端断连），而属性随 span 一起留存。
+// （docs/06-§5.1：这两种情况下采样率必须为 1.0）。用属性而不是 context 值，
+// 是因为采样发生在 span 结束时，那时原始请求的 context 可能已取消（客户端断连），
+// 而属性随 span 一起留存。
 const AttrForceSample = "gw.force_sample"
 
-// 缓冲上限。都是**硬边界**，因为这是唯一会把 span 留在内存里的地方 ——
-// 没有上限的缓冲等价于一个慢速内存泄漏，且在「上游挂了、导出超时」时
-// 恰好是最容易触发的时候（正是要排障的时刻）。
+// 缓冲上限。都是硬边界：这是唯一会把 span 留在内存里的地方，没有上限等价于
+// 慢速内存泄漏，而「上游挂了、导出超时」恰好是最容易触发的时候（正是要排障的时刻）。
 const (
 	defaultMaxTraces     = 4096
 	defaultMaxSpansPerTr = 256
@@ -31,23 +29,22 @@ const (
 	defaultSweepInterval = 5 * time.Second
 )
 
-// tailSampler 是一个**尾部采样** SpanProcessor：
-// 头部一律记录，span 结束时按 trace 决定是否交给下游导出器。
+// tailSampler 是尾部采样 SpanProcessor：头部一律记录，span 结束时按 trace 决定
+// 是否交给下游导出器。
 //
 // 三条放行路径（顺序即优先级）：
 //
-//  1. **错误**：trace 内任一 span 的状态为 `Error` → 整条立即导出。
-//     这是 docs/06-§5.1「错误与降级链路 MUST 100% 采样」的落点。
-//     必须等「整条」而不是「这个 span」：最有价值的恰恰是错误之前的那些 span。
-//  2. **强制**：任一 span 带 `AttrForceSample=true` → 立即导出（DEBUG / X-Debug-Trace）。
-//  3. **完成**：根 span（Server 类型且无本地父）结束 → 此时该 trace 的 span
-//     必然已经全部结束，可以按比例当场决策，不必等 TTL。
+//  1. 错误：trace 内任一 span 状态为 `Error` → 整条立即导出（docs/06-§5.1
+//     「错误与降级链路 MUST 100% 采样」）。必须等「整条」而非「这个 span」：
+//     最有价值的恰恰是错误之前的那些 span。
+//  2. 强制：任一 span 带 `AttrForceSample=true` → 立即导出。
+//  3. 完成：根 span（Server 类型且无本地父）结束 → trace 的 span 必然已全部结束，
+//     可以按比例当场决策，不必等 TTL。
 //
 // 兜底：TTL 到期按比例导出（覆盖「父在上游服务里、本进程没有根 span」的情形）；
 // 超过容量上限时淘汰最旧的一条，同样按比例决策。
 //
-// parentbased 语义的保留：若 trace 的父上下文本来就带「已采样」标记
-// （上游决定要采），比例判断被跳过，直接导出。
+// parentbased 语义保留：父上下文本来就带「已采样」标记时跳过比例判断，直接导出。
 type tailSampler struct {
 	next    sdktrace.SpanProcessor
 	ratio   float64
@@ -105,27 +102,22 @@ func newTailSampler(next sdktrace.SpanProcessor, ratio float64, log *slog.Logger
 	return t
 }
 
-// OnStart 是 span 开始时的钩子：**刻意什么都不做**。
-//
-// 采样决策在结束时做（见类型注释），所以这里不记录、也不向下游转发 ——
-// 转发需要把 `ReadWriteSpan` 传过去，而它只在 OnStart 期间有效
-// （之后 recordingSpan 的状态已定），传它会诱使下游缓存一个已经失效的引用。
-// OTel 自带的 BatchSpanProcessor / SimpleSpanProcessor 的 OnStart 都是空实现，
-// 因此不转发不影响它们；而「依赖 OnStart 拿可写 span」的处理器
-// 与尾部采样在语义上本就冲突（决策点后移到结束之后）。
+// OnStart 是 span 开始时的钩子：刻意什么都不做。
+// 采样决策在结束时做（见类型注释），所以这里不记录、也不向下游转发 —— 转发要把
+// `ReadWriteSpan` 传过去，而它只在 OnStart 期间有效，传它会诱使下游缓存失效引用。
+// OTel 自带的 Batch/SimpleSpanProcessor 的 OnStart 都是空实现，不转发不影响它们；
+// 而「依赖 OnStart 拿可写 span」的处理器与尾部采样语义上本就冲突。
 func (t *tailSampler) OnStart(context.Context, sdktrace.ReadWriteSpan) {
 }
 
 // OnEnd 是采样决策点：把 span 暂存到它所属 trace 的缓冲区，够条件时整批导出。
 //
-// 决策优先级（自高到低）：
-//   - 见到 `Error` 状态 → 整条 trace 无条件下发（docs/06-§5.1 的「错误链路 100%」）；
-//   - span 带 AttrForceSample=true → 无条件下发（供调试与验收用例使用）；
-//   - 入口 span 结束 → trace 在本进程内已完整，按比例当场抽签；
-//   - 缓冲区超过 maxTr → 淘汰最旧的一条，保证内存有界（容量兜底会漏掉被淘汰的那条 trace）。
+// 决策优先级（自高到低）：`Error` 状态 → 整条 trace 无条件下发；span 带
+// AttrForceSample → 无条件下发；入口 span 结束 → trace 在本进程内已完整，
+// 按比例当场抽签；缓冲区超过 maxTr → 淘汰最旧的一条（被淘汰的那条 trace 会漏）。
 //
-// 抽签与导出都在**锁外**做：decide 里有随机数与日志，持锁执行会把
-// 「所有请求的 span 结束」串行化到同一个互斥量上。
+// 抽签与导出都在锁外做：decide 里有随机数与日志，持锁会把「所有请求的 span 结束」
+// 串行化到同一个互斥量上。
 func (t *tailSampler) OnEnd(s sdktrace.ReadOnlySpan) {
 	if s == nil {
 		return
@@ -202,15 +194,10 @@ func (t *tailSampler) OnEnd(s sdktrace.ReadOnlySpan) {
 	t.mu.Unlock()
 }
 
-// isEntrySpan 判断「这个 span 是不是整条 trace 的入口」。
-//
-// 判据是「Server 类型 + 没有本地父」：
-//   - 无父（`!IsValid()`）：本进程就是链路起点（客户端没带 traceparent）。
-//   - 父是远程的（`IsRemote()`）：父在别的服务/客户端里，本进程是被调用方 ——
-//     对这条 trace 而言同样是入口。
-//
-// 反过来，本地父（网关内部的出站 Client span）不是入口：
-// 它结束时它的父 HTTP span 还没结束，trace 还不完整。
+// isEntrySpan 判断「这个 span 是不是整条 trace 的入口」（Server 类型 + 没有本地父）。
+// 无父（`!IsValid()`）时本进程就是链路起点；父是远程的（`IsRemote()`）时父在别的
+// 服务里，本进程对被调用方而言同样是入口。反过来，本地父（网关内部的出站 Client
+// span）不是入口：它结束时父 HTTP span 还没结束，trace 还不完整。
 func isEntrySpan(s sdktrace.ReadOnlySpan) bool {
 	if s.SpanKind() != trace.SpanKindServer {
 		return false
@@ -220,12 +207,9 @@ func isEntrySpan(s sdktrace.ReadOnlySpan) bool {
 }
 
 // Shutdown 停止后台清扫并冲刷缓冲区，然后把关闭转发给下游处理器。
-//
-// 关停时把缓冲区里的全部导出：此时「按比例丢弃」已经没意义（进程要退了），
-// 而这些 span 恰好是「关停前最后几秒」的链路。
-//
-// 可重复调用（stopOnce 保护）；等待 doneCh 时尊重 ctx，避免清扫协程
-// 卡住导致整个进程无法退出。
+// 关停时把缓冲区里的全部导出：「按比例丢弃」此时已没意义（进程要退了）。
+// 可重复调用（stopOnce 保护）；等待 doneCh 时尊重 ctx，避免清扫协程卡住导致
+// 整个进程无法退出。
 func (t *tailSampler) Shutdown(ctx context.Context) error {
 	t.stopOnce.Do(func() { close(t.stopCh) })
 	select {
@@ -253,10 +237,8 @@ func (t *tailSampler) Shutdown(ctx context.Context) error {
 }
 
 // ForceFlush 把当前缓冲的 span 全部下发，但仍继续接收新 span。
-//
-// 与 Shutdown 的区别是**不停止**采样器：因此两者虽然逻辑相似，
-// 不能互相替代 —— 用 Shutdown 顶替会让进程收到信号后彻底停止采集，
-// 而用 ForceFlush 顶替则会在退出时留下清扫协程与未关闭的导出器。
+// 与 Shutdown 的区别是不停止采样器，因此两者不能互相替代：用 Shutdown 顶替会让
+// 进程收到信号后彻底停止采集；用 ForceFlush 顶替会留下清扫协程与未关闭的导出器。
 func (t *tailSampler) ForceFlush(ctx context.Context) error {
 	t.mu.Lock()
 	var all []sdktrace.ReadOnlySpan
@@ -353,11 +335,9 @@ func (t *tailSampler) removeOrderLocked(tid trace.TraceID) {
 }
 
 // decide 按比例决定是否采样。
-//
-// 与 OTel 自带的 `TraceIDRatioBased` 用**同一种**判定：取 trace id 的低 8 字节
-// 当无符号整数，与 `ratio × 2^63` 比较。用 trace id 而不是随机数，
-// 是为了让「同一条 trace 的多次决策结果一致」——
-// 否则同一个 trace 在不同进程/不同批次里会有不同结论。
+// 与 OTel 自带的 `TraceIDRatioBased` 用同一种判定：取 trace id 的低 8 字节当无符号
+// 整数，与 `ratio × 2^63` 比较。用 trace id 而不是随机数，是为了让同一条 trace 的
+// 多次决策结果一致 —— 否则它在不同进程/不同批次里会有不同结论。
 func (t *tailSampler) decide(tid trace.TraceID) bool {
 	if t.ratio >= 1 {
 		return true

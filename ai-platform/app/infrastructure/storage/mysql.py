@@ -1,25 +1,17 @@
 """MySQL 仓储（``INFRA_BACKEND=real``）：知识库 / 文档 / 切片。
 
-**为什么用 SQLAlchemy Core 而不是 ORM**：这三个仓储没有「对象图」——
-没有懒加载、没有关系导航、没有身份映射。真正需要的只是「参数化 SQL + 连接池 +
-行到实体的映射」。Core 的 ``Table`` 定义能同时给出「列清单」与「SQL 构造器」，
-而 ORM 会额外引入 session 生命周期（在 FastAPI 的请求作用域外很容易用错）。
+**用 SQLAlchemy Core 而不是 ORM**：这三个仓储没有对象图（没有懒加载、关系导航、身份映射），
+真正需要的只是「参数化 SQL + 连接池 + 行到实体的映射」。Core 的 ``Table`` 定义同时给出列清单
+与 SQL 构造器，而 ORM 会额外引入 session 生命周期（在 FastAPI 请求作用域外很容易用错）。
 
-**与内存实现的关系**：:mod:`app.infrastructure.storage.memory` 是**语义基准**。这里刻意逐条对齐：
+**与内存实现的关系**：:mod:`app.infrastructure.storage.memory` 是语义基准，这里逐条对齐 ——
+软删过滤（``deleted_at IS NULL``）、同名/同哈希唯一（先查后插 + 唯一约束兜底）、分页
+（行值比较 ``(created_at, id) < (?, ?)``）、多取一条判 ``has_more``（``LIMIT limit + 1``）、
+切片整体替换（同一事务内 ``DELETE`` + 批量 ``INSERT``）。
 
-| 语义 | 内存实现 | 这里 |
-| --- | --- | --- |
-| 软删过滤 | ``deleted_docs`` 集合 | ``deleted_at IS NULL`` |
-| 同名/同哈希唯一 | ``dict`` 键 | 先查后插 + 唯一约束兜底 ``IntegrityError`` |
-| 分页 | ``(created_at, id)`` 倒序 + 游标 | 行值比较 ``(created_at, id) < (?, ?)`` |
-| 「多取一条」判断 ``has_more`` | ``window[: limit + 1]`` | ``LIMIT limit + 1`` |
-| 切片整体替换 | 直接换 list | 同一事务内 ``DELETE`` + 批量 ``INSERT`` |
-
-**先查后插 + 唯一约束兜底**这条最容易写错：只靠先查后插，并发下会两个都插进去
-（唯一约束会报错，但那时已经晚了 —— 请求变成 500）；只靠唯一约束，则无法给出
-``409 KB_NAME_CONFLICT`` 里那个「已存在的 ID」的 details。所以两者都要：
-应用层查一次给出友好错误，约束做最后一道防线，并把 ``IntegrityError`` 翻译回
-同一个领域错误（见 :func:`app.infrastructure.mysql.db.classify_db_error`）。
+**先查后插 + 唯一约束兜底**这条最容易写错：只靠先查后插，并发下会两个都插进去；只靠唯一约束，
+则无法给出 ``409`` details 里那个「已存在的 ID」。所以两者都要：应用层查一次给出友好错误，
+约束做最后一道防线，并把 ``IntegrityError`` 翻译回同一个领域错误。
 """
 
 from __future__ import annotations
@@ -77,9 +69,8 @@ metadata_ = MetaData()
 # ---------------------------------------------------------------------------
 # 表定义（与 deploy/mysql/001_init_schema.sql 逐列对齐）
 #
-# ``deleted_key``（生成列）**刻意不在这里定义**：它只服务于唯一约束，
-# 应用侧既不读也不写。定义它反而会诱使某处 ``INSERT`` 带上它 ——
-# MySQL 对生成列会直接报错（``The value specified for generated column ... is not allowed``）。
+# ``deleted_key``（生成列）**刻意不在这里定义**：它只服务于唯一约束，应用侧既不读也不写。
+# 定义它反而会诱使某处 ``INSERT`` 带上它 —— MySQL 对生成列会直接报错。
 # ---------------------------------------------------------------------------
 
 knowledge_base_table = Table(
@@ -121,10 +112,9 @@ document_table = Table(
     Column("status", String(16), nullable=False),
     Column("chunk_count", Integer, nullable=False, server_default="0"),
     Column("char_count", Integer, nullable=False, server_default="0"),
-    # 截断事实（``docs/10`` UP-01）：``chunks_total`` 是切分产出数、``chunk_count``
-    # 是实际入库数，``truncated`` 显式冗余一份是为了让「被截断」可被 SQL 直接筛出来
-    # （推理式 ``chunks_total > chunk_count`` 在 NULL 上不成立，会漏掉那些
-    #  还没走到切分就失败、但已经声明过超限的文档）。
+    # 截断事实（``docs/10`` UP-01）：``chunks_total`` 是切分产出数、``chunk_count`` 是实际
+    # 入库数。``truncated`` 显式冗余一份是为了让「被截断」可被 SQL 直接筛出来（推理式
+    # ``chunks_total > chunk_count`` 在 NULL 上不成立）。
     Column("chunks_total", Integer),
     Column("truncated", Boolean, nullable=False, server_default="0"),
     Column("chunk_size", Integer, nullable=False),
@@ -155,8 +145,7 @@ document_chunk_table = Table(
     Column("heading_path", String(512)),
     Column("token_count", Integer, nullable=False),
     # 切分参数快照（``REQ-RAG-002``）：老切片在 KB 改配置后仍要能解释自己。
-    # ``docs/09`` §2.3 的表格漏了这一列，见 ``deploy/mysql/003_add_chunk_metadata.sql``
-    # 与 ``docs/12`` 的偏差记录。
+    # ``docs/09`` §2.3 的表格漏了这一列，见 ``deploy/mysql/003_add_chunk_metadata.sql``。
     Column("metadata", JSON),
     Column("created_at", DateTime, nullable=False),
 )
@@ -173,13 +162,9 @@ _IMMUTABLE_ON_UPDATE = ("id", "created_at")
 def _update_values(values: dict[str, Any]) -> dict[str, Any]:
     """把 INSERT 的值字典转成 UPDATE 的值字典。
 
-    剔除主键与创建时间，并刷新 ``updated_at``：
-
-    * ``SET id = <同一个 id>`` 本身无害，但一旦调用方传来的实体与库里那一行
-      不是同一条（例如把 ``kb_a`` 的对象传给 ``save`` 却带着 ``kb_b`` 的 id），
-      它会把**另一行的主键**改掉；
-    * ``SET created_at`` 更隐蔽：它让创建时间随最后一次保存漂移，
-      于是「按创建时间倒序」的列表顺序会在编辑后变化。
+    剔除主键与创建时间，并刷新 ``updated_at``：``SET id = <同一个 id>`` 本身无害，但一旦调用方
+    传来的实体与库里那一行不是同一条，它会把**另一行的主键**改掉；``SET created_at`` 更隐蔽，
+    它让创建时间随最后一次保存漂移，于是「按创建时间倒序」的列表顺序会在编辑后变化。
     """
     trimmed = {key: value for key, value in values.items() if key not in _IMMUTABLE_ON_UPDATE}
     trimmed["updated_at"] = db_now()
@@ -617,9 +602,8 @@ class MySqlChunkRepo:
     async def replace_for_document(self, doc_id: str, chunks: Sequence[Chunk]) -> int:
         """整体替换该文档的切片（重跑入库任务幂等的前提）。
 
-        ``DELETE`` + 批量 ``INSERT`` 必须在**同一事务**里：分开提交的话，
-        中途失败会留下「切片全没了」的文档 —— 而任务状态还是 ``RUNNING``，
-        看起来像「正在重跑」，实际数据已经处于中间态。
+        ``DELETE`` + 批量 ``INSERT`` 必须在**同一事务**里：分开提交的话，中途失败会留下
+        「切片全没了」的文档 —— 而任务状态还是 ``RUNNING``，看起来像「正在重跑」。
         """
         table = document_chunk_table
         try:
@@ -675,9 +659,9 @@ class MySqlChunkRepo:
     async def count_for_kb(self, kb_id: str) -> int:
         """该 KB 的切片总数。
 
-        **必须 join 文档表**：已软删文档的切片不计入（内存实现同样是先取
-        ``live doc_ids`` 再求和）。只按 ``kb_id`` 直接 count 会把已删文档的
-        切片算进去，于是删完文档后 KB 列表里的 ``chunk_count`` 不降反升。
+        **必须 join 文档表**：已软删文档的切片不计入（内存实现同样是先取 ``live doc_ids``
+        再求和）。只按 ``kb_id`` 直接 count 会把已删文档的切片算进去，于是删完文档后 KB
+        列表里的 ``chunk_count`` 不降反升。
         """
         table = document_chunk_table
         statement = (
@@ -741,11 +725,11 @@ class MySqlRagRepository:
     async def aclose(self) -> None:
         """归还引擎（lifespan 结束时调用）。
 
-        不关的话 ``uvicorn --reload`` 每次重启都会留下一批到 MySQL 的半开连接，
-        直到 ``wait_timeout`` 才被服务端回收。
+        不关的话 ``uvicorn --reload`` 每次重启都会留下一批到 MySQL 的半开连接，直到
+        ``wait_timeout`` 才被服务端回收。
 
-        注意是**归还**不是 ``dispose``：记忆仓储与 RAG 仓储共享同一个引擎
-        （同 DSN），直接关会把对方的连接一起断掉。
+        注意是**归还**不是 ``dispose``：记忆仓储与 RAG 仓储共享同一个引擎（同 DSN），
+        直接关会把对方的连接一起断掉。
         """
         await release_engine(self._engine)
 
@@ -753,10 +737,9 @@ class MySqlRagRepository:
 def _apply_cursor(statement: Any, created_at: Any, resource_id: Any, cursor: str | None) -> Any:
     """给列表查询套上 ``(created_at, id)`` 倒序游标条件。
 
-    用**行值比较**（``(created_at, id) < (?, ?)``）而不是
-    ``created_at < ? OR (created_at = ? AND id < ?)``：两者语义相同，
-    但前者能被优化器用上 ``idx_*_user_created``，后者常退化成全表扫描。
-    更重要的是：手写展开形式时忘记加括号（``a AND b OR c``）不会报错，
+    用**行值比较**（``(created_at, id) < (?, ?)``）而不是 ``created_at < ? OR
+    (created_at = ? AND id < ?)``：两者语义相同，但前者能被优化器用上 ``idx_*_user_created``，
+    后者常退化成全表扫描；更重要的是手写展开形式时忘记加括号（``a AND b OR c``）不会报错，
     只会静默地多返回或少返回数据。
     """
     if not cursor:

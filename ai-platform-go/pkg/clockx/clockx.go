@@ -1,7 +1,7 @@
 // Package clockx 统一时间格式与时钟来源。
 //
-// 契约（docs/02-§1）：一律 RFC 3339 UTC 毫秒、`Z` 结尾（形如 `2026-09-28T10:00:00.123Z`）。
-// 不用 time.RFC3339Nano：它整秒时省略 `.000`，会让客户端严格解析器失败、两侧日志的字符串比较对不上。
+// 契约（docs/02-§1）：一律 RFC 3339 UTC 毫秒、`Z` 结尾。不用 time.RFC3339Nano：
+// 它整秒时省略 `.000`，会让客户端严格解析器失败、两侧日志的字符串比较对不上。
 package clockx
 
 import "time"
@@ -12,9 +12,9 @@ const Layout = "2006-01-02T15:04:05.000Z"
 // DateLayout 是配额周期用的日期格式（YYYY-MM-DD）。
 const DateLayout = "2006-01-02"
 
-// Now 返回 UTC 当前时间，截断到毫秒（与 MySQL DATETIME(3) 的精度一致）。
-//
-// 必须截断：纳秒精度写进 DATETIME(3) 会被 MySQL 四舍五入，「内存里的时间」与「库里的时间」最多差 0.5ms，游标分页会把边界记录判错。
+// Now 返回 UTC 当前时间，截断到毫秒（与 MySQL DATETIME(3) 精度一致）。
+// 必须截断：纳秒写进 DATETIME(3) 会被四舍五入，「内存里的时间」与「库里的时间」
+// 最多差 0.5ms，游标分页会把边界记录判错。
 func Now() time.Time { return Truncate(time.Now()) }
 
 // Truncate 把时刻转为 UTC 并截断到毫秒。

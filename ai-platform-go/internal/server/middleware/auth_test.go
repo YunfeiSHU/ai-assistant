@@ -37,9 +37,8 @@ func newTestSigner(t *testing.T) *jwtx.Signer {
 }
 
 // stubChecker 让测试能精确控制第 ⑦ 步（token_version 校验）的结果。
-//
-// 用桩而不是真 Redis/MySQL：这一层的职责是**编排校验顺序**，
-// 不是「还原一次真实鉴权」，把它绑到基础设施上只会让测试变慢变脆弱。
+// 用桩而不是真 Redis/MySQL：这一层的职责是编排校验顺序，不是还原一次真实鉴权，
+// 绑到基础设施上只会让测试变慢变脆弱。
 type stubChecker struct {
 	calls   []int
 	err     error
@@ -118,9 +117,7 @@ func TestAuthStep1HeaderFormat(t *testing.T) {
 }
 
 // TestAuthSchemeIsCaseInsensitive 覆盖 RFC 7235 的 scheme 大小写不敏感。
-//
-// 这条不是吹毛求疵：不同 HTTP 客户端对 scheme 的大小写写法不一致，
-// 严格要求 `Bearer` 会让一部分正常客户端莫名 401。
+// 不同 HTTP 客户端对 scheme 的大小写写法不一致，严格要求 `Bearer` 会让一部分正常客户端莫名 401。
 func TestAuthSchemeIsCaseInsensitive(t *testing.T) {
 	signer := newTestSigner(t)
 	token, _, _ := signer.Sign("u_abc", 1, time.Now())
@@ -134,9 +131,7 @@ func TestAuthSchemeIsCaseInsensitive(t *testing.T) {
 }
 
 // TestAuthInjectsUserID 覆盖第 ⑧ 步：把 `sub` 注入上下文。
-//
-// 注入的是 `sub`，不是整条令牌，也不是请求头里的任何东西 ——
-// 后者会让调用方有机会伪造身份。
+// 注入的是 `sub` 而不是整条令牌或请求头里的任何东西 —— 后者会让调用方有机会伪造身份。
 func TestAuthInjectsUserID(t *testing.T) {
 	signer := newTestSigner(t)
 	token, _, _ := signer.Sign("u_01ABC", 7, time.Now())
@@ -223,11 +218,10 @@ func TestAuthStep2RejectsTamperedAndAlienTokens(t *testing.T) {
 	}
 }
 
-// TestAuthStep5ExpiredToken 覆盖第 ⑤ 步，且**必须**是 TOKEN_EXPIRED。
-//
-// 这是唯一允许泄漏「为什么失败」的场景（docs/02 §3.3 的 MAY）：
-// 客户端只有看到 TOKEN_EXPIRED 才会去静默刷新；报成 UNAUTHENTICATED
-// 会让用户被直接登出，而令牌其实只是过期了。
+// TestAuthStep5ExpiredToken 覆盖第 ⑤ 步，且必须是 TOKEN_EXPIRED。
+// 这是唯一允许泄漏「为什么失败」的场景（docs/02 §3.3 的 MAY）：客户端只有看到
+// TOKEN_EXPIRED 才会去静默刷新；报成 UNAUTHENTICATED 会让用户被直接登出，
+// 而令牌其实只是过期了。
 func TestAuthStep5ExpiredToken(t *testing.T) {
 	signer := newTestSigner(t)
 	// TTL 30min，签发时间回拨 2h → 必然过期（远超 30s 容差）。
@@ -253,10 +247,9 @@ func TestAuthStep5ExpiredToken(t *testing.T) {
 }
 
 // TestAuthStep7VersionMismatch 覆盖第 ⑦ 步。
-//
-// 关键是**错误码的选择**：版本不匹配必须是 UNAUTHENTICATED 而不是
-// TOKEN_EXPIRED，因为「刷新」同样会失败（新令牌还是同一版本）。
-// 报成 TOKEN_EXPIRED 会让客户端陷入「刷新→401→刷新」的死循环。
+// 关键是错误码：版本不匹配必须是 UNAUTHENTICATED 而不是 TOKEN_EXPIRED，
+// 因为「刷新」同样会失败（新令牌还是同一版本），报成 TOKEN_EXPIRED 会让客户端
+// 陷入「刷新→401→刷新」的死循环。
 func TestAuthStep7VersionMismatch(t *testing.T) {
 	signer := newTestSigner(t)
 	token, _, _ := signer.Sign("u_abc", 1, time.Now())
@@ -277,9 +270,8 @@ func TestAuthStep7VersionMismatch(t *testing.T) {
 }
 
 // TestAuthStep7CheckerErrorPropagates 断言版本校验的基础设施故障不会被吞掉。
-//
-// Redis + MySQL 同时不可用时若「校验失败就放行」，鉴权就成了摆设；
-// 若报成 401，客户端会以为要重新登录。正确做法是 503 可重试。
+// 若「校验失败就放行」，鉴权就成了摆设；若报成 401，客户端会以为要重新登录。
+// 正确做法是 503 可重试。
 func TestAuthStep7CheckerErrorPropagates(t *testing.T) {
 	signer := newTestSigner(t)
 	token, _, _ := signer.Sign("u_abc", 1, time.Now())
@@ -297,7 +289,6 @@ func TestAuthStep7CheckerErrorPropagates(t *testing.T) {
 }
 
 // TestAuthNilCheckerSkipsVersionCheck 断言 checker 为 nil 时不 panic。
-//
 // 本地起服务时可能只想验令牌本身（没有 Redis），此时传 nil 应当可用。
 func TestAuthNilCheckerSkipsVersionCheck(t *testing.T) {
 	signer := newTestSigner(t)
@@ -309,10 +300,9 @@ func TestAuthNilCheckerSkipsVersionCheck(t *testing.T) {
 	}
 }
 
-// TestAuthACAuth03AudIsHardConstraint 复现 docs/02 §7 的 AC-AUTH-03。
-//
-// 验收标准要求：「把 aud 改成 ai-assistant 后重新签发 → ai-platform 返回
-// 401 UNAUTHENTICATED」。这就是接缝 J1 的互操作测试在网关侧的对应项。
+// TestAuthACAuth03AudIsHardConstraint 复现 docs/02 §7 的 AC-AUTH-03：
+// 「把 aud 改成 ai-assistant 后重新签发 → ai-platform 返回 401 UNAUTHENTICATED」。
+// 这是接缝 J1 的互操作测试在网关侧的对应项。
 func TestAuthACAuth03AudIsHardConstraint(t *testing.T) {
 	// 校验方（网关）期望 aud=ai-platform
 	verifier := newTestSigner(t)
@@ -336,9 +326,8 @@ func TestAuthACAuth03AudIsHardConstraint(t *testing.T) {
 }
 
 // TestAuthDoesNotLeakReason 断言 401 的响应体不含失败原因（防探测）。
-//
-// 失败原因写在 cause 里（只进日志）。若泄漏到响应，攻击者可以据此
-// 区分「签名错」「iss 错」「令牌过期」，从而推断服务端配置。
+// 失败原因写在 cause 里（只进日志）。若泄漏到响应，攻击者可以据此区分
+// 「签名错」「iss 错」「令牌过期」，从而推断服务端配置。
 func TestAuthDoesNotLeakReason(t *testing.T) {
 	signer := newTestSigner(t)
 	token, _, _ := signer.Sign("u_abc", 1, time.Now())

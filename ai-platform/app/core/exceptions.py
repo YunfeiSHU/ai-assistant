@@ -1,15 +1,11 @@
-"""统一错误码与错误信封。
+"""统一错误码与错误信封（契约见 ``docs/02-接口规范与错误码.md`` §3.3 / §5）。
 
-契约见 ``docs/02-接口规范与错误码.md`` §3.3 / §5：错误响应体固定为
+响应体固定为 ``{"error": {"code": ..., "message": ..., "details": {...},
+"trace_id": ..., "retryable": ...}}``。
 
-.. code-block:: json
-
-    {"error": {"code": ..., "message": ..., "details": {...},
-               "trace_id": ..., "retryable": ...}}
-
-**为什么用「枚举 + 规格表」而不是继承体系**：错误码是**对外契约的一部分**，
-必须能被机械地列举、比对与快照测试；散落成几十个异常子类后，谁也没法一眼看全。
-规格表让「HTTP 状态码 / 是否可重试 / 默认文案」三件事集中在一处，也便于文档同步。
+用「枚举 + 规格表」而不是继承体系：错误码是对外契约的一部分，必须能被机械地列举、
+比对与快照测试；散成几十个异常子类后谁也没法一眼看全。规格表让「HTTP 状态码 /
+是否可重试 / 默认文案」三件事集中在一处，也便于与文档同步。
 """
 
 from __future__ import annotations
@@ -147,8 +143,8 @@ ERROR_SPECS: dict[ErrorCode, ErrorSpec] = {
     ErrorCode.TASK_NOT_FOUND: ErrorSpec(404, False, "任务不存在或无权访问"),
     ErrorCode.TASK_NOT_CANCELABLE: ErrorSpec(409, False, "当前状态不支持取消"),
     ErrorCode.TASK_NOT_RETRYABLE: ErrorSpec(409, False, "当前状态不支持重试"),
-    # 与「用户取消」区分开：超时是**失败**，可重试；取消是用户意图，不重试。
-    # 混用会让「任务被取消」与「任务跑超时」在指标与告警里长得一模一样。
+    # 与「用户取消」区分开：超时是失败、可重试；取消是用户意图、不重试。
+    # 混用会让两者在指标与告警里长得一模一样。
     ErrorCode.TASK_TIMEOUT: ErrorSpec(504, True, "任务执行超时"),
     ErrorCode.MQ_UNAVAILABLE: ErrorSpec(503, True, "消息队列不可用"),
     # ---- MCP ----
@@ -162,14 +158,13 @@ ERROR_SPECS: dict[ErrorCode, ErrorSpec] = {
 class AppError(Exception):
     """业务异常：携带错误码、可展示文案与结构化补充信息。
 
-    .. note::
-      刻意**不用** ``slots=True``：``dataclass(slots=True)`` 会重建类对象，
-       导致 ``__post_init__`` 里的零参 ``super()`` 指向旧类而抛
-       ``TypeError: obj must be an instance or subtype of type``。
-       异常对象不在热路径上，这点开销不值得换取踩坑风险。
+    刻意不用 ``slots=True``：``dataclass(slots=True)`` 会重建类对象，导致
+    ``__post_init__`` 里的零参 ``super()`` 指向旧类而抛
+    ``TypeError: obj must be an instance or subtype of type``。异常不在热路径上，
+    不值得换这个踩坑风险。
 
-       ``eq=False`` 保持异常的标识语义（默认的按值相等会让两个 ``KB_NOT_FOUND``
-       在所有字段相同时相等，容易掩盖测试里的真实差异）。
+    ``eq=False`` 保持异常的标识语义（默认的按值相等会让两个 ``KB_NOT_FOUND`` 在所有
+    字段相同时相等，掩盖测试里的真实差异）。
     """
 
     code: ErrorCode

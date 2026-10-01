@@ -1,15 +1,12 @@
 """RAG 用例服务：知识库 CRUD、文档上传、Worker 侧流水线、检索调试接口。
 
-分成四层，边界与 ``docs/06`` 的接口一一对应：
+四层边界与 ``docs/06`` 的接口一一对应：:class:`KnowledgeBaseService`（KB CRUD 与参数覆盖）、
+:class:`DocumentService`（上传：只做校验 + 建任务，``REQ-RAG-004``）、
+:class:`IngestionService`（Worker 侧解析 → 清洗 → 切分 → 向量化 → 落库）、
+:class:`SearchService`（``/search`` 调试）。
 
-* :class:`KnowledgeBaseService` —— KB 的增删改查与参数覆盖（``REQ-RAG-002``）；
-* :class:`DocumentService`       —— 上传接口：**只做校验 + 建任务**（``REQ-RAG-004``）；
-* :class:`IngestionService`      —— Worker 侧：解析 → 清洗 → 切分 → 向量化 → 落库；
-* :class:`SearchService`         —— ``/search`` 调试接口（``REQ-RAG-008``）。
-
-把「建任务」与「真正入库」分在两个类里是 ``REQ-RAG-004`` 的直接要求（接口
-P95 ≤ 200ms）。写在同一个类里，迟早会有人顺手在接口路径上多调一次解析，
-P95 立刻崩掉；分开之后这条线在结构上就不可能被越过。
+「建任务」与「真正入库」分在两个类是 ``REQ-RAG-004`` 的直接要求（接口 P95 ≤ 200ms）：
+写在同一个类里，迟早会有人顺手在接口路径上多调一次解析，P95 立刻崩掉。
 """
 
 from __future__ import annotations
@@ -81,8 +78,8 @@ _EMBED_PROGRESS_SPAN = 40
 def resolve_chunk_params(chunk_size: Any, chunk_overlap: Any) -> tuple[int, int]:
     """校验切分参数并规范化。
 
-    这条校验刻意只有一份实现：KB 创建、KB 修改、文档级覆盖三个入口都要过，
-    各写一遍必然出现「某个入口漏了校验」，而产生一个永远切不出正常切片的 KB。
+    只有一份实现：KB 创建、KB 修改、文档级覆盖三个入口都要过，各写一遍必然出现
+    「某个入口漏了校验」，而产生一个永远切不出正常切片的 KB。
     """
     size = int(chunk_size if chunk_size is not None else CHUNK_SIZE_DEFAULT)
     overlap = int(chunk_overlap if chunk_overlap is not None else CHUNK_OVERLAP_DEFAULT)
@@ -102,11 +99,11 @@ def resolve_chunk_params(chunk_size: Any, chunk_overlap: Any) -> tuple[int, int]
 
 
 def _resolve_doc_name(doc_name: str | None, fallback: str) -> str:
-    """确定文档显示名，并**保证带可用扩展名**。
+    """确定文档显示名，并保证带可用扩展名。
 
-    ``doc_name`` 在 ``docs/06`` §3.1 里是「显示名」，但下游解析器分派只看扩展名。
-    如果直接拿显示名当文件名，用户在 ``doc_name`` 里写「售后政策」就会在解析阶段
-    得到一个「不支持的文件类型」——一个自己填的字段把文件搞成打不开，很难自证。
+    ``doc_name`` 在 ``docs/06`` §3.1 里是「显示名」，但下游解析器分派只看扩展名。直接
+    拿显示名当文件名，用户在 ``doc_name`` 里写「售后政策」就会在解析阶段得到一个
+    「不支持的文件类型」—— 一个自己填的字段把文件搞成打不开，很难自证。
     所以：显示名优先，缺扩展名时从真实文件名借用，仍无扩展名则按纯文本处理。
     """
     base = sanitize_filename(doc_name or fallback)
@@ -299,7 +296,7 @@ class UploadResult:
     created_at: str
 
     def to_dict(self) -> dict[str, Any]:
-        """转成 ``POST /documents`` 的响应字段 —— **键名就是对外契约**，改这里等于改接口。"""
+        """转成 ``POST /documents`` 的响应字段 —— 键名就是对外契约，改这里等于改接口。"""
         return {
             "doc_id": self.doc_id,
             "task_id": self.task_id,
@@ -347,10 +344,9 @@ class DocumentService:
         payload, final_name = self._resolve_payload(
             filename=filename, raw=raw, text=text, doc_name=doc_name
         )
-        # 扩展名 + 魔数校验放在**接口层**：``docs/06`` §3.2 要求类型不符时返回
-        # ``415``，而任务一旦建出来就只能以 FAILED 收场，用户拿不到「类型不对」
-        # 这个明确原因（只有一句「入库失败」）。这一步不做任何解析，不违反
-        # ``REQ-RAG-004`` 的时延约束。
+        # 扩展名 + 魔数校验放在接口层：``docs/06`` §3.2 要求类型不符时返回 ``415``，
+        # 而任务一旦建出来就只能以 FAILED 收场，用户拿不到「类型不对」这个明确原因
+        # （只有一句「入库失败」）。这一步不做任何解析，不违反 ``REQ-RAG-004`` 的时延约束。
         get_parser(final_name, payload)
         doc_count = await self._repos.documents.count_in_kb(kb_id)
         if doc_count >= self._settings.max_kb_documents:
@@ -491,9 +487,8 @@ class DocumentService:
     ) -> UploadResult:
         """复用「同内容但失败」的文档行，重新投递入库任务。
 
-        重跑必须**换幂等键**：沿用原来的键会命中旧任务记录，于是 ``create``
-        返回旧任务而 ``submit`` 看到它不是 ``PENDING`` 直接跳过——表现为「重传成功
-        但什么都没发生」。
+        重跑必须换幂等键：沿用原来的键会命中旧任务记录，于是 ``create`` 返回旧任务而
+        ``submit`` 看到它不是 ``PENDING`` 直接跳过 —— 表现为「重传成功但什么都没发生」。
         """
         task, _ = await self._tasks.create(
             type_=TaskType.DOCUMENT_INGEST,
@@ -605,9 +600,9 @@ class IngestionService:
         await self._report(task, DOC_PARSING, 10)
 
         raw = await self._objects.get(document.object_key)
-        # 解析是**纯同步 CPU 函数**，必须甩进线程池。直接写在协程体里会占住事件循环：
-        # 8MB 文档要几十秒，这期间整个进程连 ``/health`` 都不应答 —— 网关的就绪探测
-        # 会把「正在解析」误判成「AI 挂了」，整轮验收跟着崩。
+        # 解析是纯同步 CPU 函数，必须甩进线程池。直接写在协程体里会占住事件循环：
+        # 8MB 文档要几十秒，这期间整个进程连 ``/health`` 都不应答 —— 网关的就绪探测会把
+        # 「正在解析」误判成「AI 挂了」。
         parsed = await asyncio.to_thread(
             parse_document, document.doc_name, raw, min_chars=self._settings.min_doc_chars
         )
@@ -628,7 +623,7 @@ class IngestionService:
         )
         # 切分同样是同步 CPU（tiktoken 逐块计数，8MB 正文实测切出 1.7 万块），同一理由进线程池。
         drafts = await asyncio.to_thread(chunker.split_blocks, parsed.blocks)
-        # 先记住**截断前**的总数：它就是 ``document.chunks_total``（UP-01）要暴露的那个数，
+        # 先记住截断前的总数：它就是 ``document.chunks_total``（UP-01）要暴露的那个数，
         # 也是「要不要告诉调用方丢了多少」的判据。截断之后再取长度只剩实际入库数。
         total_drafts = len(drafts)
         truncated = False
@@ -650,16 +645,16 @@ class IngestionService:
                 {"filename": document.doc_name},
             )
 
-        # 截断事实**落库**（``docs/10`` UP-01）。只打一条 warning 的后果是「入库成功」为假：
+        # 截断事实落库（``docs/10`` UP-01）。只打一条 warning 的后果是「入库成功」为假：
         # 8MB 测试正文实测切出 16,969 片、只入库 10,000 片（丢 41% 正文），而接口照旧 202。
-        # ``chunk_count`` 在下面由实际入库数赋值，两个字段并存才能让调用方
-        # 既有「本该有多少」也有「实际有多少」。
+        # ``chunk_count`` 在下面由实际入库数赋值，两个字段并存才能让调用方既有「本该有
+        # 多少」也有「实际有多少」。
         document.chunks_total = total_drafts
         document.truncated = truncated
         # 总数定下后立刻上报（``docs/10`` UP-02）：这是客户端算 ETA 的起点。
-        # 此处传的是**截断后**的待处理数（= 真正要跑的向量化量），与
-        # ``document.chunks_total``（截断前产出数）是两个不同的量，故意不混用：
-        # 进度条的分母必须是实际工作量，否则 ETA 永远算不准。
+        # 此处传的是截断后的待处理数（= 真正要跑的向量化量），与 ``document.chunks_total``
+        # （截断前产出数）是两个不同的量，故意不混用：进度条的分母必须是实际工作量，
+        # 否则 ETA 永远算不准。
         await self._report(task, DOC_CHUNKING, 35, chunks_total=len(drafts), chunks_done=0)
         # 逐块 sha256 + 组装实体也是同步 CPU（每块一次哈希），一并进线程池。
         chunks = await asyncio.to_thread(self._build_chunks, document, drafts)
@@ -699,15 +694,14 @@ class IngestionService:
     async def _embed_and_upsert(self, task: Task, chunks: Sequence[Chunk]) -> int:
         """分批向量化并 upsert，每批后上报进度（``docs/06`` §4.5）。
 
-        **为什么要按窗口并发（``INGEST_EMBED_WINDOW``）**：早期实现是
-        「交一批 → 等它返回 → 再交下一批」的严格串行。本地 BGE 时代这没问题
-        （算力是本机的，串行不浪费），但换成云端 provider 之后，**每次调用都是一次
-        网络往返**：串行就等于只维持一个请求在飞，provider 内部的并发池完全是空的。
-        实测（8MB / 5,821 片 / 硅基流动）：串行 **98.2s**，而同样的 provider 在
-        并发 8 下裸测是 379.6 片/s（约 15s）—— 差的 6 倍全在等待上。
+        按窗口并发（``INGEST_EMBED_WINDOW``）的理由：早期实现是「交一批 → 等它返回 →
+        再交下一批」的严格串行。本地 BGE 时代这没问题（算力是本机的），但换成云端
+        provider 之后每次调用都是一次网络往返，串行等于只维持一个请求在飞。实测
+        （8MB / 5,821 片 / 硅基流动）串行 98.2s，而 provider 在并发 8 下裸测是 379.6 片/s
+        （约 15s）—— 差的 6 倍全在等待上。
 
-        窗口内并发、窗口内顺序 upsert：既拿回吞吐，又保留原有的
-        「逐批进度上报 + 逐批取消检查」语义（这两个是 ``docs/06`` §4.5 的硬要求）。
+        窗口内并发、窗口内顺序 upsert：既拿回吞吐，又保留原有的「逐批进度上报 +
+        逐批取消检查」语义（``docs/06`` §4.5 的硬要求）。
         """
         batch_size = max(1, self._settings.embedding_batch_size)
         window = max(1, self._settings.ingest_embed_window)
@@ -737,9 +731,9 @@ class IngestionService:
                 progress = _EMBED_PROGRESS_START + int(
                     _EMBED_PROGRESS_SPAN * min(1.0, done / total)
                 )
-                # 带上切片计数（UP-02）：``progress`` 会在 95 上饱和，之后只有
-                # ``chunks_done`` 继续走 —— 没有它，客户端在收尾阶段就只能看到
-                # 一个不动的进度条，分不出「在算」与「卡住」。
+                # 带上切片计数（UP-02）：``progress`` 会在 95 上饱和，之后只有 ``chunks_done``
+                # 继续走 —— 没有它，客户端在收尾阶段就只能看到一个不动的进度条，
+                # 分不出「在算」与「卡住」。
                 await self._report(
                     task,
                     DOC_EMBEDDING,
@@ -762,8 +756,8 @@ class IngestionService:
         await self._repos.documents.soft_delete(doc_id, task.user_id)
 
         await self._report(task, DOC_DELETING, 85)
-        # 对象删除放最后：先删记录再删对象，最坏是留下孤儿对象（可再清理）；
-        # 反过来最坏是记录还在但对象没了（引用直接失效，用户可见）
+        # 对象删除放最后：先删记录再删对象，最坏是留下孤儿对象（可再清理）；反过来最坏是
+        # 记录还在但对象没了（引用直接失效，用户可见）
         try:
             await self._objects.delete(document.object_key)
         except Exception as exc:
@@ -900,8 +894,7 @@ class SearchService:
         """执行检索并组装调试响应。
 
         参数优先级：``请求 > KB 默认 > 全局默认``（``REQ-RAG-002``）；
-        ``with_rerank=false`` 时**不调用**重排器，``rerank_score`` 固定为 ``null``
-        （``AC-RAG-12``）。
+        ``with_rerank=false`` 时不调用重排器，``rerank_score`` 固定为 ``null``（``AC-RAG-12``）。
         """
         kb = await self._repos.knowledge_bases.get(kb_id, user_id)
         result: RetrievalResult = await self._retriever.retrieve_detailed(

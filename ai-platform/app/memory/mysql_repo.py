@@ -1,25 +1,17 @@
 """长期记忆仓储的 MySQL 实现（``user_memory`` 表，``REQ-MEM-004/005/007``）。
 
-**为什么不复用** :mod:`app.infrastructure.storage.mysql` 的引擎与表定义：记忆不属于知识库域，
-两张表之间没有任何引用；把 ``user_memory`` 塞进 RAG 的表元数据里会让
-「哪张表属于哪条链路」变得难以判断，而删除某条链路时就会漏掉另一半。
+不复用 :mod:`app.infrastructure.storage.mysql` 的引擎与表定义：记忆不属于知识库域，两张表
+之间没有任何引用；把 ``user_memory`` 塞进 RAG 的表元数据里会让「哪张表属于哪条链路」
+变得难以判断，而删除某条链路时就会漏掉另一半。真正需要共享的（引擎构造、时间戳格式、
+错误分类）在 :mod:`app.infrastructure.mysql.db`，语义一致性靠共用工具而非共用容器保证。
 
-真正需要共享的（引擎构造、时间戳格式、错误分类）在 :mod:`app.infrastructure.mysql.db`，
-两边都用它 —— 语义一致性靠**共用工具**而不是**共用容器**来保证。
+与 :class:`~app.memory.long_term.InMemoryMemoryRepo` 逐条对齐：精确去重对齐内存的
+``by_hash``；命中即刷新对齐 ``hit_count += 1``；容量淘汰对齐「丢最不可靠且最旧的」；
+分页对齐 ``(created_at, id)`` 倒序。
 
-与 :class:`~app.memory.long_term.InMemoryMemoryRepo` 的逐条对齐：
-
-| 语义 | 内存实现 | 这里 |
-| --- | --- | --- |
-| 精确去重 | ``by_hash`` 字典 | ``uk_mem_user_hash`` 唯一索引 + 先查后插 |
-| 命中即刷新 | ``hit_count += 1`` | ``UPDATE hit_count = hit_count + 1``（**不是**读改写） |
-| 容量淘汰 | 丢掉最低置信、最旧的 | ``ORDER BY confidence, updated_at LIMIT n`` 后按 id 删 |
-| 分页 | ``(created_at, id)`` 倒序 | 行值比较 + ``LIMIT limit + 1`` |
-| 跨用户 | 抛 ``MEMORY_NOT_FOUND`` | 同上（``WHERE user_id = ?`` 查不到就是 404） |
-
-``hit_count`` 用**自增表达式**而不是「读出来 +1 再写回去」：后者在两次抽取
-并发时会互相覆盖（都读到 1，都写 2，实际命中了 3 次）。内存实现因为有全局锁
-没这个问题，SQL 实现没有锁，只能靠单条 UPDATE 的原子性。
+``hit_count`` 用自增表达式而不是「读出来 +1 再写回去」：后者在两次抽取并发时会互相覆盖
+（都读到 1、都写 2，实际命中了 3 次）。内存实现有全局锁没这个问题，SQL 实现只能靠
+单条 UPDATE 的原子性。
 """
 
 from __future__ import annotations
@@ -127,8 +119,8 @@ def _record_from_row(row: dict[str, Any]) -> MemoryRecord:
 def _as_kind(value: Any) -> MemoryKind:
     """库里的 ``kind`` → ``Literal``。
 
-    没有做「未知值就静默变成 fact」的兜底：库里出现第三种 kind 说明表与代码
-    不同步（例如有人手工插了数据），静默归一化会让那条记忆永远筛不出来。
+    没有做「未知值就静默变成 fact」的兜底：库里出现第三种 kind 说明表与代码不同步
+    （例如有人手工插了数据），静默归一化会让那条记忆永远筛不出来。
     """
     text = str(value)
     if text not in ("preference", "fact"):
@@ -166,9 +158,9 @@ class MySqlMemoryRepo:
             # 并发下两个请求同时通过了上面的查询：这里退化成「命中」而不是报错 ——
             # 去重的语义是「同一句话只存一条」，撞唯一键恰好证明这个目的已达成。
             #
-            # 重查要**带上短暂等待**：并发的另一个事务可能还没提交，此刻再查
-            # 依旧查不到（InnoDB 的 READ COMMITTED 下看不到未提交行），于是会走到
-            # ``reraise`` 报 409 —— 用户明明只是重复说了一句话，却拿到一个错误。
+            # 重查要带上短暂等待：并发的另一个事务可能还没提交，此刻再查依旧查不到
+            # （InnoDB 的 READ COMMITTED 下看不到未提交行），于是会走到 ``reraise`` 报
+            # 409 —— 用户明明只是重复说了一句话，却拿到一个错误。
             for _ in range(3):
                 again = await self.find_by_hash(record.user_id, record.content)
                 if again is not None:

@@ -1,9 +1,8 @@
 """BGE 交叉编码器重排（``FlagEmbedding.FlagReranker``）。
 
-模型延迟加载，且**失败不抛异常而是退化**：重排只是精度增强，让整个对话因为
-重排模型没下载成功而 500，是把可选依赖变成了硬依赖。失败信息通过
-:class:`~app.rag.reranker.base.RerankResult` 的 ``applied``/``reason`` 上报，
-上层据此记 ``degraded_reasons=["rerank_skipped"]``。
+失败不抛异常而是退化：重排只是精度增强，让整个对话因为重排模型没下载成功而 500，是把
+可选依赖变成了硬依赖。失败信息通过 :class:`~app.rag.reranker.base.RerankResult` 的
+``applied``/``reason`` 上报，上层据此记 ``degraded_reasons=["rerank_skipped"]``。
 """
 
 from __future__ import annotations

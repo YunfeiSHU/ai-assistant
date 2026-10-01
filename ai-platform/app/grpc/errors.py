@@ -1,23 +1,17 @@
 """``AppError`` ↔ ``google.rpc.Status`` 的映射。
 
-契约（docs/04 §2 / §4，接缝 J2/J3）：
+契约为 ``docs/04`` §2 / §4（接缝 J2/J3）：``status.code`` 是该错误码最贴近的 gRPC 规范码；
+``status.message`` 是**机器可读的错误码字符串**（``KB_NOT_FOUND`` 等），这样非 Go 客户端不必
+解码 detail 就能辨错；``status.details`` 是一条 ``AiError``（code / 人类文案 / HTTP 状态码 /
+是否可重试 / trace_id / 原始 details JSON）+ 一条标准的 ``google.rpc.ErrorInfo``。
 
-* ``status.code``     —— 该错误码最贴近的 gRPC 规范码；
-* ``status.message``  —— **机器可读的错误码字符串**（``KB_NOT_FOUND`` 等），
-  这样非 Go 客户端（grpcurl、Python 客户端）不必解码 detail 就能辨错；
-* ``status.details``  —— 一条 :class:`AiError`（承载 code / 人类文案 /
-  HTTP 状态码 / 是否可重试 / trace_id / 原始 details JSON）+ 一条
-  标准的 :class:`google.rpc.ErrorInfo`（让 ``grpcurl`` 之类的工具能直接读出来）。
+**为什么不能只用规范码**：gRPC 的码太粗。``UPSTREAM_LLM_ERROR`` 与 ``OVERLOADED`` 都会落到
+``UNAVAILABLE``，``CONTEXT_TOO_LONG`` 与 ``QUERY_EMPTY`` 都会落到 ``INVALID_ARGUMENT`` ——
+网关要按业务码做重试与提示，粗粒度会让「上下文超长」这种该引导用户的情况被当成「上游抖动」重试。
 
-**为什么不只用规范码**：gRPC 的码太粗。``UPSTREAM_LLM_ERROR`` 与 ``OVERLOADED``
-都会落到 ``UNAVAILABLE``，``CONTEXT_TOO_LONG`` 与 ``QUERY_EMPTY`` 都会落到
-``INVALID_ARGUMENT`` —— 网关要按业务码做重试与提示，粗粒度会让
-「上下文超长」这种该引导用户的情况被当成「上游抖动」重试。
-
-**为什么不把 details 放进 map**：契约里的 ``details`` 允许嵌套
-（``fields`` 是数组、``hint`` 是对象），而 protobuf 的 map 只能装标量；
-强行压平成 string 会在中途改变 ``details`` 的形状，
-而 docs/02 §4.2 要求它对客户端逐字可见。
+**为什么不把 details 放进 map**：契约里的 ``details`` 允许嵌套（``fields`` 是数组、``hint`` 是
+对象），而 protobuf 的 map 只能装标量；强行压平成 string 会改变 ``details`` 的形状，而
+``docs/02`` §4.2 要求它对客户端逐字可见。
 """
 
 from __future__ import annotations
@@ -33,10 +27,9 @@ from app.grpc.aiplatform.v1 import chat_pb2
 
 #: 业务错误码 → gRPC 规范码。
 #:
-#: 分组依据是「调用方该怎么办」，而不是状态码数字：
-#: 参数/语义问题 → ``INVALID_ARGUMENT``；不存在 → ``NOT_FOUND``；
-#: 状态冲突 → ``ALREADY_EXISTS``/``ABORTED``（网关侧统一还原成 409）；
-#: 依赖挂了 → ``UNAVAILABLE``（可重试）；超时 → ``DEADLINE_EXCEEDED``；
+#: 分组依据是「调用方该怎么办」，而不是状态码数字：参数/语义问题 → ``INVALID_ARGUMENT``；
+#: 不存在 → ``NOT_FOUND``；状态冲突 → ``ALREADY_EXISTS``/``ABORTED``（网关侧统一还原成
+#: 409）；依赖挂了 → ``UNAVAILABLE``（可重试）；超时 → ``DEADLINE_EXCEEDED``；
 #: 过载/限流 → ``RESOURCE_EXHAUSTED``（可重试）。
 GRPC_CODE_BY_ERROR: Final[dict[ErrorCode, int]] = {
     # ---- 通用 ----
@@ -59,8 +52,8 @@ GRPC_CODE_BY_ERROR: Final[dict[ErrorCode, int]] = {
     ErrorCode.UPSTREAM_LLM_ERROR: code_pb2.UNAVAILABLE,
     ErrorCode.UPSTREAM_LLM_AUTH_ERROR: code_pb2.UNAUTHENTICATED,
     ErrorCode.CONTENT_FILTERED: code_pb2.INVALID_ARGUMENT,
-    # 这个码不作为错误返回（它表达的是 ``finish_reason``），但映射表必须完整，
-    # 否则漏掉的码会退化成 ``UNKNOWN``，而 UNKNOWN 会让网关误判成「协议不兼容」。
+    # 这个码不作为错误返回（它表达的是 ``finish_reason``），但映射表必须完整，否则漏掉的码会
+    # 退化成 ``UNKNOWN``，而 UNKNOWN 会让网关误判成「协议不兼容」。
     ErrorCode.AGENT_MAX_STEPS_EXCEEDED: code_pb2.FAILED_PRECONDITION,
     ErrorCode.TOOL_NOT_FOUND: code_pb2.NOT_FOUND,
     ErrorCode.TOOL_EXECUTION_FAILED: code_pb2.UNAVAILABLE,
@@ -100,9 +93,9 @@ GRPC_CODE_BY_ERROR: Final[dict[ErrorCode, int]] = {
 def grpc_code_for(exc: AppError) -> int:
     """取错误码对应的 gRPC 规范码。
 
-    未登记的码退化成 ``INTERNAL`` 而不是 ``UNKNOWN``：``UNKNOWN`` 在 gRPC 里
-    常被解读成「服务实现有问题」，会掩盖「只是忘了登记」这个事实。同时
-    ``tests`` 里有一条遍历全部 ``ErrorCode`` 的用例，漏登记会直接红灯。
+    未登记的码退化成 ``INTERNAL`` 而不是 ``UNKNOWN``：``UNKNOWN`` 在 gRPC 里常被解读成「服务
+    实现有问题」，会掩盖「只是忘了登记」这个事实。同时 ``tests`` 里有一条遍历全部 ``ErrorCode``
+    的用例，漏登记会直接红灯。
     """
     return GRPC_CODE_BY_ERROR.get(exc.code, code_pb2.INTERNAL)
 
@@ -144,11 +137,9 @@ def to_rpc_status(exc: AppError, trace_id: str) -> status_pb2.Status:
 def _pack(message: Any) -> any_pb2.Any:
     """把消息打包成 :class:`Any`。
 
-    .. warning::
-       Python 的 ``Any.Pack`` 是**就地修改**并返回 ``None``（与 Go 的
-       ``Any.Pack`` 返回 ``*Any`` 完全不同）。写成 ``append(Any().Pack(m))``
-       会把 ``None`` 塞进 repeated 字段，报错信息还是与真因毫不相关的
-       ``Expected a message object, but got None``。
+    Python 的 ``Any.Pack`` 是**就地修改**并返回 ``None``（与 Go 的 ``Any.Pack`` 返回 ``*Any``
+    完全不同）。写成 ``append(Any().Pack(m))`` 会把 ``None`` 塞进 repeated 字段，报错信息还是
+    与真因毫不相关的 ``Expected a message object, but got None``。
     """
     packed = any_pb2.Any()
     packed.Pack(message)
@@ -158,10 +149,9 @@ def _pack(message: Any) -> any_pb2.Any:
 def _dumps_details(details: dict[str, Any]) -> str:
     """把 details 序列化成 JSON 字符串。
 
-    ``ensure_ascii=False``：错误文案基本全是中文，转成 ``\\uXXXX`` 之后
-    日志与抓包里就完全不可读了 —— 而那正是排障时唯一能看的东西。
-    ``default=str``：details 里可能混进 ``datetime``/``Path`` 之类的不可序列化
-    对象；整条错误信息因为一个附带字段而构造失败是不划算的。
+    ``ensure_ascii=False``：错误文案基本全是中文，转成 ``\\uXXXX`` 之后日志与抓包里就完全不可
+    读了 —— 而那正是排障时唯一能看的东西。``default=str``：details 里可能混进
+    ``datetime``/``Path`` 之类的不可序列化对象，整条错误信息因为一个附带字段而构造失败是不划算的。
     """
     if not details:
         return ""

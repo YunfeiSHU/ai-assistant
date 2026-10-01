@@ -31,12 +31,10 @@ func (r *tokenRepo) GetByHash(ctx context.Context, hash string) (*biz.RefreshTok
 }
 
 // Rotate 原子轮换：作废旧令牌并插入新令牌（REQ-AUTH-003 单次有效）。
-//
-// 旧令牌已被用过 / 已登出 / 已过期时 RowsAffected == 0 → 返回 biz.ErrTokenInvalid
-// 且**事务回滚**（不会留下新令牌）。
-//
-// 判定条件必须写在 WHERE 里而不是先查后改：先查后改之间有一个窗口，
-// 同一令牌并发刷新两次都能通过检查，最终签发两组令牌（单次有效被破坏）。
+// 旧令牌已被用过 / 已登出 / 已过期时 RowsAffected == 0 → 返回 biz.ErrTokenInvalid 且事务回滚
+// （不会留下新令牌）。
+// 判定条件必须写在 WHERE 里而不是先查后改：先查后改之间的窗口会让同一令牌并发刷新两次都通过，
+// 最终签发两组令牌（单次有效被破坏）。
 func (r *tokenRepo) Rotate(ctx context.Context, oldHash string, next *biz.RefreshToken, at time.Time) error {
 	return r.data.DB.InTx(ctx, func(tx *gorm.DB) error {
 		res := tx.Model(&refreshTokenPO{}).
@@ -53,12 +51,9 @@ func (r *tokenRepo) Rotate(ctx context.Context, oldHash string, next *biz.Refres
 }
 
 // RevokeByHash 作废单个令牌（普通登出）。
-//
 // 幂等：令牌不存在或已作废时返回 (false, nil)，调用方仍然回 204。
-//
-// ⚠️ 必须带上 userID 条件：否则任何人拿到别人的 refresh 串（比如从日志里）
-// 就能把对方踢下线。返回 false 时调用方无法区分「不存在」与「不属于你」，
-// 这正是我们想要的（不提供探测能力）。
+// ⚠️ 必须带上 userID 条件：否则拿到别人的 refresh 串（比如从日志里）就能把对方踢下线。
+// 返回 false 时调用方无法区分「不存在」与「不属于你」，这正是我们想要的（不提供探测能力）。
 func (r *tokenRepo) RevokeByHash(ctx context.Context, userID, hash string, at time.Time) (bool, error) {
 	res := r.data.DB.GORM.WithContext(ctx).Model(&refreshTokenPO{}).
 		Where("token_hash = ? AND user_id = ? AND revoked_at IS NULL", hash, userID).
@@ -99,8 +94,7 @@ func (r *tokenRepo) DeleteExpired(ctx context.Context, before time.Time, limit i
 	if limit <= 0 {
 		limit = 1000
 	}
-	// 先取主键再删：MySQL 的 DELETE ... LIMIT 不支持 ORDER BY 子查询以外
-	// 的复杂条件，而分批删除能避免长事务（docs/05-§4.3）。
+	// 先取主键再删：MySQL 的 DELETE ... LIMIT 只支持简单条件，分批删除能避免长事务（docs/05-§4.3）。
 	var ids []string
 	err := r.data.DB.GORM.WithContext(ctx).Model(&refreshTokenPO{}).
 		Select("id").

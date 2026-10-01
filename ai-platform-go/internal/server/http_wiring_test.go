@@ -12,18 +12,15 @@ import (
 	"github.com/YunfeiSHU/ai-assistant/ai-platform-go/internal/server/middleware"
 )
 
-// TestEngineWiresIdempotencyKeyMiddleware 是**装配层**的守卫，不是中间件单测。
+// TestEngineWiresIdempotencyKeyMiddleware 是装配层的守卫，不是中间件单测。
 //
-// 背景（真实踩过）：`engine.Use(IdempotencyKey())` 曾写在
-// `api := engine.Group("/api/v1")` **之后**。gin 的 `RouterGroup` 在 `Group()`
-// 的那一刻就把中间件链拷贝走了，之后 `engine.Use` 补的中间件不会作用到已有组上。
-// 结果是：幂等键提取中间件「注册了」，但 `/api/v1` 下的路由拿不到键，
-// 而 `Idempotency` 见键为空即放行 —— **幂等永远不生效，且没有任何报错**
-// （那一轮 167 项验收断言里，只有幂等组的 12 项红，其余全绿）。
+// 背景（真实踩过）：`engine.Use(IdempotencyKey())` 曾写在 `engine.Group("/api/v1")` 之后。
+// gin 的 `RouterGroup` 在 `Group()` 那一刻就拷贝走了中间件链，之后 `engine.Use` 补的
+// 不会作用到已有组上 —— 于是中间件「注册了」但 `/api/v1` 下的路由拿不到键，
+// 而 `Idempotency` 见键为空即放行：幂等永远不生效且没有任何报错。
 //
-// 为什么 `idempotency_test.go` 抓不到：它自己拼了一条链（显式调用
-// `IdempotencyKey()`），验证的是「中间件写对了」，不是「引擎接对了」。
-// 这类问题只有「用真实引擎跑一次请求」才能发现。
+// `idempotency_test.go` 抓不到它：那条用例自己拼链（显式调用 `IdempotencyKey()`），
+// 验的是「中间件写对了」而不是「引擎接对了」—— 只有用真实引擎跑一次请求才能发现。
 func TestEngineWiresIdempotencyKeyMiddleware(t *testing.T) {
 	store := newFakeIdemStore()
 	h := &countedHandler{status: http.StatusCreated, body: gin.H{"id": "cv_1"}}
@@ -42,8 +39,8 @@ func TestEngineWiresIdempotencyKeyMiddleware(t *testing.T) {
 		t.Fatalf("首次请求应执行 handler，实际 %d 次", h.calls)
 	}
 
-	// 第二次：同键同体必须回放。键为空时（装配缺失的现场）`Idempotency`
-	// 会直接放行，于是这里看到的是「handler 又被执行了一次」。
+	// 第二次：同键同体必须回放。键为空时（装配缺失的现场）`Idempotency` 会直接放行，
+	// 于是这里看到的是「handler 又被执行了一次」。
 	second := doPost(t, engine, "/api/v1/probe", "wiring-key", body)
 	if h.calls != 1 {
 		t.Fatalf("同键第二次必须回放而不是重新执行（handler 被调用 %d 次）—— "+
@@ -61,9 +58,7 @@ func TestEngineWiresIdempotencyKeyMiddleware(t *testing.T) {
 }
 
 // TestEngineRejectsInvalidIdempotencyKey 走真实引擎验证「非法键在中间件层被拦下」。
-//
-// 同理：键提取缺失时，非法键不会被任何地方检查（请求照常处理），
-// 于是「字符集校验」这件事实质上失效。
+// 同理：键提取缺失时非法键不会被任何地方检查（请求照常处理），字符集校验实质上失效。
 func TestEngineRejectsInvalidIdempotencyKey(t *testing.T) {
 	store := newFakeIdemStore()
 	h := &countedHandler{status: http.StatusCreated, body: gin.H{"id": "cv_1"}}
@@ -93,7 +88,7 @@ func TestEngineRejectsInvalidIdempotencyKey(t *testing.T) {
 	}
 }
 
-// TestEngineIdempotencyScopedByRouteTemplate 走真实引擎确认键里存的是**路由模板**。
+// TestEngineIdempotencyScopedByRouteTemplate 走真实引擎确认键里存的是路由模板。
 func TestEngineIdempotencyScopedByRouteTemplate(t *testing.T) {
 	store := newFakeIdemStore()
 	first := &countedHandler{status: http.StatusCreated, body: gin.H{"id": "cv_1"}}
@@ -131,8 +126,8 @@ func withTestUser() gin.HandlerFunc {
 	}
 }
 
-// newWiringEngine 用真实装配函数 NewEngine 起一个最小引擎，
-// 路由由调用方通过 Extra 钩子注册 —— 这样测的就是**真实的中间件链**。
+// newWiringEngine 用真实装配函数 NewEngine 起一个最小引擎，路由由调用方通过 Extra 注册 ——
+// 这样测的就是真实的中间件链。
 func newWiringEngine(t *testing.T, extra func(public, authed, raw *gin.RouterGroup)) *gin.Engine {
 	t.Helper()
 

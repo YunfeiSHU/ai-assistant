@@ -2,17 +2,14 @@
 
 **本模块的核心设计：让日志里的 ``trace_id`` 与 Jaeger 里的 trace id 是同一个值。**
 
-项目已经有一套轻量的请求上下文（``app/core/context.py``），日志、错误信封、
-``X-Trace-Id`` 响应头都读它。若再让 OTel 自己生成一个 trace id，就会出现
-「日志说 A、Jaeger 说 B」，排障时必须在两套 id 之间人工对照 —— 而这正是
-``REQ-GEN-006``「任一请求可按 ``trace_id`` 串起全链路」要避免的事。
+项目已有一套轻量请求上下文（``app/core/context.py``），日志、错误信封、``X-Trace-Id`` 响应头
+都读它。若再让 OTel 自己生成一个 trace id，就会出现「日志说 A、Jaeger 说 B」，排障时必须在
+两套 id 之间人工对照 —— 而这正是 ``REQ-GEN-006``「任一请求可按 ``trace_id`` 串起全链路」
+要避免的事。做法：把上下文里的 ``trace_id`` / ``span_id`` 包装成 OTel 的 ``SpanContext``，
+作为**远端父上下文**传给根 span，于是 OTel 会沿用我们的 trace id，子 span 自动归到同一棵树上。
 
-做法：把上下文里的 ``trace_id`` / ``span_id`` 包装成 OTel 的 ``SpanContext``，
-作为**远端父上下文**传给根 span。于是 OTel 会沿用我们的 trace id，
-子 span（``rag.retrieve`` / ``llm.invoke`` / ``tool.call``）自动归到同一棵树上。
-
-依赖缺失或 ``OTEL_ENABLED=false`` 时全部退化为空操作：``opentelemetry-api``
-在没有 provider 时本身就会返回 non-recording span，无需另写一套空实现。
+依赖缺失或 ``OTEL_ENABLED=false`` 时全部退化为空操作：``opentelemetry-api`` 在没有 provider
+时本身就会返回 non-recording span，无需另写一套空实现。
 """
 
 from __future__ import annotations
@@ -33,8 +30,8 @@ DEFAULT_SERVICE_NAME: Final[str] = "ai-platform"
 class Tracing:
     """追踪门面。
 
-    只暴露两件事：``request_span``（根 span，沿用上下文里的 id）与
-    ``span``（业务子 span）。刻意不暴露 provider / exporter —— 那是配置层的事。
+    只暴露两件事：``request_span``（根 span，沿用上下文里的 id）与 ``span``（业务子 span）。
+    刻意不暴露 provider / exporter —— 那是配置层的事。
     """
 
     def __init__(self, *, enabled: bool, service_name: str = DEFAULT_SERVICE_NAME) -> None:
@@ -139,15 +136,12 @@ def _remote_context(trace_id: str, span_id: str) -> Any | None:
 def setup_tracing(settings: Any) -> Tracing:
     """按配置初始化追踪；返回门面对象。
 
-    只在 ``OTEL_ENABLED=true`` 时构造 provider 与导出器。导出器**失败不阻断**：
-    collector 没起来不该让服务起不来（与 Milvus 探测同一口径，见 ``app/main.py``）。
+    只在 ``OTEL_ENABLED=true`` 时构造 provider 与导出器。导出器**失败不阻断**：collector
+    没起来不该让服务起不来（与 Milvus 探测同一口径，见 ``app/main.py``）。
 
-    .. note::
-       OTel 的 ``TracerProvider`` 是**进程级单例**，``set_tracer_provider`` 只允许
-       设置一次（第二次会被忽略并打 ``Overriding of current TracerProvider is not
-       allowed``）。一个进程里创建多个应用（测试常态）时，这里**复用**已装入的
-       provider 并只补一次导出器，而不是重复设置 —— 否则除了第一个应用之外，
-       其余应用的 span 都会被静默丢弃。
+    OTel 的 ``TracerProvider`` 是**进程级单例**，``set_tracer_provider`` 只允许设置一次（第二次
+    会被忽略）。一个进程里创建多个应用（测试常态）时，这里**复用**已装入的 provider 并只补一次
+    导出器 —— 否则除了第一个应用之外，其余应用的 span 都会被静默丢弃。
     """
     if not settings.otel_enabled:
         return Tracing(enabled=False, service_name=settings.otel_service_name)
@@ -203,11 +197,11 @@ def _resolve_provider(trace: Any, provider_type: Any, settings: Any) -> Any:
 def shutdown_tracing() -> None:
     """刷出未发送的 span（``SIGTERM`` 优雅退出时调用）。
 
-    必须调用：``BatchSpanProcessor`` 是异步批量发送的，进程退出时未刷出的 span
-    会**静默丢失** —— 表现为「链路上少了最后几秒的请求」，而且没有任何错误信息。
+    必须调用：``BatchSpanProcessor`` 是异步批量发送的，进程退出时未刷出的 span 会**静默丢失**
+    —— 表现为「链路上少了最后几秒的请求」，而且没有任何错误信息。
 
-    只关闭**本进程创建**的那个 provider：一个进程里多个应用实例时复用同一个
-    provider，任何一个实例退出都把它关掉，会让余下的实例再也发不出 span。
+    只关闭**本进程创建**的那个 provider：一个进程里多个应用实例时复用同一个 provider，任何一个
+    实例退出都把它关掉，会让余下的实例再也发不出 span。
     """
     global _provider_owned
     if not _provider_owned:
@@ -243,8 +237,8 @@ def configure_tracing(tracing: Tracing) -> None:
 def get_tracing() -> Tracing:
     """取进程级门面；未配置时返回一个「关闭」的门面（不是 ``None``）。
 
-    返回空对象而不是 ``None``，让调用点写 ``get_tracing().span(...)`` 即可，
-    不必到处写 ``if tracing is not None`` —— 少一类分支就少一处漏判。
+    返回空对象而不是 ``None``，让调用点写 ``get_tracing().span(...)`` 即可，不必到处写
+    ``if tracing is not None`` —— 少一类分支就少一处漏判。
     """
     global _active
     if _active is None:

@@ -1,18 +1,14 @@
 """长期记忆的 Milvus 向量索引（``ai_platform_memories``，``REQ-MEM-005/006``）。
 
 集合定义照 ``docs/09`` §3.2：主键 ``mem_id``、``user_id`` 与 ``kind`` 两个标量字段、
-``FLOAT_VECTOR`` 维度来自配置、``HNSW`` + ``COSINE``，标量字段建 ``INVERTED`` 索引。
+``FLOAT_VECTOR``、``HNSW`` + ``COSINE``，标量字段建 ``INVERTED`` 索引。
 
-**为什么必须有标量索引**：检索总是带 ``user_id`` 过滤（租户隔离，``REQ-DATA-006``）。
-没有标量索引时 Milvus 只能「先按向量取 top-k、再过滤」，本人命中的条数会被
-别人的向量挤掉 —— 表现为「库里明明有这条记忆，但它很少被检索到」，
-而且随着其他用户的数据增长越来越明显。这属于**静默的召回率下降**，
-没有任何报错，所以建索引这件事必须写在 ``ensure_ready`` 里而不是留给运维。
+必须有标量索引：检索总是带 ``user_id`` 过滤（租户隔离，``REQ-DATA-006``）。没有标量索引时
+Milvus 只能「先按向量取 top-k、再过滤」，本人命中的条数会被别人的向量挤掉 —— 表现为
+「库里明明有这条记忆，但它很少被检索到」，属于静默的召回率下降。``kind`` 同理
+（``docs/07`` 允许只注入 ``preference``）。
 
-``kind`` 同理：``docs/07`` 允许只注入 ``preference``，走的是同一个集合的过滤条件。
-
-``pymilvus`` 是同步 SDK，所有调用都放进线程池（与 :mod:`app.rag.vectorstore.milvus`
-同一个理由：对话 SSE 与它在同一个事件循环里）。
+``pymilvus`` 是同步 SDK，所有调用都放进线程池（对话 SSE 与它同一事件循环）。
 """
 
 from __future__ import annotations
@@ -35,9 +31,9 @@ UPSERT_BATCH_SIZE = 500
 def _literal(value: str) -> str:
     """把字符串转成 Milvus 表达式里的字符串字面量。
 
-    用 ``json.dumps`` 而不是 ``f'"{value}"'``：``user_id`` 来自 JWT 的 ``sub``，
-    里面出现引号或反斜杠时手写拼接会**破坏表达式结构**（要么语法错误、
-    要么改变过滤条件 —— 后者等于越权读到别人的记忆）。
+    用 ``json.dumps`` 而不是 ``f'"{value}"'``：``user_id`` 来自 JWT 的 ``sub``，里面出现
+    引号或反斜杠时手写拼接会破坏表达式结构 —— 要么语法错误，要么改变过滤条件，
+    后者等于越权读到别人的记忆。
     """
     return json.dumps(value, ensure_ascii=False)
 
@@ -76,9 +72,8 @@ class MilvusMemoryVectorIndex:
     async def ensure_ready(self) -> None:
         """创建集合与索引（幂等）。
 
-        向量索引：``HNSW`` / ``COSINE``（与 chunk 集合同一组参数 —— 两个集合
-        用不同参数会让「为什么记忆的召回看起来更差」变成一个无从下手的疑问）。
-        标量索引：``user_id``（租户隔离）与 ``kind``（偏好/事实过滤）。
+        向量索引用 ``HNSW`` / ``COSINE``，与 chunk 集合同一组参数 —— 两个集合用不同参数
+        会让「为什么记忆的召回看起来更差」变成一个无从下手的疑问。
         """
         if self._ready:
             return
@@ -192,9 +187,8 @@ class MilvusMemoryVectorIndex:
 def _deleted_count(report: Any) -> int:
     """从 Milvus 的删除回执里取条数。
 
-    不同版本回执的形状不一样（``{"delete_count": n}`` / 带 ``deleteCnt``，
-    偶发还会是列表）。这里逐个候选取，取不到就返回 0 —— 但**不因此报错**：
-    删除是幂等的，调用方只把它当统计值用（``AC-MEM-10`` 的对账会另外去 count）。
+    不同版本回执的形状不一样（``{"delete_count": n}`` / 带 ``deleteCnt``，偶发还会是列表）。
+    取不到就返回 0，但不因此报错：删除是幂等的，调用方只把它当统计值用。
     """
     if isinstance(report, dict):
         for key in ("delete_count", "deleteCnt", "count"):

@@ -39,7 +39,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 	meta := metaFrom(c)
-	// device_name 是请求体字段，但设备信息属于「请求元信息」，
+	// device_name 是请求体字段，但设备信息属于请求元信息，
 	// 在 biz 层会与 User-Agent 一起入库。
 	meta.DeviceName = in.DeviceName
 

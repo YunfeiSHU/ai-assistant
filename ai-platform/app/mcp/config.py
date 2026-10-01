@@ -1,12 +1,12 @@
 """MCP Server 配置的固定 Schema 与启动期校验（``REQ-MCP-001``，契约见 ``docs/05`` §2.2）。
 
-**为什么用 ``extra="forbid"``**：MCP 配置写错（``comand`` 而不是 ``command``）时，
-「忽略未知字段」的表现是「Server 静默地用默认参数启动」或「永远连不上」，
-而错误信息里什么线索都没有。配置错误必须**在启动期指名道姓地报出来**（``AC-MCP-04``）。
+**用 ``extra="forbid"``**：MCP 配置写错（``comand`` 而不是 ``command``）时，「忽略未知字段」
+的表现是「Server 静默地用默认参数启动」或「永远连不上」，而错误信息里什么线索都没有。
+配置错误必须**在启动期指名道姓地报出来**（``AC-MCP-04``）。
 
-**密钥引用**：``headers`` / ``env`` 里的值支持 ``${ENV_VAR}`` 形式（``docs/05`` §6），
-这样配置文件里不出现明文密钥；展开失败的引用 MUST 报错，而不是留下一个字面量
-``${...}`` 去当令牌用 —— 那会变成一个「401 但看起来配置没问题」的谜题。
+**密钥引用**：``headers`` / ``env`` 里的值支持 ``${ENV_VAR}`` 形式（``docs/05`` §6），这样
+配置文件里不出现明文密钥；展开失败的引用 MUST 报错，而不是留下一个字面量 ``${...}`` 去当令牌
+用 —— 那会变成一个「401 但看起来配置没问题」的谜题。
 """
 
 from __future__ import annotations
@@ -185,17 +185,14 @@ def _describe(name: str, exc: ValidationError) -> str:
 def namespaced_name(server: str, tool: str) -> str:
     """把 ``(server, tool)`` 转成注册表里合法的工具名（``docs/05`` §4）。
 
-    与 :func:`app.tools.base.namespace_tool` 的差别只有一处，但很关键：
-    **这里保证结果合法**。MCP 工具名来自 Server，可能是 ``readFile``、
-    ``foo.bar`` 之类，而注册表要求 ``^[a-z][a-z0-9_]{1,63}$`` ——
-    直接拼出来的名字会让 :meth:`ToolRegistry.register` 抛错、进而让**整个应用启动失败**，
-    而且是第三方 Server 的名字导致的。所以这里做三件事：
+    与 :func:`app.tools.base.namespace_tool` 的差别只有一处，但很关键：**这里保证结果合法**。
+    MCP 工具名来自 Server，可能是 ``readFile``、``foo.bar`` 之类，而注册表要求
+    ``^[a-z][a-z0-9_]{1,63}$`` —— 直接拼出来的名字会让 :meth:`ToolRegistry.register` 抛错、
+    进而让整个应用启动失败，而且是第三方 Server 的名字导致的。所以这里做三件事：
 
     1. 小写 + 非法字符换 ``_``；
-    2. 若发生过替换，追加源名哈希 —— 否则 ``a.b`` 与 ``a_b`` 会撞成同一个工具名，
-       注册表报「工具名冲突」，同样起不来；
-    3. 超过 64 字符时截断并追加哈希（上游 function name 限 64 字符，
-       超了会被**上游**拒绝，那是最难查的一类失败）。
+    2. 若发生过替换则追加源名哈希 —— 否则 ``a.b`` 与 ``a_b`` 会撞成同一个工具名；
+    3. 超过 64 字符时截断并追加哈希（上游 function name 限 64 字符）。
     """
 
     def sanitize(text: str) -> str:

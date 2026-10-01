@@ -1,13 +1,7 @@
-// Package conf 定义配置结构与加载规则。
+// Package conf 定义配置结构与加载规则（权威定义：docs/06-§7 配置项全表）。
 //
-// 权威定义：docs/06-§7 配置项全表。
-//
-// 加载规则（12-Factor，REQ-NFR-009）：
-//  1. 先读 `.env`（仅当存在，不覆盖真实环境变量）；
-//  2. 再读进程环境变量；
-//  3. 都没有则用内置默认值。
-//
-// 这样「本地开发写 .env、容器里注入环境变量」是同一套代码路径。
+// 加载规则（12-Factor，REQ-NFR-009）：`.env`（仅当存在，不覆盖真实环境变量）
+// → 进程环境变量 → 内置默认值，因此本地写 `.env`、容器注入环境变量走同一套代码路径。
 package conf
 
 import "time"
@@ -46,8 +40,8 @@ type App struct {
 
 // MySQL 是业务台账数据库配置。
 type MySQL struct {
-	// DSN 必须带 parseTime=true&loc=UTC —— 否则 DATETIME(3) 会被解析成
-	// 本地时间，产生「差 8 小时的排序」（docs/05-§2 全局约定）。
+	// DSN 必须带 parseTime=true&loc=UTC，否则 DATETIME(3) 会被解析成本地时间，
+	// 产生「差 8 小时的排序」（docs/05-§2）。
 	DSN                    string
 	MaxOpenConns           int
 	MaxIdleConns           int
@@ -64,7 +58,7 @@ type Redis struct {
 	PoolSize int
 }
 
-// Auth 是鉴权与密码策略配置（接缝 J1 的关键项在这里）。
+// Auth 是鉴权与密码策略配置（接缝 J1 的关键项）。
 type Auth struct {
 	JWTSecret             string
 	JWTAlg                string
@@ -118,11 +112,9 @@ type Rate struct {
 
 // AI 是对 ai-platform 的对接配置。
 //
-// 传输分工（与 SRS docs/04-§2.1 的默认不同，按项目架构决策执行）：
-//   - `Chat` / `ChatStream` 走 **gRPC**（Kratos client → ai-platform gRPC server）；
-//   - 其余（KB / 文档 / 任务 / 记忆 / MCP / 上下文摘要）走 **HTTP 透传**。
-//
-// 这样流式链路的事件映射是显式的（proto），而透传类接口零成本。
+// 传输分工（与 SRS docs/04-§2.1 的默认不同，按项目架构决策执行）：`Chat` /
+// `ChatStream` 走 gRPC（事件映射是显式的 proto），其余（KB / 文档 / 任务 / 记忆 /
+// MCP / 上下文摘要）走 HTTP 透传（零成本）。
 type AI struct {
 	BaseURL          string
 	GRPCEnabled      bool
@@ -171,12 +163,10 @@ type Internal struct {
 	ServiceToken       string
 	RetentionDays      int
 	UsageRetentionDays int
-	// PurgeHour / RebuildHour 是保留期清理与 Redis 重建的触发整点（**本地时区**，
-	// 见 `Quota.Timezone`）。
-	//
-	// 必须显式给值：`NewRetentionService` 的「无效则取默认 3」兜底只能拦住
-	// 「填错」，拦不住「没填」—— 零值 `0` 恰好是一个合法小时，
-	// 于是「默认 3 点清理」会静默变成「跟重建一起挤在 0 点」。
+	// PurgeHour / RebuildHour 是清理与重建的触发整点（本地时区，见 Quota.Timezone）。
+	// 必须显式给值：`NewRetentionService` 的「无效则取默认 3」兜底只能拦住「填错」，
+	// 拦不住「没填」—— 零值 0 恰好是一个合法小时，「默认 3 点清理」
+	// 会静默变成「跟重建一起挤在 0 点」。
 	PurgeHour   int
 	RebuildHour int
 	// CheckInterval 是「现在是几点」的轮询周期。

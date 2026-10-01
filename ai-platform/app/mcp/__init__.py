@@ -1,20 +1,15 @@
 """MCP 客户端模块：用 MCP Python SDK 连接外部 MCP Server（``docs/05``）。
 
-.. note::
-   本包名为 ``app.mcp``，与站点包 ``mcp`` 并不冲突 —— Python 3 默认使用绝对导入，
-   ``import mcp`` 依然指向已安装的 SDK；本包只能通过 ``app.mcp`` 访问。
+本包名为 ``app.mcp``，与站点包 ``mcp`` 并不冲突 —— Python 3 默认使用绝对导入，``import mcp``
+依然指向已安装的 SDK；本包只能通过 ``app.mcp`` 访问。
 
-分层：
+分层：:mod:`app.mcp.config`（配置 Schema 与启动期校验，``REQ-MCP-001``）、
+:mod:`app.mcp.session`（传输层与结果归一化）、:mod:`app.mcp.client`（单个 Server 的连接
+生命周期，``REQ-MCP-002`` / ``004``）、:mod:`app.mcp.manager`（多 Server 编排、健康明细，
+``REQ-MCP-005``）、:mod:`app.mcp.tools`（适配成 :class:`~app.tools.base.Tool`，``REQ-MCP-003``）。
 
-* :mod:`app.mcp.config` —— 配置 Schema 与启动期校验（``REQ-MCP-001``）
-* :mod:`app.mcp.session` —— 传输层（stdio / streamable_http）与结果归一化
-* :mod:`app.mcp.client` —— 单个 Server 的连接生命周期（``REQ-MCP-002`` / ``004``）
-* :mod:`app.mcp.manager` —— 多 Server 编排、健康明细（``REQ-MCP-005``）
-* :mod:`app.mcp.tools` —— 适配成 :class:`~app.tools.base.Tool`（``REQ-MCP-003``）
-
-:func:`build_mcp_manager` 是装配入口：从 ``Settings`` 构造管理器。**它不做任何 I/O**，
-建连在 ``lifespan`` 里 ``await manager.startup()`` —— 这样 ``create_app`` 保持同步、
-可被测试反复调用而不产生子进程。
+:func:`build_mcp_manager` 是装配入口，**它不做任何 I/O**：建连在 ``lifespan`` 里
+``await manager.startup()``，这样 ``create_app`` 保持同步、可被测试反复调用而不产生子进程。
 """
 
 from __future__ import annotations
@@ -41,9 +36,9 @@ async def list_tools_async(
 ) -> list[Any]:
     """以 stdio 方式启动一个 MCP Server，并列出它暴露的工具。
 
-    这是**排障用**的最小实现（不经过管理器）：写配置文件之前先用它确认
-    「命令能起来、工具名是什么」——``parse_server_config`` 能保证名字合法，
-    但「这个 Server 到底提供了哪些工具」只能连上去看。
+    这是排障用的最小实现（不经过管理器）：写配置文件之前先用它确认「命令能起来、工具名是
+    什么」—— ``parse_server_config`` 能保证名字合法，但「这个 Server 到底提供了哪些工具」
+    只能连上去看。
 
     Args:
         command: 可执行文件，例如 ``"uv"``、``"npx"``、``"python"``。

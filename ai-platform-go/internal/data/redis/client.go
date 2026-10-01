@@ -1,12 +1,10 @@
 // Package redis 是网关对 Redis 的全部接触面：连接、键命名空间、缓存组件。
 //
-// 它与同级的 `data/mysql` 是**反过来的**关系（docs/04-§9）：
-// MySQL 是权威台账，Redis 只是配额精度与 ver 缓存的加速器。
-// 因此本包的任何失败都 MUST 能降级回 MySQL，不能变成业务错误。
+// 它与同级的 `data/mysql` 是反过来的关系（docs/04-§9）：MySQL 是权威台账，
+// Redis 只是配额精度与 ver 缓存的加速器，因此本包的任何失败都 MUST 能降级回 MySQL。
 //
-// 本包只在下面这一个文件里接触 `go-redis` 的驱动类型：
-// 其余文件（keys.go / version_cache.go）看到的是 string / int / time.Duration，
-// 于是它们的单测用几行假实现即可，不必起 Redis。
+// 驱动类型只在本文件出现：其余文件（keys.go / version_cache.go）看到的是
+// string / int / time.Duration，单测用几行假实现即可，不必起 Redis。
 package redis
 
 import (
@@ -22,16 +20,12 @@ import (
 )
 
 // ErrNotFound 表示键不存在（对应驱动层的 `redis.Nil`）。
-//
-// 把驱动的哨兵值翻译成本包的哨兵值，调用方就不必 import 驱动、
-// 也不必知道「空值是 errors.Nil 还是约定值」。
+// 翻译成自己的哨兵值后，调用方不必 import 驱动、也不必知道空值的具体形式。
 var ErrNotFound = errors.New("redis: 键不存在")
 
 // KV 是本包对外暴露的最小键值能力。
-//
-// 刻意用普通类型（string / time.Duration）而不是驱动的 `*StringCmd`：
-// 返回命令对象会让「必须调用 .Result()/.Err() 才算真的执行」变成调用方的负担，
-// 也正是原先把 redis.Nil 与业务错误混在一起判定的来源。
+// 刻意用普通类型而不是驱动的 `*StringCmd`：返回命令对象会让「必须调用 .Result()/.Err()
+// 才算真的执行」变成调用方的负担（也正是原先把 redis.Nil 与业务错误混在一起判定的来源）。
 type KV interface {
 	Get(ctx context.Context, key string) (string, error)
 	Set(ctx context.Context, key, value string, ttl time.Duration) error
@@ -45,10 +39,8 @@ type Store struct {
 }
 
 // Open 建立 Redis 客户端。
-//
-// 不做 Ping：Redis 只影响配额精度与 ver 缓存命中率（docs/04-§9），
-// 启动期连不上不应阻止服务提供「非 AI 且非配额」的能力；
-// 连续性由 /health/ready 判断。
+// 不做 Ping：Redis 只影响配额精度与 ver 缓存命中率（docs/04-§9），启动期连不上
+// 不应阻止服务提供「非 AI 且非配额」的能力；连通性由 /health/ready 判断。
 func Open(cfg conf.Redis, log *slog.Logger) (*Store, error) {
 	if log == nil {
 		log = slog.Default()
@@ -83,11 +75,8 @@ func (s *Store) Close() error {
 func (s *Store) KV() KV { return s }
 
 // PoolStats 返回连接池快照 `(total, idle, stale)`。
-//
-// 放在本文件是因为它是**唯一**接触 go-redis 类型的文件（见包注释）：
-// 暴露三个整数，指标包就不必 import 驱动，也就不会因为驱动版本变更
-// 而被动跟着改。返回零而不是报错 —— 指标是尽力而为的观测面，
-// 「拿不到连接池数据」不该让 /metrics 整个 500。
+// 暴露三个整数，指标包就不必 import 驱动，不会因驱动版本变更而跟着改。
+// 返回零而不是报错：指标是尽力而为的观测面，「拿不到连接池数据」不该让 /metrics 整个 500。
 func (s *Store) PoolStats() (total, idle, stale int) {
 	if s == nil || s.client == nil {
 		return 0, 0, 0

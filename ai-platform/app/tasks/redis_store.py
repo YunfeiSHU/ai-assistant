@@ -1,25 +1,22 @@
 """任务仓储的 Redis 实现（``INFRA_BACKEND=real``，``docs/09`` §4）。
 
-**它解决的是「跨进程」这个问题**：``docs/08`` §5.4 要求 Worker 是独立进程，
-而 API 进程把任务建在自己内存里的话，Worker 拿到消息也查不到任务行 ——
-表现是「消息被 ack 掉、任务永远停在 PENDING」，日志里一条错误都没有。
-所以只要 ``TASK_RUNNER=kafka``，任务状态就必须落在进程外的存储里。
+它解决的是「跨进程」：``docs/08`` §5.4 要求 Worker 是独立进程，而 API 进程把任务建在自己内存里
+的话，Worker 拿到消息也查不到任务行 —— 表现是「消息被 ack 掉、任务永远停在 PENDING」，日志里
+一条错误都没有。所以只要 ``TASK_RUNNER=kafka``，任务状态就必须落在进程外的存储里。
 
 MySQL 是 ``docs/09`` 指定的权威存储，但仓储端口已经定好，本实现与
-:class:`~app.tasks.store.InMemoryTaskStore` **语义完全对齐**（含 ``idem_key``
-唯一与版本号乐观锁），所以后续换成 MySQL 不影响业务代码。
+:class:`~app.tasks.store.InMemoryTaskStore` **语义完全对齐**（含 ``idem_key`` 唯一与版本号乐观锁），
+所以后续换成 MySQL 不影响业务代码。
 
-三个实现细节值得写在这里：
+三个实现细节：
 
-* **整条记录存一个 JSON 字段**（``task:{id}`` 的 ``json`` 字段），而不是逐字段
-  ``HSET``。乐观锁的要求是「``version`` 没变才允许写」，逐字段写需要「先读回再
-  逐字段比对」，字段一多就一定漏；整段 JSON 的**字符串比较**天然覆盖所有字段，
-  且能塞进一段 Lua 里原子完成（``HSET`` + ``EXPIRE`` 一次往返）。
-* **消息重复与并发改状态靠 Cas 收敛**：冲突抛 :class:`TaskConflict`，由
+* **整条记录存一个 JSON 字段**（``task:{id}`` 的 ``json`` 字段），而不是逐字段 ``HSET``。逐字段写
+  需要「先读回再逐字段比对」，字段一多就一定漏；整段 JSON 的字符串比较天然覆盖所有字段，
+  且能塞进一段 Lua 里原子完成。
+* **消息重复与并发改状态靠 CAS 收敛**：冲突抛 :class:`TaskConflict`，由
   :class:`~app.tasks.service.TaskService` 读-改-重试（与内存实现同一口径）。
-* **索引键与数据键分开**：``task:open`` 是「在飞任务」的 ZSET，供补偿扫描与
-  过载判断用；``task:user:{uid}`` 供列表查询。**不能用 ``SCAN`` 取任务** ——
-  那在 key 数量上万后会拖慢整个 Redis 实例。
+* **索引键与数据键分开**：``task:open`` 是「在飞任务」的 ZSET，供补偿扫描与过载判断用，
+  ``task:user:{uid}`` 供列表查询。**不能用 ``SCAN`` 取任务** —— key 上万后会拖慢整个实例。
 """
 
 from __future__ import annotations
@@ -112,9 +109,8 @@ OPEN_ZSET = "task:open"
 def _iso_to_epoch_millis(value: str) -> float:
     """RFC3339 → epoch 毫秒（用于 ZSET score）。
 
-    ``created_at`` 在模型里是字符串（接口契约），而 ZSET 的 score 必须是数字。
-    解析失败一律退回 ``0``：一个时间戳坏了的任务最多排到列表末尾，
-    不该让整次查询抛异常。
+    ``created_at`` 在模型里是字符串（接口契约），而 ZSET 的 score 必须是数字。解析失败一律
+    退回 ``0``：一个时间戳坏了的任务最多排到列表末尾，不该让整次查询抛异常。
     """
     try:
         return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp() * 1000.0
@@ -152,9 +148,8 @@ def task_to_record(task: Task) -> dict[str, Any]:
 def task_from_record(record: dict[str, Any]) -> Task:
     """字典 → 任务。
 
-    刻意**宽容**（缺字段用默认值、未知字段忽略）：灰度或回滚期间，同一个 Key
-    会同时存在新旧两种格式的记录。严格解析会把「旧格式记录」变成
-    ``500``，而它本来完全可以正常读出来。
+    刻意**宽容**（缺字段用默认值、未知字段忽略）：灰度或回滚期间同一个 Key 会同时存在新旧两种
+    格式的记录，严格解析会把「旧格式记录」变成 ``500``，而它本来完全可以正常读出来。
     """
     error = record.get("error")
     payload = record.get("payload")
@@ -229,8 +224,8 @@ class RedisTaskStore:
     async def create(self, task: Task) -> Task:
         """写入新任务；``idem_key`` 命中时返回既有任务（幂等）。
 
-        幂等键用 ``SET NX`` 抢占：**先抢键再写记录**，而不是「先查再写」——
-        后者两个并发请求会双双查到「不存在」然后各写一条，唯一约束就形同虚设。
+        幂等键用 ``SET NX`` 抢占，**先抢键再写记录**而不是「先查再写」—— 后者两个并发请求会双双
+        查到「不存在」然后各写一条，唯一约束就形同虚设。
         """
         acquired = await self._client.set(
             _idem_key(task.idem_key), task.id, nx=True, ex=self._task_ttl
@@ -279,10 +274,9 @@ class RedisTaskStore:
     ) -> tuple[_TaskList, bool]:
         """分页列出任务（``docs/08`` §4.1）。
 
-        **先取全量 id 再过滤**：ZSET 里的顺序只按 ``created_at``，而过滤条件有
-        三个。若「先 ``ZREVRANGE`` 取 limit 条再过滤」，一旦最新的几十条都不满足
-        条件，返回的就是空页 —— 而第二页还有数据。用户维度的任务数有界，
-        所以取全量是划算的（截断见 ``LIST_SCAN_LIMIT``）。
+        **先取全量 id 再过滤**：ZSET 的顺序只按 ``created_at``，而过滤条件有三个。若「先
+        ``ZREVRANGE`` 取 limit 条再过滤」，一旦最新的几十条都不满足条件，返回的就是空页 ——
+        而第二页还有数据。用户维度的任务数有界，所以取全量是划算的（截断见 ``LIST_SCAN_LIMIT``）。
         """
         members = await self._client.zrevrange(_user_key(user_id), 0, self._scan_limit - 1)
         tasks = await self._load_many([redis_text(item) for item in members])
@@ -349,8 +343,8 @@ class RedisTaskStore:
             OPEN_ZSET, "-inf", _iso_to_epoch_millis(before), start=0, num=max(1, limit)
         )
         tasks = await self._load_many([redis_text(item) for item in members])
-        # 时间下界由 ZRANGEBYSCORE 完成；这里只再确认「现在还是 PENDING」——
-        # ZSET 里的成员是「最近一次写入时的在飞任务」，从写入到读取之间它可能已经跑完了。
+        # 时间下界由 ZRANGEBYSCORE 完成；这里只再确认「现在还是 PENDING」——ZSET 里的
+        # 成员是「最近一次写入时的在飞任务」，从写入到读取之间它可能已经跑完了。
         return [task for task in tasks if task.status is TaskStatus.PENDING]
 
     async def count_open(self) -> int:

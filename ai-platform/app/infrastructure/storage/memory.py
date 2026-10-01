@@ -1,11 +1,11 @@
 """进程内存储实现（``INFRA_BACKEND=memory``）。
 
-刻意**不是**简化版：唯一约束、软删过滤、计数重算、游标分页都照 ``docs/09`` 的
-语义实现。否则「本地全绿、上真库报唯一键冲突」这类问题只能等上线才发现。
+刻意**不是**简化版：唯一约束、软删过滤、计数重算、游标分页都照 ``docs/09`` 的语义实现。
+否则「本地全绿、上真库报唯一键冲突」这类问题只能等上线才发现。
 
-结构上刻意是 **三个仓储 + 一份共享状态**，而不是一个大类：三个协议的方法名
-（``add`` / ``get`` / ``list`` / ``save`` / ``soft_delete``）完全重合，合并实现
-在 Python 里就是后者覆盖前者。拆开也正好对上 SQL 实现的形状（三张表、同一个连接池）。
+结构上刻意是三个仓储 + 一份共享状态，而不是一个大类：三个协议的方法名（``add`` / ``get`` /
+``list`` / ``save`` / ``soft_delete``）完全重合，合并实现就是后者覆盖前者。拆开也正好对上 SQL
+实现的形状（三张表、同一个连接池）。
 """
 
 from __future__ import annotations
@@ -18,9 +18,8 @@ from app.core.exceptions import AppError, ErrorCode
 from app.core.pagination import cursor_position, decode_cursor, encode_cursor, is_after_cursor
 from app.infrastructure.storage.base import Chunk, Document, KnowledgeBase
 
-# 三个仓储里都有名为 ``list`` 的方法，会在类作用域内遮蔽内建 ``list``，
-# 导致返回注解 `list[X]` 被当成方法对象（mypy: not valid as a type）。
-# 用模块级别名绕开，比写 ``builtins.list`` 好读。
+# 三个仓储里都有名为 ``list`` 的方法，会在类作用域内遮蔽内建 ``list``，导致返回注解
+# ``list[X]`` 被当成方法对象（mypy: not valid as a type）。用模块级别名绕开。
 _KBPage = tuple[list[KnowledgeBase], bool]
 _DocumentPage = tuple[list[Document], bool]
 _ChunkPage = tuple[list[Chunk], bool]
@@ -304,8 +303,8 @@ class InMemoryRagRepository:
     async def recount_kb(self, kb_id: str) -> tuple[int, int]:
         """重算 KB 的 ``document_count`` / ``chunk_count``，返回 ``(docs, chunks)``。
 
-        ``docs/09`` §6 要求计数**用重算而不是 ``+1``**：入库任务可重试，
-        ``+1`` 在重试后会虚高，而重算天然幂等。
+        ``docs/09`` §6 要求计数**用重算而不是 ``+1``**：入库任务可重试，``+1`` 在重试后会虚高，
+        而重算天然幂等。
         """
         async with self._state.lock:
             doc_ids = {

@@ -10,10 +10,8 @@ import (
 )
 
 // ConversationHandler 处理 `/conversations*`（docs/03-§2）。
-//
 // 本层只做四件事：绑参数 → 调 biz → 映射错误 → 写响应。
-// 「校验 / 归属 / 状态机」全部在 biz：同一套规则（M3 起）还要给
-// gRPC 入口用，写在 handler 里就得再抄一遍。
+// 「校验 / 归属 / 状态机」全在 biz：同一套规则（M3 起）还要给 gRPC 入口用。
 type ConversationHandler struct{ svc *biz.ConversationService }
 
 // NewConversationHandler 构造 handler。
@@ -22,9 +20,8 @@ func NewConversationHandler(svc *biz.ConversationService) *ConversationHandler {
 }
 
 // Create 处理 `POST /conversations`（201）。
-//
-// `Idempotency-Key` 的回放由中间件完成（server.Idempotency）：它会把
-// 第一次的 201 响应体原样写回，因此这里看到的永远是「第一次执行」。
+// `Idempotency-Key` 的回放由中间件完成（server.Idempotency），它会原样写回第一次的 201 响应体，
+// 因此这里看到的永远是「第一次执行」。
 func (h *ConversationHandler) Create(c *gin.Context) {
 	var in biz.CreateConversationInput
 	if err := httpx.BindJSON(c, &in); err != nil {

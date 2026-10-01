@@ -1,15 +1,9 @@
 """Worker 进程入口：``uv run python -m app.worker``。
 
-与 API 进程的三点差异，都是刻意的：
-
-* **不导出 HTTP 接口**：Worker 只消费消息（``docs/08`` §5.4「独立进程」）。
-  它的指标服务仍然会起 —— 但 ``METRICS_PORT`` 与 API 相同，所以运维必须给
-  Worker 一个**不同的端口**（见下方启动日志里的告警）。
-* **不跑补偿扫描**：补偿扫描属于「建任务的那一方」（API），Worker 重复跑一遍
-  只会把同一个任务多投几次。
-* **任务存储必须是共享的**：内存任务表下 Worker 拿到消息也查不到任务行，
-  那就是一条条「任务不存在」的日志 —— 直接拒绝启动，不留这种只能靠日志
-  猜的配置组合。
+与 API 进程的三点差异，都是刻意的：**不导出 HTTP 接口**（只消费消息，但指标服务仍会起，
+而 ``METRICS_PORT`` 与 API 相同，所以运维必须给 Worker 一个不同的端口）；**不跑补偿扫描**
+（那属于「建任务的那一方」，Worker 重复跑只会把同一个任务多投几次）；**任务存储必须共享**
+（内存任务表下 Worker 拿到消息也查不到任务行，直接拒绝启动，不留这种只能靠日志猜的配置组合）。
 """
 
 from __future__ import annotations
@@ -45,9 +39,8 @@ EXIT_MISCONFIGURED = 2
 def _install_signal_handlers(stop: asyncio.Event, loop: asyncio.AbstractEventLoop) -> None:
     """把 SIGTERM/SIGINT 变成 ``stop`` 置位（``docs/08`` §5.4 优雅退出）。
 
-    Windows 上事件循环不支持 ``add_signal_handler``（会抛 ``NotImplementedError``），
-    退回 ``signal.signal``。两条路径都必须有：前者能安全地在事件循环里回调，
-    后者是 Windows 唯一的办法。
+    Windows 上事件循环不支持 ``add_signal_handler``（会抛 ``NotImplementedError``），退回
+    ``signal.signal``。两条路径都必须有：前者能安全地在事件循环里回调，后者是 Windows 唯一的办法。
     """
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
@@ -91,8 +84,8 @@ async def run_worker(settings: Settings) -> int:
 
     store = build_task_store(settings)
     bus = build_task_event_bus(settings)
-    # 与 API 走**同一段装配**：处理器集合、向量库实例、embedding 提供者的构造
-    # 方式完全一致，避免「Worker 里少了某个 handler」这类只在上线后才暴露的偏差。
+    # 与 API 走**同一段装配**：处理器集合、向量库实例、embedding 提供者的构造方式完全一致，
+    # 避免「Worker 里少了某个 handler」这类只在上线后才暴露的偏差。
     rag = build_rag_services(settings, task_store=store, events=make_publisher(bus))
     memory = build_memory_services(
         settings,

@@ -1,8 +1,7 @@
 """工具服务：``GET /tools`` 的列表与调试调用（``docs/04`` §4.1 / §4.2）。
 
-放在服务层而不是路由里，是为了让「prod 上调试接口返回 404 而不是 403」这条规则
-有唯一实现处（``docs/04`` §4.2）。这条规则的理由：prod 要连「有这个东西」都不暴露，
-所以整个路由在 prod 下**不存在**（404），而不是存在但拒绝（403）。
+放在服务层而不是路由里，是为了让「prod 上调试接口返回 404 而不是 403」这条规则有唯一实现处：
+prod 要连「有这个东西」都不暴露，所以整个路由在 prod 下**不存在**（404），而不是存在但拒绝（403）。
 """
 
 from __future__ import annotations
@@ -49,9 +48,9 @@ class ToolService:
     ) -> tuple[list[ToolSpec], str | None, bool]:
         """返回 ``(items, next_cursor, has_more)``。
 
-        游标只承载工具名：工具集是**进程内静态**的，排序键天然稳定，
-        不需要 ``created_at``。复用已有 :mod:`app.core.pagination` 是为了让
-        「游标不可解析 → ``INVALID_ARGUMENT``」的行为与其它列表接口一致。
+        游标只承载工具名：工具集是进程内静态的，排序键天然稳定，不需要 ``created_at``。
+        复用 :mod:`app.core.pagination` 是为了让「游标不可解析 → ``INVALID_ARGUMENT``」
+        的行为与其它列表接口一致。
         """
         limit = max(1, min(limit, self.MAX_LIMIT))
         specs = self._registry.specs(source=source, enabled=enabled)
@@ -89,8 +88,8 @@ class ToolService:
         tool = self._registry.get(name)
         effective_dry_run = dry_run
         if tool is not None and tool.spec.side_effect == "write":
-            # 调试接口**不允许**真的执行写操作（``docs/04`` §4.2）：
-            # 这里没有对话上下文可回滚，误写一次就是脏数据。
+            # 调试接口**不允许**真的执行写操作（``docs/04`` §4.2）：这里没有对话上下文
+            # 可回滚，误写一次就是脏数据。
             effective_dry_run = True
 
         ctx = ToolContext(user_id=user_id, allowed=_allowed_for(self._settings, name))

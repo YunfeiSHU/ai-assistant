@@ -1,24 +1,20 @@
-// Package metricsx 是网关全部 Prometheus 指标的**唯一定义处**（docs/06-§5.2）。
+// Package metricsx 是网关全部 Prometheus 指标的唯一定义处（docs/06-§5.2），
+// 前缀统一 `gw_`，与 ai-platform 的 `ai_` 并列展示。
 //
-// 为什么单独成包（与 `logx` / `ssex` / `httpx` 同类）：
-// 指标名、标签名与分桶是**跨系统契约** —— 告警规则、Grafana 面板、Runbook
-// 都按这些字符串写。散在各个调用点意味着「改一个标签名要全仓搜」，
-// 而漏改的那一处不会报错，只会让面板上少一条曲线（静默失效）。
-//
-// 前缀统一 `gw_`，与 ai-platform 的 `ai_` 并列展示（docs/06-§5.2）。
+// 单独成包（与 `logx` / `ssex` / `httpx` 同类）：指标名、标签名与分桶是跨系统契约 ——
+// 告警规则、Grafana 面板、Runbook 都按这些字符串写，散在各调用点意味着「改一个标签名
+// 要全仓搜」，而漏改的那处不报错，只会让面板上少一条曲线（静默失效）。
 //
 // 三条设计约束：
 //
-//  1. **所有方法都接受 nil 接收者**（`if m == nil { return }`）。
-//     于是「指标没启用」= 传 `nil`，调用点不需要写任何 if，
-//     测试也不需要造一个假实现 —— 用 `var m *metricsx.Metrics` 就是全空实现。
-//  2. **标签值一律走 `label()` / `routeLabel()` 归一化**：空串变 `unknown`、超长截断。
-//     这不是防御性编程：Prometheus 的标签值是索引键，一个把 user_id 传进来的
-//     手误会让时间序列数按用户数增长（docs/06-§5.2 明令禁止高基数标签）。
-//     路由模板单独用更宽松的 `routeLabel()` —— 用同一个 32 字节上限会**静默合并**
-//     `/conversations/:conversation_id` 与 `/conversations/:conversation_id/messages`
-//     两条时间序列（实测：前者 1ms、后者数秒，合并后曲线完全不可读）。
-//  3. **不在本包做任何业务判断**：只暴露「记一笔」的方法。
+//  1. 所有方法都接受 nil 接收者（`if m == nil { return }`）。于是「指标没启用」= 传
+//     `nil`，调用点不需要写任何 if，测试用 `var m *metricsx.Metrics` 就是全空实现。
+//  2. 标签值一律走 `label()` / `routeLabel()` 归一化。这不是防御性编程：Prometheus
+//     的标签值是索引键，一个把 user_id 传进来的手误会让序列数按用户数增长
+//     （docs/06-§5.2 禁止高基数标签）。路由模板单独用更宽松的 `routeLabel()` ——
+//     同一个 32 字节上限会静默合并 `/:conversation_id` 与
+//     `/:conversation_id/messages` 两条序列（实测前者 1ms、后者数秒，合并后不可读）。
+//  3. 不在本包做任何业务判断：只暴露「记一笔」的方法。
 package metricsx
 
 import (
@@ -33,23 +29,18 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-// durationBuckets 是耗时直方图的分桶（docs/06-§5.2 明确给出的一组值）。
-//
-// 从 5ms 起：网关自身的开销就在这个量级，桶再粗会把「正常」与「慢一倍」
-// 归到同一个桶里，而那正是这条曲线要区分的东西。
+// durationBuckets 是耗时直方图的分桶（docs/06-§5.2 给定的一组值）。
+// 从 5ms 起：网关自身的开销就在这个量级，桶再粗会把「正常」与「慢一倍」归到同一个桶里。
 var durationBuckets = []float64{0.005, 0.01, 0.03, 0.1, 0.3, 1, 3, 10, 30}
 
 // maxLabelLen 是标签值长度上限。
-//
-// 标签值的语义是「有限枚举」，超长的只可能是误传（真实路径、ID）。
-// 截断比直接丢掉好：至少能在面板上看出「有人传错了」。
+// 标签值的语义是「有限枚举」，超长的只可能是误传（真实路径、ID）；
+// 截断比丢掉好：至少能在面板上看出「有人传错了」。
 const maxLabelLen = 32
 
 // maxRouteLabelLen 是路由模板的长度上限，单独一个更大的值。
-//
-// 取 160：真实路由模板最长的一条约 90 字符（含嵌套资源与子动作），
-// 留一倍余量；再长就说明调用方传了真实路径而不是模板 ——
-// 那种情况靠 `trimLabel` 的指纹后缀避免误合，也靠这里的上限控住基数。
+// 取 160：真实路由模板最长约 90 字符，留一倍余量；再长就说明调用方传了真实路径
+// 而不是模板 —— 那种情况靠 `trimLabel` 的指纹后缀避免误合，也靠这里控住基数。
 const maxRouteLabelLen = 160
 
 // Metrics 持有全部指标。零值不可用，必须经 New 构造；
@@ -80,11 +71,10 @@ type Metrics struct {
 	buildInfo       *prometheus.GaugeVec
 }
 
-// New 构造指标集并注册到**私有** registry。
-//
-// 刻意不用 prometheus 的默认全局 registry：全局 registry 会让任何一个
-// 第三方库（含间接依赖）注册的指标一起出现在 /metrics 上，
-// 而「板上多了一堆没见过的曲线」的排查成本远高于自己维护一个 registry。
+// New 构造指标集并注册到私有 registry。
+// 刻意不用 prometheus 的默认全局 registry：它会让任何第三方库（含间接依赖）注册的
+// 指标一起出现在 /metrics 上，而「板上多了一堆没见过的曲线」的排查成本远高于
+// 自己维护一个 registry。
 func New() *Metrics {
 	reg := prometheus.NewRegistry()
 	m := &Metrics{
@@ -188,9 +178,8 @@ func New() *Metrics {
 	return m
 }
 
-// initLabels 把**标签域有限**的指标先「摸」一遍，让它们在第一次抓取时就存在。
-//
-// 为什么必须做（否则是静默失效，不是「少一条曲线」）：
+// initLabels 把标签域有限的指标先「摸」一遍，让它们在第一次抓取时就存在 ——
+// 否则是静默失效，不是「少一条曲线」：
 //
 //	Prometheus 的 `*Vec` 直到某个标签组合被使用过才会产出样本 ——
 //	`NewCounterVec(...)` + `MustRegister` 之后，一个从未 `WithLabelValues` 过的
@@ -201,9 +190,8 @@ func New() *Metrics {
 //	预置 0 值样本等于把「没发生」与「指标没注册」在现象上区分开：
 //	0 = 采集通了且确实没发生；查不到 = 配置/注册错了。
 //
-// 只预置**有限枚举**：路由（`route`）与上游错误码（`code`）是开放域，
-// 给它们编造 route×method×status 组合会让零值序列数失控 ——
-// 那类指标「有流量才出现」是可接受的，且它参与的两条告警规则本身也需要流量才有意义。
+// 只预置有限枚举：路由（`route`）与上游错误码（`code`）是开放域，给它们编造
+// route×method×status 组合会让零值序列数失控；那类指标「有流量才出现」是可接受的。
 func (m *Metrics) initLabels() {
 	// 鉴权失败原因（docs/06-§5.1 的 auth.verify span 属性 + middleware 的
 	// `WithDetail("reason", ...)` 三处早期 401）。
@@ -256,7 +244,7 @@ func (m *Metrics) initLabels() {
 	// 熔断目标（docs/06-§5.5 的规则按 target="ai-platform" 写）。
 	m.cbState.WithLabelValues("ai-platform")
 
-	// SSE 断连阶段：只预置**实现真的会产出**的两个值 ——
+	// SSE 断连阶段：只预置实现真的会产出的两个值 ——
 	// docs/06-§5.2 还列了 `after_done`，但正常关闭不计入断连（见 docs/08-§9.3），
 	// 预置它会造出一条永远为 0、看起来像「正常关闭从未发生」的假序列。
 	for _, p := range []string{"before_first_token", "mid_stream"} {
@@ -301,13 +289,12 @@ const (
 
 // WarmRoutes 按路由表预置耗时直方图。
 //
-// `route` 标签在这个指标上是**有限域**：取值就是 gin 注册表里的模板串，
-// 一个进程内不会变。预置的价值是让面板上「从未被访问过的路由」显示 0
-// 而不是 `No data` —— 后者与「这个路由根本没注册上」在现象上完全一样。
+// `route` 标签在这个指标上是有限域：取值就是 gin 注册表里的模板串，一个进程内不会变。
+// 预置的价值是让面板上「从未被访问过的路由」显示 0 而不是 `No data` —— 后者与
+// 「这个路由根本没注册上」在现象上完全一样。
 //
-// 刻意不预置 `gw_requests_total`：它还要 `method` 与 `status` 两个标签，
-// 给 route×method×status 编造组合会造出成片的假序列（而真实流量到来时
-// 它们自己就会出现，且它参与的是比率型告警 —— 不依赖「序列必须提前存在」）。
+// 刻意不预置 `gw_requests_total`：它还要 `method` 与 `status` 两个标签，编造组合会造出
+// 成片的假序列（真实流量到来时它们自己就会出现）。
 func (m *Metrics) WarmRoutes(routes []string) {
 	if m == nil {
 		return
@@ -398,10 +385,9 @@ func (m *Metrics) RateLimited(scope string) {
 }
 
 // AIRequest 记录一次对 AI 的调用（结果与耗时）。
-//
-// `result` 取值固定为 ok / error（见 `pkg/metricsx` 的常量），
-// 具体错误码走 `AIError` —— 两件事分开是因为前者是面板上的成功率，
-// 后者是排障时的分布，混在一起会让成功率被码表撑成几十条曲线。
+// `result` 取值固定为 ok / error（见本包常量），具体错误码走 `AIError` ——
+// 两件事分开是因为前者是面板上的成功率，后者是排障时的分布，
+// 混在一起会让成功率被码表撑成几十条曲线。
 func (m *Metrics) AIRequest(operation, result string, d time.Duration) {
 	if m == nil {
 		return
@@ -420,10 +406,8 @@ func (m *Metrics) AIFirstToken(useRAG bool, d time.Duration) {
 }
 
 // AIError 记录一次 AI 错误。
-//
-// `upstreamStatus` 只在 100..599 之间原样记，其余归 `other`：
-// 上游可能回一个非 HTTP 的整数（协议错乱、`0`），
-// 而每个异常值都会新开一条时间序列。
+// `upstreamStatus` 只在 100..599 之间原样记，其余归 `other`：上游可能回一个非 HTTP 的
+// 整数（协议错乱、`0`），而每个异常值都会新开一条时间序列。
 func (m *Metrics) AIError(code string, upstreamStatus int) {
 	if m == nil {
 		return
@@ -493,14 +477,11 @@ func (m *Metrics) SetOrphanRows(table string, n int64) {
 }
 
 // SetBuildInfo 设置版本信息（值恒 1）。
+// 一次性调用；随后被 Prometheus 按 scrape 反复读取 —— 因此它是一条不随版本变化的
+// 时间序列，正是 `up{job=...}` 与「现在跑的是哪个 commit」这两件事的数据来源。
 //
-// 一次性调用；随后被 Prometheus 按 scrape 反复读取 —— 因此它是一条
-// **不会随版本变化的时间序列**，正是 `up{job=...}` 与「现在跑的是哪个 commit」
-// 这两件事的数据来源。
-//
-// 写完之后**删掉 `New()` 留下的占位三元组**：留着的话面板上会同时出现
-// `version="dev"` 与真实版本两条，而「哪个是真的」只能靠人判断 ——
-// 那正是版本面板最不该有的歧义。
+// 写完之后删掉 `New()` 留下的占位三元组：留着的话面板上会同时出现 `version="dev"`
+// 与真实版本两条，而「哪个是真的」只能靠人判断。
 func (m *Metrics) SetBuildInfo(version, commit, goVersion string) {
 	if m == nil {
 		return
@@ -517,10 +498,8 @@ func (m *Metrics) SetBuildInfo(version, commit, goVersion string) {
 // ---- 连接池 ----
 
 // DBPoolStats 是数据库连接池快照（docs/06-§5.2 的 `gw_db_pool_*`）。
-//
-// 之所以用「采样函数」而不是让本包持有 `*sql.DB`：
-// metricsx 不认识任何具体基础设施（它只认数字），
-// 否则一个纯指标包就会变成「必须 import gorm 才能编译」。
+// 用「采样函数」而不是让本包持有 `*sql.DB`：metricsx 不认识任何具体基础设施
+// （它只认数字），否则一个纯指标包就会变成「必须 import gorm 才能编译」。
 type DBPoolStats struct {
 	Open      int
 	InUse     int
@@ -537,10 +516,8 @@ type RedisPoolStats struct {
 }
 
 // RegisterDBPool 注册一组按需采样的数据库连接池指标。
-//
-// 用 GaugeFunc 而不是「定时 Set」：GaugeFunc 只在**被抓取时**读一次，
-// 因此它的值永远是最新的，且服务空闲时没有任何后台开销。
-// 定时 Set 会在没有 scrape 的时候也一直跑，还会在被抓取时给出一个偏旧的值。
+// 用 GaugeFunc 而不是「定时 Set」：GaugeFunc 只在被抓取时读一次，因此值永远是最新的，
+// 且服务空闲时没有任何后台开销；定时 Set 会在没有 scrape 时也一直跑。
 func (m *Metrics) RegisterDBPool(sample func() DBPoolStats) {
 	if m == nil || sample == nil {
 		return
@@ -644,20 +621,16 @@ const (
 // ---- 内部 ----
 
 // label 归一化「枚举型」标签值（错误码、reason、result…）。
-//
 // 空值归 `unknown` 而不是留空：Prometheus 里空串是合法标签值，
 // 于是「忘了传」与「传了空」在面板上无法区分。
 func label(v string) string { return trimLabel(v, maxLabelLen) }
 
 // routeLabel 归一化 `route` 标签。
 //
-// **路由模板不能用 maxLabelLen**：真实路由模板普遍长于 32 字符，
-// 截断会让不同的路由撞成同一个标签值 ——
-// `/api/v1/conversations/:conversation_id` 与
-// `/api/v1/conversations/:conversation_id/messages` 的前 32 字节完全一样，
-// 于是「看会话详情」与「发消息」的 P99 被合进同一条曲线，
-// 而这两件事的耗时差着两个数量级（前者 1ms，后者含 AI 调用）。
-//
+// 路由模板不能用 maxLabelLen：真实路由模板普遍长于 32 字符，截断会让不同的路由撞成
+// 同一个标签值 —— `/api/v1/conversations/:conversation_id` 与
+// `/api/v1/conversations/:conversation_id/messages` 的前 32 字节完全一样，于是
+// 「看会话详情」与「发消息」的 P99 被合进同一条曲线（实测差两个数量级）。
 // 这种错误没有任何运行时症状：指标照样在涨，只是分不开。
 func routeLabel(v string) string { return trimLabel(v, maxRouteLabelLen) }
 

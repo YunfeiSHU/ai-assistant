@@ -17,11 +17,9 @@ import (
 	"github.com/YunfeiSHU/ai-assistant/ai-platform-go/pkg/ssex"
 )
 
-// 本文件覆盖流式提问的**传输层**：SSE 响应头、逐帧写出的时机、错误帧的追加、
+// 本文件覆盖流式提问的传输层：SSE 响应头、逐帧写出的时机、错误帧的追加，
 // 以及「一帧都没写出去时仍回 JSON 信封」这条边界。
-//
-// 用 `httptest` + 真实 gin 引擎而不是直接调 handler：这里要断言的正是
-// 「HTTP 状态码什么时候被写出去」，而那个事实只存在于真实响应里。
+// 用 `httptest` + 真实 gin 引擎而不是直接调 handler：要断言的正是「状态码什么时候被写出去」。
 
 // ---- 假仓储（只实现流式路径真正会走到的方法）----
 
@@ -213,7 +211,7 @@ func TestStreamHandlerRendersEventSequence(t *testing.T) {
 		t.Fatalf("状态码应为 200，实际 %d（%s）", w.Code, w.Body.String())
 	}
 	// SSE 的三个响应头缺一不可：Content-Type 决定客户端把它当流解析，
-	// Cache-Control/no-buffer 决定中间的代理与浏览器不把帧攒起来。
+	// Cache-Control/no-buffer 决定代理与浏览器不把帧攒起来。
 	for k, want := range ssex.Headers() {
 		if got := w.Header().Get(k); got != want {
 			t.Errorf("响应头 %s 期望 %q，实际 %q", k, want, got)
@@ -231,7 +229,7 @@ func TestStreamHandlerRendersEventSequence(t *testing.T) {
 		}
 	}
 
-	// meta 帧里的 message_id 必须是**网关自己**生成的那个（与落库同一个），
+	// meta 帧里的 message_id 必须是网关自己生成的（与落库同一个），
 	// 否则客户端拿 done 之后的 ID 去 GET /messages/{id} 会 404。
 	var meta struct {
 		ConversationID string `json:"conversation_id"`
@@ -251,7 +249,7 @@ func TestStreamHandlerRendersEventSequence(t *testing.T) {
 		t.Error("degraded 应透传（客户端据此展示「降级」提示）")
 	}
 
-	// 引用帧的负载是**对象**（`{"references":[...]}`），不是裸数组：
+	// 引用帧的负载是对象（`{"references":[...]}`）而不是裸数组：
 	// 直接发数组会让 `data.references` 变成 undefined。
 	var refPayload struct {
 		References json.RawMessage `json:"references"`
@@ -290,8 +288,8 @@ func TestStreamHandlerRendersEventSequence(t *testing.T) {
 
 func TestStreamHandlerPassesUnknownEventThroughUnchanged(t *testing.T) {
 	conv := sampleConv()
-	// 未知事件的原样透传在传输层最容易做错：写成 `data: {"x":1}` 之前
-	// 先 unmarshal 成 map 再 marshal 一次就会改变字段顺序/数字精度。
+	// 未知事件的透传最容易做错：先 unmarshal 成 map 再 marshal
+	// 就会改变字段顺序与数字精度。
 	raw := `{"n":1.10,"z":"——","nested":{"a":[1,2]}}`
 	streamer := &stubStreamer{events: []biz.StreamEvent{
 		biz.StreamUnknownEvent{Name: "citation_note", Data: json.RawMessage(raw)},
@@ -312,7 +310,7 @@ func TestStreamHandlerPassesUnknownEventThroughUnchanged(t *testing.T) {
 func TestStreamHandlerWrapsInvalidUnknownPayload(t *testing.T) {
 	conv := sampleConv()
 	// gRPC 的 `unknown.data_json` 是 bytes，上游可以塞非 JSON。
-	// 直接下发会让客户端**整条流**解析中断（不是丢一帧），所以这里包成字符串。
+	// 直接下发会让客户端整条流解析中断（不是丢一帧），所以这里包成字符串。
 	streamer := &stubStreamer{events: []biz.StreamEvent{
 		biz.StreamUnknownEvent{Name: "weird", Data: json.RawMessage(`not json`)},
 	}}
@@ -333,7 +331,7 @@ func TestStreamHandlerWrapsInvalidUnknownPayload(t *testing.T) {
 
 func TestStreamHandlerNotStartedErrorReturnsJSONEnvelope(t *testing.T) {
 	conv := sampleConv()
-	// 首字节超时（上游连上了但不回话）：pump 从来不 Send，所以响应头还没写出去，
+	// 首字节超时（上游连上了但不回话）：pump 从不 Send，响应头还没写出去，
 	// 这里必须能回 504 —— 这正是 `sseSink` 把响应头推迟到第一帧的原因。
 	streamer := &stubStreamer{hangForever: true}
 	svcSide := newStreamHandlerWithTimeouts(t, streamer, &stubMsgRepo{}, conv, 40*time.Millisecond)
@@ -352,9 +350,8 @@ func TestStreamHandlerNotStartedErrorReturnsJSONEnvelope(t *testing.T) {
 
 func TestStreamHandlerStartedErrorDoesNotRewriteStatus(t *testing.T) {
 	conv := sampleConv()
-	// 已经推过帧之后失败（这里用「上游没发 done 就断了」触发）：
-	// 状态码必须**仍然是 200**，且 body 里不能混进 JSON 信封
-	// （混进去会让客户端在流里收到一段不是帧的东西）。
+	// 已经推过帧之后失败（用「上游没发 done 就断了」触发）：状态码必须仍是 200，
+	// 且 body 里不能混进 JSON 信封（那会让客户端在流里收到一段不是帧的东西）。
 	streamer := &stubStreamer{events: []biz.StreamEvent{biz.StreamTokenEvent{Delta: "半"}}}
 	r := newStreamHandler(t, streamer, &stubMsgRepo{}, conv)
 	w := postStream(t, r, `{"content":"q"}`)
@@ -376,9 +373,8 @@ func TestStreamHandlerStartedErrorDoesNotRewriteStatus(t *testing.T) {
 func TestStreamHandlerFrameEndsWithBlankLineAndNoBareNewlines(t *testing.T) {
 	conv := sampleConv()
 	streamer := &stubStreamer{events: []biz.StreamEvent{
-		// 正文里带**裸换行**：SSE 的帧分隔符就是空行，所以它必须被
-		// JSON 转义成 `\n`（`ssex.Frame` 负责），否则一帧会变成两帧，
-		// 客户端拿到第二段时 JSON 解析失败 —— 表现为「回答从换行处开始乱掉」。
+		// 正文里带裸换行：SSE 的帧分隔符就是空行，必须被 JSON 转义成 `\n`
+		//（`ssex.Frame` 负责），否则一帧会变成两帧，客户端解析第二段时失败。
 		biz.StreamTokenEvent{Delta: "第一行\n第二行"},
 		biz.StreamDoneEvent{FinishReason: biz.FinishReasonStop},
 	}}
@@ -427,7 +423,7 @@ func TestStreamHandlerAppendsPersistErrorFrame(t *testing.T) {
 	if payload.Reason == "" {
 		t.Fatal("reason 不能为空（它是客户端唯一能据此提示用户的线索）")
 	}
-	// 状态码不能因为落库失败而改（响应早就发出去了）。
+	// 状态码不能因落库失败而改（响应早就发出去了）。
 	if w.Code != http.StatusOK {
 		t.Fatalf("落库失败不应改变已发出的状态码，实际 %d", w.Code)
 	}

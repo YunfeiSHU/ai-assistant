@@ -19,23 +19,17 @@ import (
 )
 
 // 本文件是 gRPC 流式客户端（`ChatStream`），实现 biz.ChatStreamer。
-//
-// 与非流式 `Chat`（grpc.go）共用：拨号参数（dialAI）、metadata、错误映射、
-// 请求映射（toProtoRequest）、以及各种 `marshal*`。刻意不共用的是
-// **超时的归属**，见下面 streamDeadline 的注释。
+// 与非流式 `Chat` 共用拨号参数、metadata、错误映射、请求映射与各种 `marshal*`；
+// 刻意不共用的是超时的归属，见下面 streamDeadline 的注释。
 
 // streamEventBuffer 是事件通道的缓冲深度。
-//
-// 1 就够了：消费方（biz.pump）是同步 select 读取的，缓冲只用来吸收
-// 「上游已到、消费方正好在处理上一帧」的那一次抖动。给大了反而会让
-// 「客户端很慢」这件事在内存里堆积（每帧的正文可能是几 KB）。
+// 1 就够了：消费方（biz.pump）是同步 select 读取的，缓冲只吸收「上游已到、
+// 消费方正好在处理上一帧」的那一次抖动；给大了会让「客户端很慢」在内存里堆积（每帧正文可能几 KB）。
 const streamEventBuffer = 1
 
 // streamDeadlineSlack 是传输层兜底 deadline 相对整轮上限的宽限。
-//
-// 取值必须**足够让 biz 先触发**（biz 触发时能发 `error(AI_TIMEOUT)` 帧并
-// 落 `partial`；传输层触发时只能表现为流断开，biz 把它归成
-// `upstream_broken`，状态还是 partial 但客户端拿不到原因）。
+// 取值必须足够让 biz 先触发：biz 触发时能发 `error(AI_TIMEOUT)` 帧并落 `partial`；
+// 传输层触发只能表现为流断开，biz 归成 `upstream_broken`，客户端拿不到原因。
 const streamDeadlineSlack = 10 * time.Second
 
 // grpcChatStreamer 用 gRPC server-streaming 实现 biz.ChatStreamer。
@@ -44,15 +38,12 @@ type grpcChatStreamer struct {
 	opt    Options
 }
 
-// 编译期断言（与非流式的 `_ biz.ChatOrchestrator` 同一个理由：
-// 接口变了要在这里先报错，而不是在 main 的装配处）。
+// 编译期断言：接口变了要在这里先报错，而不是在 main 的装配处。
 var _ biz.ChatStreamer = (*grpcChatStreamer)(nil)
 
-// NewChatClients 用**同一条** gRPC 连接组装非流式与流式客户端。
-//
+// NewChatClients 用同一条 gRPC 连接组装非流式与流式客户端。
 // 共用一个 ClientConn 而不是各拨一次：两条路指向同一个上游、用同一套参数，
-// 拨两次只会多一条 TCP 连接（以及它在 keepalive 上的额外探活）。
-// 互换的「隔离」是不存在的 —— 它们本来就是同一个服务的两个方法。
+// 拨两次只会多一条 TCP 连接，而它们本来就是同一个服务的两个方法，换不来任何隔离。
 func NewChatClients(ctx context.Context, opt Options) (biz.ChatOrchestrator, biz.ChatStreamer, error) {
 	conn, err := dialAI(ctx, opt)
 	if err != nil {
@@ -61,7 +52,7 @@ func NewChatClients(ctx context.Context, opt Options) (biz.ChatOrchestrator, biz
 	return newChatOrchestratorFromConn(conn, opt), newChatStreamerFromConn(conn, opt), nil
 }
 
-// newChatStreamerFromConn 用一条**已建立的**连接组装流式客户端（单测注入 bufconn）。
+// newChatStreamerFromConn 用一条已建立的连接组装流式客户端（单测注入 bufconn）。
 func newChatStreamerFromConn(conn grpc.ClientConnInterface, opt Options) biz.ChatStreamer {
 	if opt.Log == nil {
 		opt.Log = slog.Default()
@@ -80,14 +71,11 @@ func (o Options) streamDeadline() time.Duration {
 
 // ChatStream 发起一次流式对话。
 //
-// **不设整轮 deadline**：整轮上限由 biz 的编排循环负责（`pump` 的 `total` 定时器），
-// 因为超时那一刻需要「发一条 `error` 帧 + 落 partial」，而这两件事只有 biz
-// 做得到 —— 传输层超时只会让流无声地断掉。这里只加一个比它更宽松的兜底
-// deadline（`streamDeadlineSlack`），防的是「biz 的定时器有 bug」时连接永远挂着。
+// 不设整轮 deadline：整轮上限由 biz 的编排循环负责（`pump` 的 `total` 定时器），
+// 因为超时那一刻要「发 `error` 帧 + 落 partial」，而传输层超时只会让流无声断掉。
+// 这里只加一个更宽松的兜底 deadline（`streamDeadlineSlack`），防的是 biz 的定时器有 bug 时连接永远挂着。
 //
-// **MUST NOT 重试**：重试意味着重复计费（docs/04-§3.4 明确把 `ChatStream`
-// 排除在重试策略之外）。这里没有任何重试逻辑，但把它写下来 ——
-// 未来有人在 `dialAI` 上挂 `WithRetry` 时应该先看到这句话。
+// MUST NOT 重试：重试意味着重复计费（docs/04-§3.4 明确把 `ChatStream` 排除在重试策略之外）。
 func (c *grpcChatStreamer) ChatStream(parent context.Context, req biz.ChatRequest) (biz.ChatEventStream, error) {
 	callCtx := parent
 	var cancel context.CancelFunc = func() {}
@@ -98,9 +86,9 @@ func (c *grpcChatStreamer) ChatStream(parent context.Context, req biz.ChatReques
 
 	stream, err := c.client.ChatStream(callCtx, toProtoRequest(req))
 	if err != nil {
-		// 建流失败（连接没有、上游直接回错误状态）。此时**还没有任何事件**，
-		// 调用方可以照常返回 4xx/5xx 信封 —— 所以这里必须把错误原样交给
-		// 业务层判断，而不是伪造成「流里的一个 error 事件」。
+		// 建流失败（连接没有、上游直接回错误状态）。此时还没有任何事件，
+		// 调用方可以照常返回 4xx/5xx 信封，所以这里必须把错误原样交给业务层判断，
+		// 而不是伪造成「流里的一个 error 事件」。
 		cancel()
 		return nil, mapAIError(callCtx, err, nil, c.opt)
 	}
@@ -118,11 +106,8 @@ func (c *grpcChatStreamer) ChatStream(parent context.Context, req biz.ChatReques
 }
 
 // grpcChatEventStream 把 gRPC 的 Recv 循环桥接成 biz.ChatEventStream。
-//
-// 为什么需要一条 goroutine 而不是让 biz 直接调 `Recv()`：biz 在等事件的同时
-// 还要发心跳、判超时、响应取消（见 biz.ChatEventStream 的契约注释）。
-// 桥接的代价是一次 goroutine + 一个 1 深度通道，换来的是「等事件」不再是
-// 一个阻塞调用。
+// 需要一条 goroutine 而不是让 biz 直接调 `Recv()`：biz 在等事件的同时还要发心跳、
+// 判超时、响应取消（见 biz.ChatEventStream 的契约注释），不能阻塞在一个 Recv 上。
 type grpcChatEventStream struct {
 	parent context.Context
 	ctx    context.Context
@@ -140,15 +125,11 @@ type grpcChatEventStream struct {
 var _ biz.ChatEventStream = (*grpcChatEventStream)(nil)
 
 // Events 返回事件通道，供 biz 消费。
-//
-// 通道由后台接收协程写入，**收尾时关闭**：读到关闭即表示 gRPC 流已结束
-// （正常由 done 帧结束，异常见 Err）。消费方不应向该通道写入。
+// 通道由后台接收协程写入、收尾时关闭：读到关闭即表示 gRPC 流已结束（正常由 done 帧结束，异常见 Err）。
 func (s *grpcChatEventStream) Events() <-chan biz.StreamEvent { return s.events }
 
 // Err 返回流结束的原因；正常收尾返回 nil。
-//
-// 必须在 Events 关闭**之后**读取才有意义（关闭前它可能还是 nil），
-// 加锁是为了与接收协程的写入互斥。
+// 必须在 Events 关闭之后读取才有意义（关闭前它可能还是 nil），加锁是为了与接收协程的写入互斥。
 func (s *grpcChatEventStream) Err() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -183,8 +164,7 @@ func (s *grpcChatEventStream) pump() {
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				// 上游正常收尾（server-streaming 的 EOF 等价于「没有更多事件」）。
-				// 留 nil：**不要**把 EOF 当成错误，"上游答完了" 与 "上游断了"
-				// 在 biz 那里落的是两种不同的状态。
+				// 留 nil：不要把 EOF 当成错误 ——「上游答完了」与「上游断了」在 biz 那里是两种状态。
 				return
 			}
 			s.setErr(mapAIError(s.ctx, err, s.stream.Trailer(), s.opt))
@@ -192,7 +172,7 @@ func (s *grpcChatEventStream) pump() {
 		}
 		out, ok := mapChatEvent(ev, s.opt.Log, s.ctx)
 		if !ok {
-			// 空事件（proto 的 oneof 没设）或未知分支：跳过这一条但**继续读**。
+			// 空事件（proto 的 oneof 没设）：跳过这一条但继续读 ——
 			// 在这里 return 会因为一个还没定义的事件类型把整轮回答丢掉。
 			continue
 		}
@@ -206,10 +186,8 @@ func (s *grpcChatEventStream) pump() {
 	}
 }
 
-// mapChatEvent 把 proto 事件映射成 biz 事件。
-//
-// 返回 `ok=false` 表示「这条事件没有内容」（proto 的 oneof 为空）。
-// 注意 `unknown` 分支是**有内容**的：docs/04-§4.1 要求未知事件必须透传，
+// mapChatEvent 把 proto 事件映射成 biz 事件；`ok=false` 表示这条事件没有内容（oneof 为空）。
+// 注意 `unknown` 分支是有内容的：docs/04-§4.1 要求未知事件必须透传，
 // 所以它映射成 `biz.StreamUnknownEvent` 原样带出去。
 func mapChatEvent(ev *aiplatformv1.ChatEvent, log *slog.Logger, ctx context.Context) (biz.StreamEvent, bool) {
 	if ev == nil {
@@ -228,16 +206,15 @@ func mapChatEvent(ev *aiplatformv1.ChatEvent, log *slog.Logger, ctx context.Cont
 		}, true
 
 	case *aiplatformv1.ChatEvent_Reference:
-		// 引用在库里是 `references[]` 的线上形状（与非流式 `ChatResponse.references`
-		// 同一套字段），所以复用 `marshalReferences` —— 两条路的落库形状必须一致，
-		// 否则「同一条引用在非流式与流式下字段不同」这种问题会在前端才被发现。
+		// 与非流式 `ChatResponse.references` 是同一套字段，复用 `marshalReferences` ——
+		// 两条路的落库形状必须一致，否则字段差异会到前端才被发现。
 		raw, err := marshalReferences(e.Reference.GetReferences())
 		if err != nil {
 			return nil, false
 		}
 		if raw == nil {
-			// 空集合：AI 每次重发全量，一次空集合意味着「本轮没有引用」。
-			// 仍然要下发（客户端据此清空编号），但累积器那边会把它当空处理。
+			// 空集合：AI 每次重发全量，空集合意味着「本轮没有引用」。
+			// 仍要下发（客户端据此清空编号），累积器那边会把它当空处理。
 			raw = []byte("[]")
 		}
 		return biz.StreamReferenceEvent{References: raw}, true
@@ -286,9 +263,8 @@ func mapChatEvent(ev *aiplatformv1.ChatEvent, log *slog.Logger, ctx context.Cont
 		u := e.Unknown
 		name := strings.TrimSpace(u.GetEvent())
 		if name == "" {
-			// 没有事件名的「未知事件」无法下发（SSE 没有 `event:` 名就只能是
-			// 默认的 `message`，客户端会当成另一个事件）。这里只能丢，
-			// 但要留痕 —— 静默丢帧正是该需求要防的事。
+			// 没有事件名的「未知事件」无法下发（SSE 没有 `event:` 名就只能是默认的 `message`，
+			// 客户端会当成另一个事件）。只能丢，但要留痕 —— 静默丢帧正是该需求要防的事。
 			log.WarnContext(ctx, "ai.stream_unknown_without_name",
 				slog.String("data", truncateForLog(string(u.GetDataJson()))))
 			return nil, false
@@ -303,11 +279,9 @@ func mapChatEvent(ev *aiplatformv1.ChatEvent, log *slog.Logger, ctx context.Cont
 	}
 }
 
-// argumentsJSON 把 proto 的 `arguments_json` 字符串转成**对象** JSON。
-//
-// 转不动就回空对象：`arguments` 在契约里是 dict（docs/03-§4.1），
-// 塞一个字符串进去会让客户端反序列化失败 —— 那比丢一个工具参数更糟
-// （失败的是整条消息的渲染，而不是一个字段）。
+// argumentsJSON 把 proto 的 `arguments_json` 字符串转成对象 JSON。
+// 转不动就回空对象：`arguments` 在契约里是 dict（docs/03-§4.1），塞字符串会让客户端
+// 反序列化失败 —— 失败的将是整条消息的渲染，而不是一个字段。
 func argumentsJSON(raw string, log *slog.Logger, ctx context.Context) []byte {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
@@ -322,11 +296,8 @@ func argumentsJSON(raw string, log *slog.Logger, ctx context.Context) []byte {
 }
 
 // jsonIsObject 判断一段 JSON 文本是不是对象。
-//
-// 先看首字节再看 `json.Valid`：两者**都要**。
-// 只看首字节的话 `{"a":1} 后面跟着垃圾` 会被当成合法对象（客户端解析失败）；
-// 只看 `json.Valid` 的话数组 `[1,2]` 也是「合法 JSON」，
-// 而契约要求这里是对象。
+// 首字节与 `json.Valid` 两者都要：只看首字节会把 `{"a":1} 后面跟着垃圾` 当合法对象；
+// 只看 `json.Valid` 则数组 `[1,2]` 也是「合法 JSON」，而契约要求这里是对象。
 func jsonIsObject(s string) bool {
 	if s == "" || s[0] != '{' {
 		return false
@@ -335,9 +306,7 @@ func jsonIsObject(s string) bool {
 }
 
 // rawOrEmpty 保证未知事件的 `data` 是一个合法 JSON 值。
-//
-// 为空时给 `null` 而不是空串：空串会让 SSE 的 `data:` 行是空的，
-// 客户端 `JSON.parse("")` 直接抛异常。给 `null` 它至少能解析成 null。
+// 为空时给 `null` 而不是空串：空串会让 SSE 的 `data:` 行为空，客户端 `JSON.parse("")` 直接抛异常。
 func rawOrEmpty(raw []byte) []byte {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 {

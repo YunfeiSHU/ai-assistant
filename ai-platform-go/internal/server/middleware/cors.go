@@ -9,10 +9,8 @@ import (
 )
 
 // CORS 中间件：按显式白名单放行跨域请求（docs/06-§4.2）。
-//
-// 白名单为空时**不加任何 CORS 头**（等价于同源）：这样「配置漏了」
-// 的表现是浏览器拒绝，而不是服务端默默用 `*` 放行所有站点。
-// prod 下配置成 `*` 会在启动校验时直接失败（AC-NFR-10）。
+// 白名单为空时不加任何 CORS 头（等价于同源）：这样「配置漏了」的表现是浏览器拒绝，
+// 而不是服务端默默用 `*` 放行所有站点。prod 下配置成 `*` 会在启动校验时直接失败（AC-NFR-10）。
 func CORS(allowedOrigins []string) gin.HandlerFunc {
 	allowAll := false
 	set := make(map[string]struct{}, len(allowedOrigins))
@@ -66,18 +64,15 @@ func CORS(allowedOrigins []string) gin.HandlerFunc {
 
 // BodyLimit 中间件：用 http.MaxBytesReader 限制请求体（docs/06-§4.2）。
 //
-// MUST 在**读取之前**包上：先读进内存再判断大小的话，
-// 「请求体过大」这件事已经消耗掉等量的内存了。
+// MUST 在读取之前包上：先读进内存再判断大小的话，「请求体过大」这件事已经消耗掉等量内存了。
 //
-// **`multipart/form-data` 例外**：JSON 接口的上限（`MAX_JSON_BODY_MB`，默认 1MB）
-// 与文档上传的上限（`UPLOAD_MAX_MB`，默认 50MB）差了一个数量级，
-// 而这一层跑在路由匹配之前，拿不到「这是哪个接口」。用 Content-Type 区分是
-// 可靠的：请求会不会被当成 JSON 解析只取决于它，而 `MaxBytesReader` 一旦套上
-// 就无法在 handler 里摘掉（它返回的是一个不可解包的私有 reader）。
+// `multipart/form-data` 例外：JSON 上限（`MAX_JSON_BODY_MB`，默认 1MB）与上传上限
+// （`UPLOAD_MAX_MB`，默认 50MB）差一个数量级，而这一层跑在路由匹配之前拿不到「这是哪个接口」。
+// 用 Content-Type 区分是可靠的（请求会不会被当成 JSON 解析只取决于它），
+// 而且 `MaxBytesReader` 一旦套上就无法在 handler 里摘掉（返回的是不可解包的私有 reader）。
 //
-// 例外带来的敞口由上传接口自己关上：`UploadHandler` 先用 `Content-Length`
-// 预检一次、再用计数 reader 兜一次（声明撒谎 / chunked 的情况），
-// 所以 multipart 的上限不是「没人管」，而是「由知道上限的那一层管」。
+// 例外带来的敞口由上传接口自己关上：`UploadHandler` 先用 `Content-Length` 预检、
+// 再用计数 reader 兜一次（声明撒谎 / chunked），所以 multipart 的上限是「由知道上限的那一层管」。
 func BodyLimit(maxBytes int64) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if maxBytes > 0 && c.Request.Body != nil && !isMultipart(c) {

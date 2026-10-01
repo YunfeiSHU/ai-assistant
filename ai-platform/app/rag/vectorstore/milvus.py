@@ -1,9 +1,8 @@
 """Milvus 向量库（``INFRA_BACKEND=real``，``docs/09`` §3）。
 
-集合定义严格照 ``docs/09`` §3.1：主键 ``chunk_id``（VARCHAR 64）、``FLOAT_VECTOR``
-维度来自配置、``HNSW`` + ``COSINE``，并对 ``user_id`` / ``kb_id`` / ``doc_id`` 建
-``INVERTED`` 标量索引——没有标量索引的过滤会退化成全表扫描 + 后过滤，
-召回质量随数据量增长而下降（先取 top-k 再过滤，命中数会不足 ``top_k``）。
+集合定义照 ``docs/09`` §3.1：主键 ``chunk_id``、``FLOAT_VECTOR``、``HNSW`` + ``COSINE``，
+并对 ``user_id`` / ``kb_id`` / ``doc_id`` 建 ``INVERTED`` 标量索引 —— 没有标量索引的过滤会
+退化成全表扫描 + 后过滤，命中数会不足 ``top_k``。
 
 ``pymilvus`` 是同步 SDK，全部调用放进线程池，避免阻塞事件循环（对话 SSE 与它同进程）。
 """
@@ -23,22 +22,18 @@ logger = logging.getLogger("app.rag.vectorstore")
 
 
 def _import_pymilvus_guarded() -> Any:
-    """导入 ``pymilvus``，并**撤销它在 import 期对 ``os.environ`` 的污染**。
+    """导入 ``pymilvus``，并撤销它在 import 期对 ``os.environ`` 的污染。
 
-    ``pymilvus/settings.py`` 第 6 行直接调了 ``load_dotenv()``（不是我们的代码）：
-    只要 import 到它，就会把**从 CWD 往上找到的第一个 ``.env``** 灌进 ``os.environ``。
-    说"多几个环境变量"是不够的 —— ``Settings(_env_file=None, ...)`` 仍会读到它们，
-    因为**环境变量的优先级与 env_file 无关**。实测后果（本机）：
+    ``pymilvus/settings.py`` 直接调了 ``load_dotenv()``（不是我们的代码）：只要 import
+    到它，就会把从 CWD 往上找到的第一个 ``.env`` 灌进 ``os.environ``。说「多几个环境
+    变量」是不够的 —— ``Settings(_env_file=None, ...)`` 仍会读到它们，因为环境变量的
+    优先级与 env_file 无关。实测后果：pytest 里第一个 import 了 pymilvus 的用例之后，
+    整个进程的 ``Settings(_env_file=None, embedding_provider="hash")`` 都会带上开发机
+    ``.env`` 的 ``EMBEDDING_DIM=2048`` ⇒ 契约用例「就绪探针报 1024 维」直接失败；
+    生产进程同理，且会被子进程继承。
 
-    * pytest 里第一个碰到真实向量库的用例 import 了 pymilvus，**此后整个进程**的
-      ``Settings(_env_file=None, embedding_provider="hash")`` 都会带上开发机 ``.env``
-      的 ``EMBEDDING_DIM=2048`` / ``EMBEDDING_MODEL=doubao-…``（provider 仍是调用方
-      显式传的 ``hash``）⇒ 契约用例「就绪探针报 1024 维」直接变成 2048 而失败；
-    * 生产进程同理：``.env`` 变成真实环境变量，配置来源不再可分辨，且会被
-      **子进程继承**（MCP Server 的环境白名单传递、以及任何 ``subprocess``）。
-
-    所以这里做「快照 → import → 恢复」：pymilvus 自己想读的 ``MILVUS_*`` 已经由
-    :class:`~app.core.config.Settings` 显式传入，不需要它去读 ``.env``。
+    所以这里做「快照 → import → 恢复」：pymilvus 自己想读的 ``MILVUS_*`` 已由
+    :class:`~app.core.config.Settings` 显式传入。
     """
     snapshot = dict(os.environ)
     try:
@@ -91,9 +86,8 @@ UPSERT_BATCH_SIZE = 500
 def _vector_dim_of(described: Any) -> int | None:
     """从 ``describe_collection`` 的结果里取向量字段的维度（取不到返回 ``None``）。
 
-    写成独立函数而不是内联：``describe_collection`` 的返回结构随 pymilvus 版本变过，
-    而这里的用途是"**能判就判、判不了不拦**"——真正的防线还有写入时的显式校验
-    （``app/rag/embedding/*.py`` 的 ``_check_dim``）。
+    写成独立函数：``describe_collection`` 的返回结构随 pymilvus 版本变过，而这里的用途是
+    「能判就判、判不了不拦」—— 真正的防线还有写入时的显式 ``_check_dim``。
     """
     fields = (described or {}).get("fields") if isinstance(described, dict) else None
     for field in fields or []:
@@ -178,10 +172,9 @@ class MilvusVectorStore:
                 extra={"collection": self._collection_name, "dim": self.dim},
             )
         else:
-            # 集合**已存在**时必须核对维度：Milvus 的向量维度是建集合时固化的，
-            # 维度不符时写入不会立刻报错（表现为"写成功但永远检索不到"）。
-            # 换 embedding 模型（如 bge-m3 1024 → ark/2048）就会踩这一步，
-            # 所以在启动期把它变成一条明确的错误，而不是等到检索空手而归。
+            # 集合已存在时必须核对维度：Milvus 的向量维度是建集合时固化的，维度不符时
+            # 写入不会立刻报错（表现为「写成功但永远检索不到」）。换 embedding 模型
+            # （bge-m3 1024 → ark/2048）就会踩这一步，所以在启动期把它变成明确的错误。
             described = await self._run(client.describe_collection, self._collection_name)
             existing = _vector_dim_of(described)
             if existing is not None and int(existing) != self.dim:
@@ -321,8 +314,8 @@ class MilvusVectorStore:
     def _filter(user_id: str, kb_ids: Sequence[str], doc_ids: Sequence[str]) -> str:
         """拼 Milvus 过滤表达式。
 
-        ``user_id`` 是**无条件**加入的：多租户隔离不能依赖调用方，否则一次
-        参数遗漏就是跨租户数据泄露。
+        ``user_id`` 是无条件加入的：多租户隔离不能依赖调用方，否则一次参数遗漏
+        就是跨租户数据泄露。
         """
         clauses = [f'user_id == "{_escape(user_id)}"']
         if kb_ids:

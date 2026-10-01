@@ -1,14 +1,10 @@
-"""全局配置：统一从环境变量与项目根目录的 .env 读取。
+"""全局配置：统一从环境变量与项目根目录的 .env 读取（约定见 ``docs/10`` §7）。
 
-所有字段都可以用「同名、不区分大小写」的环境变量覆盖，例如
-``APP_ENV=prod``、``MILVUS_URI=http://milvus:19530``。
+所有字段都可以用「同名、不区分大小写」的环境变量覆盖（如 ``APP_ENV=prod``）。
+本文件是配置项的唯一事实来源：新增配置必须同步 ``.env.example`` 与文档表格。
 
-设计约定（见 docs/10-非功能需求与可观测性.md §7）：
-
-* 本文件是**配置项的唯一事实来源**；新增配置必须同步 ``.env.example`` 与文档表格。
-* 配置校验分两层：``Settings`` 内的字段级约束（pydantic），以及
-  :meth:`Settings.validate_for_startup` 的**跨字段 / 环境相关**校验
-  （启动期调用，失败即拒绝启动）。
+校验分两层：``Settings`` 内的字段级约束（pydantic），以及
+:meth:`Settings.validate_for_startup` 的跨字段 / 环境相关校验（启动期调用，失败即拒绝启动）。
 """
 
 from __future__ import annotations
@@ -44,21 +40,19 @@ DEFAULT_LLM_MODELS: list[dict[str, Any]] = [
     },
 ]
 
-#: 已知 BGE 模型的**真实输出维度**（来自各自 ``config.json`` 的 ``hidden_size``）。
+#: 已知 BGE / 云端模型的真实输出维度（来自各自 ``config.json`` 的 ``hidden_size``）。
 #:
 #: 换模型时 ``EMBEDDING_DIM`` 与 ``MILVUS_VECTOR_DIM`` 必须一起改 —— 只改模型不改维度，
-#: 写入的向量**查不出来也不报错**。启动期的 ``VECTOR_DIM_MISMATCH`` 只保证这两个
-#: *配置项*彼此一致，不知道模型的真实维度，所以这张表补上「模型 → 维度」这一环。
-#:
-#: 候选档位（``docs/10`` §7 配置表，实测口径见 ``docs/12``）：
+#: 写入的向量查不出来也不报错。启动期的 ``VECTOR_DIM_MISMATCH`` 只保证这两个配置项彼此一致，
+#: 不知道模型的真实维度，所以这张表补上「模型 → 维度」这一环。
 #:
 #: =====================================  ======  ==================================
 #: 模型                                    维度    说明
 #: =====================================  ======  ==================================
-#: ``BAAI/bge-m3``                       1024    **当前默认**：多语言 + 长上下文
+#: ``BAAI/bge-m3``                       1024    当前默认：多语言 + 长上下文
 #: ``BAAI/bge-large-zh-v1.5``            1024    中文，与默认同维度（换它不用重建集合）
 #: ``BAAI/bge-base-zh-v1.5``              768    中文，体积/质量折中
-#: ``BAAI/bge-small-zh-v1.5``             512    中文，最快（换它**必须重建集合**）
+#: ``BAAI/bge-small-zh-v1.5``             512    中文，最快（换它必须重建集合）
 #: =====================================  ======  ==================================
 EMBEDDING_MODEL_DIMS: dict[str, int] = {
     "BAAI/bge-m3": 1024,
@@ -74,8 +68,8 @@ EMBEDDING_MODEL_DIMS: dict[str, int] = {
     "Qwen/Qwen3-Embedding-8B": 4096,
 }
 
-#: 硅基流动 Qwen3-Embedding 系列**允许的降维档位**（官方文档明示，仅 Qwen3 系列支持）。
-#: 设 ``SILICONFLOW_EMBEDDING_DIMENSIONS`` 时必须是其中之一；不在表里的模型一律放行
+#: 硅基流动 Qwen3-Embedding 系列允许的降维档位（官方文档明示，仅 Qwen3 支持）。
+#: 设 ``SILICONFLOW_EMBEDDING_DIMENSIONS`` 时必须是其中之一；表外的模型一律放行
 #: （真实维度由 provider 在第一次编码后自检）。
 SILICONFLOW_QWEN3_DIMENSIONS: dict[str, tuple[int, ...]] = {
     "Qwen/Qwen3-Embedding-8B": (64, 128, 256, 512, 768, 1024, 1536, 2048, 2560, 4096),
@@ -85,27 +79,19 @@ SILICONFLOW_QWEN3_DIMENSIONS: dict[str, tuple[int, ...]] = {
 
 
 def default_torch_num_threads() -> int:
-    """本地 CPU 推理的 ``TORCH_NUM_THREADS`` 默认值：**逻辑核数的一半**（至少 1）。
+    """本地 CPU 推理的 ``TORCH_NUM_THREADS`` 默认值：逻辑核数的一半（至少 1）。
 
-    ``0`` 仍然是合法的显式取值（= 不干预，保留 torch 默认），但**不再作为默认**：
-    torch 默认按逻辑核数开线程，8MB 文档的向量化会把整机的核吃满，同机的
-    MySQL / Redis / 网关 / 验收脚本一起被拖慢 **2~3 倍**
-    （实测连跑两遍全套：M1 41s→75s、M2 71s→186s，看起来像「产品变慢了」）。
+    ``0`` 仍是合法的显式取值（= 不干预，保留 torch 默认），但不再作为默认：torch 默认按
+    逻辑核数开线程，8MB 文档的向量化会把整机核吃满，同机的 MySQL / Redis / 网关 / 验收脚本
+    一起被拖慢 2~3 倍（实测连跑两遍全套：M1 41s→75s、M2 71s→186s，看起来像「产品变慢了」）。
 
-    取一半是「单次向量化略慢」与「整机不被饿死」之间的折中：不做成 2 是因为
-    大文档的**绝对**耗时也会跟着翻倍，而验收与用户感知的正是绝对耗时。
-    见 ``app/rag/torch_threads.py`` 与 ``ai-platform-go/docs/09`` §7.2。
+    取一半是「单次向量化略慢」与「整机不被饿死」之间的折中：不做成 2 是因为大文档的绝对耗时
+    也会跟着翻倍，而验收与用户感知的正是绝对耗时。本机实测（``ai-platform-go/docs/11-§3.4``）
+    这一半核是双赢：``=10`` 比 ``=20`` 的入库快 25~30%，在线请求 ``/health`` 中位
+    66.2 → 39.1ms。见 ``app/rag/torch_threads.py``。
 
-    .. note::
-       **本机端到端实测（``ai-platform-go/docs/11-§3.4``）里这一半核是双赢**：
-       `=10` 比 `=20` 的入库快 25~30%（223.9s → 156.8~178.5s），在线请求 `/health`
-       中位 66.2 → 39.1~43.0ms、最大 3731 → 69~130ms。原因是这台机器可用内存只剩
-       ~1.7GB，逻辑核全开会把内存带宽打满；内存宽裕的机器上仍可能出现
-       「单次吞吐略降」，但那也不亏 —— 唯一稳的结论是「一半核不会更差」。
-
-    .. note::
-       ``os.cpu_count()`` 是**逻辑**核数（含超线程），这也是 torch 自己用的口径；
-       取不到时按 2 兜底（宁可设 1 也不要退回「不干预」）。
+    ``os.cpu_count()`` 是逻辑核数（含超线程），也是 torch 自己的口径；取不到时按 2 兜底
+    （宁可设 1 也不要退回「不干预」）。
     """
     return max(1, (os.cpu_count() or 2) // 2)
 
@@ -135,7 +121,6 @@ class Settings(BaseSettings):
     #: 基础设施后端：``memory`` = 进程内实现（本地开发 / 测试），
     #: ``real`` = Redis / MySQL / Milvus / MinIO / Kafka（生产 MUST 为 real）。
     infra_backend: Literal["memory", "real"] = "memory"
-
     # ==================== 鉴权与日志 ====================
     auth_enabled: bool = True
     jwt_secret: str = ""
@@ -150,17 +135,15 @@ class Settings(BaseSettings):
     api_key_pepper: str = ""
     #: JSON 请求体上限（字节）；multipart 走 ``upload_max_mb``。
     max_json_body_bytes: int = 2 * 1024 * 1024
-    #: 服务间调用凭据（Go 网关的后台任务用，如摘要重建）。
-    #: 与用户 JWT 分开的理由：后台任务没有「当前用户」，用用户令牌凑合会让
-    #: 审计日志里出现「某个普通用户发起了全局重建」这种看不懂的记录。
+    #: 服务间调用凭据（Go 网关的后台任务用，如摘要重建）。与用户 JWT 分开：后台任务
+    #: 没有「当前用户」，用用户令牌凑合会让审计日志出现「某个普通用户发起了全局重建」。
     internal_service_token: str = ""
 
     # ==================== gRPC（Go 网关 → 本地编排）====================
-    # 与 HTTP 并存：外部接口走 HTTP/SSE，``Chat`` / ``ChatStream``
-    # 走 gRPC（见 docs/04 §2）。默认关闭，需要显式打开才会监听端口。
+    # 与 HTTP 并存：外部接口走 HTTP/SSE，``Chat`` / ``ChatStream`` 走 gRPC（见 docs/04 §2）。
     grpc_enabled: bool = False
-    #: 默认只听回环：开发机上「忘了配鉴权就暴露到 0.0.0.0」是最常见的
-    #: 事故来源，容器里部署时显式改成 0.0.0.0。
+    #: 默认只听回环：开发机上「忘了配鉴权就暴露到 0.0.0.0」是最常见的事故来源，
+    #: 容器里部署时显式改成 0.0.0.0。
     grpc_host: str = "127.0.0.1"
     grpc_port: int = 50051
     #: 同时在处理的 gRPC 请求数上限。LLM 调用是长尾 IO，给得比 HTTP 小一些，
@@ -191,70 +174,66 @@ class Settings(BaseSettings):
     # 注意：DeepSeek 不提供 embedding 接口，所以向量化必须用本地 BGE 模型
     # （sentence-transformers），不能像 LLM 那样换个 base_url 就走。
     #: ``bge`` = 真实语义向量（本地权重，需下载）；``hash`` = 确定性词法向量；
-    #: ``ark`` = 火山方舟云端多模态向量化（**每片一次 HTTP + 并发**，见 ``ark.py``）；
-    #: ``siliconflow`` = 硅基流动云端（**真批量 N 进 N 出**，见 ``siliconflow.py``）。
+    #: ``ark`` = 火山方舟云端多模态向量化；``siliconflow`` = 硅基流动云端（真批量 N 进 N 出）。
     #: ``hash`` 用于本地/测试：同一个 query 每次都得到同一向量，不依赖网络与模型文件，
     #: 因此「检索链路」能被机械断言（拿语义向量测链路会因为权重变动而随机失败）。
     embedding_provider: Literal["hash", "bge", "ark", "siliconflow"] = "hash"
     #: 模型标识：本地是 HF 仓库名，云端是服务商的模型 ID（写入 KB / chunk 元数据）
     embedding_model: str = "BAAI/bge-m3"
     embedding_device: str = "cpu"
-    #: **调用粒度**（不是模型批量）：``bge`` 档是 ``encode(batch_size=...)``；
-    #: ``ark`` 档决定每次 ``embed()`` 提交多少条（每条一次 HTTP），建议 32~64；
-    #: ``siliconflow`` 档是**每次 HTTP 里放几条**（端点支持真批量），实测 32 最优。
+    #: 调用粒度（不是模型批量）：``bge`` 档是 ``encode(batch_size=...)``；``ark`` 档决定
+    #: 每次 ``embed()`` 提交多少条（每条一次 HTTP），建议 32~64；``siliconflow`` 档是
+    #: 每次 HTTP 里放几条（端点支持真批量），实测 32 最优。
     embedding_batch_size: int = 16
-    #: 入库时**同时在飞的批次数**（``_embed_and_upsert`` 按窗口 ``asyncio.gather``）。
-    #: 云端 provider 下这是在"每次调用一次网络往返"之上拿吞吐的唯一办法：
-    #: 实测（8MB / 5,821 片 / 硅基流动，batch=32）：串行 **98.2s** → 窗口 4/8/16 分别
-    #: **40.4s / 40.9s**（窗口 8 已是拐点，再大无增益）。默认 4 = 留余量；
-    #: 本地 BGE 档建议设 1（多线程 encode 会一起抢同一批核，反而更慢）。
+    #: 入库时同时在飞的批次数（``_embed_and_upsert`` 按窗口 ``asyncio.gather``）。
+    #: 云端 provider 下这是「每次调用一次网络往返」之上拿吞吐的唯一办法：实测
+    #: （8MB / 5,821 片 / 硅基流动，batch=32）串行 98.2s → 窗口 4/8 分别 40.4s / 40.9s
+    #: （窗口 8 已是拐点）。默认 4 留余量；本地 BGE 档建议设 1（多线程 encode 会抢同一批核）。
     ingest_embed_window: int = 4
     embedding_dim: int = 1024
     embedding_cache_enabled: bool = True
 
     # ==================== 云端 Embedding（火山方舟 Ark）====================
-    #: 密钥：**只允许放 .env / Secret**，禁止提交（``.env.example`` 只放占位符）。
+    #: 密钥：只允许放 .env / Secret，禁止提交（``.env.example`` 只放占位符）。
     ark_api_key: str = ""
     ark_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
     #: 单次 ``embed()`` 内的最大并发请求数。实测（490 token 的块、``-251215``）：
-    #: 并发 1 → 4.4 req/s、8 → 31.6、**32 → 98.9**、64 → 99.5（无增益）。
-    #: 默认取 16：吞吐约为峰值的 60~80%，同时给账户 TPM 留余量。
+    #: 并发 1 → 4.4 req/s、8 → 31.6、32 → 98.9、64 → 99.5（无增益）。默认 16 = 峰值的 60~80%，
+    #: 给账户 TPM 留余量。
     ark_embedding_concurrency: int = 16
     ark_embedding_timeout_seconds: float = 30.0
     #: 单条请求的退避重试次数（限流/5xx 才重试；4xx 立刻失败）
     ark_embedding_max_retries: int = 2
-    #: 响应里向量的编码：``base64``（float32 小端，响应体约为 float 的 1/3 —— 实测
+    #: 响应里向量的编码：``base64``（float32 小端，响应体约为 float 的 1/3，实测
     #: 34,240B → 11,219B）| ``float``（JSON 浮点数组，可读性好，调试时用）
     ark_embedding_encoding: Literal["base64", "float"] = "base64"
-    #: 降维输出（Matryoshka 截断式，实测与全维前 N 维余弦 0.9992）。
-    #: ``0`` = 用模型原生维度（推荐：召回最好）；设成 N 时 MUST 与 EMBEDDING_DIM 一致。
+    #: 降维输出（Matryoshka 截断式，实测与全维前 N 维余弦 0.9992）。``0`` = 用模型原生
+    #: 维度（推荐：召回最好）；设成 N 时 MUST 与 EMBEDDING_DIM 一致。
     ark_embedding_dimensions: int = 0
     #: 检索指令前缀（如"为检索任务生成向量"），留空则不发该参数
     ark_embedding_instructions: str = ""
 
     # ==================== 云端 Embedding / Rerank（硅基流动 SiliconFlow）====================
-    #: 密钥：**只允许放 .env / Secret**，禁止提交（``.env.example`` 只放占位符）。
-    #: 同一个 key 同时用于 ``/v1/embeddings`` 与 ``/v1/rerank``。
+    #: 密钥：只允许放 .env / Secret，禁止提交。同一个 key 同时用于 ``/v1/embeddings``
+    #: 与 ``/v1/rerank``。
     siliconflow_api_key: str = ""
     siliconflow_base_url: str = "https://api.siliconflow.cn/v1"
-    #: 单次 ``embed()`` 内的**并发请求数**（每请求 ``EMBEDDING_BATCH_SIZE`` 条）。
-    #: 实测（``Qwen/Qwen3-Embedding-0.6B``，490 token 的块）：
-    #: batch=16/并发4 → 140 片/s；batch=32/并发4 → 206；**batch=32/并发8 → 379.6**；
-    #: batch=48/并发8 → 289（中位延迟 1265ms，尾延迟变差）。默认 4 = 留余量，
-    #: 单机独占可提到 8。
+    #: 单次 ``embed()`` 内的并发请求数（每请求 ``EMBEDDING_BATCH_SIZE`` 条）。实测
+    #: （``Qwen/Qwen3-Embedding-0.6B``，490 token 的块）：batch=32/并发 8 → 379.6 片/s，
+    #: batch=48/并发 8 → 289（尾延迟变差）。默认 4 留余量，单机独占可提到 8。
     siliconflow_embedding_concurrency: int = 4
-    #: 单次请求超时。注意它是**批量**请求：batch=32 时实测中位 612ms、最大 1085ms，
+    #: 单次请求超时。它是批量请求：batch=32 时实测中位 612ms、最大 1085ms，
     #: 但上游排队时会显著变长，故给足 60s。
     siliconflow_embedding_timeout_seconds: float = 60.0
     #: 单次请求的退避重试次数（只对 429/5xx/网络重试；4xx 立刻失败）
     siliconflow_embedding_max_retries: int = 2
-    #: ``base64`` = float32 小端（单条 21,891B → 5,641B，**3.9×**）| ``float`` = JSON 数组
+    #: ``base64`` = float32 小端（单条 21,891B → 5,641B，3.9×）| ``float`` = JSON 数组
     siliconflow_embedding_encoding: Literal["base64", "float"] = "base64"
     #: 降维输出（MRL）。``0`` = 用模型原生维度（推荐）。Qwen3 系列可选维度见
     #: ``SILICONFLOW_QWEN3_DIMENSIONS``；设成 N 时 MUST 与 ``EMBEDDING_DIM`` 一致。
     siliconflow_embedding_dimensions: int = 0
-    #: 单次 rerank 请求最多带多少条候选（分片阈值）。文档未给上限，实测 201 条仍 200；
-    #: 但 201 条耗时 2903ms，为了控住尾延迟默认 100。
+    #: 单次 rerank 请求最多带多少条候选（分片阈值）。文档未给上限，实测 201 条仍 200，
+    #: 但耗时 2903ms；为了控住尾延迟默认 100。
     siliconflow_rerank_max_documents: int = 100
     siliconflow_rerank_timeout_seconds: float = 30.0
     siliconflow_rerank_max_retries: int = 1
@@ -262,21 +241,16 @@ class Settings(BaseSettings):
     siliconflow_rerank_instruction: str = ""
 
     # ==================== 本地推理运行时 ====================
-    #: 本地 CPU 推理的 torch 线程数上限，**只对 `bge` 档生效**（`bge` embedding 与
-    #: `bge` reranker 是仅有的两个本地推理实现）。当前出厂档 embedding 与 rerank 都走
-    #: 云端 API，进程里不跑 torch，因此这一项**不影响任何东西**；切回本地档才重新有意义。
-    #: 默认 = **逻辑核数的一半**（见 ``default_torch_num_threads``）：
-    #: torch 出厂默认按逻辑核数开线程，向量化吃满全部核时，同机的
-    #: MySQL / Redis / 网关 / curl 会被一起拖慢 2~3 倍。
-    #: 显式写 ``0`` = **不干预**（只在单机独占、且不在意同机其它服务时用）。
-    #: 见 ``app/rag/torch_threads.py``。
+    #: 本地 CPU 推理的 torch 线程数上限，只对 `bge` 档生效（bge embedding 与 bge reranker
+    #: 是仅有的两个本地推理实现）。当前出厂档 embedding 与 rerank 都走云端 API，进程里不跑
+    #: torch，因此这一项不影响任何东西；切回本地档才重新有意义。
+    #: 默认 = 逻辑核数的一半（见 :func:`default_torch_num_threads`）；显式写 ``0`` = 不干预。
     torch_num_threads: int = Field(default_factory=default_torch_num_threads)
 
     # ==================== Reranker ====================
-    #: 重排实现：``bge`` = 本地交叉编码器（需 torch + 权重）；``siliconflow`` = 云端
-    #: ``/v1/rerank``。**显式枚举而不是"看模型名里有没有 bge"**：靠模型名猜会让
-    #: 换模型/接外部 API 时静默退化成"不重排"（只记一行 unsupported_reranker_model），
-    #: 而"静默不生效"是本项目踩得最多的一类坑（``docs/12-§3``）。
+    #: 重排实现：``bge`` = 本地交叉编码器（需 torch + 权重）；``siliconflow`` = 云端 ``/v1/rerank``。
+    #: 用显式枚举而不是「看模型名里有没有 bge」：靠模型名猜会让换模型/接外部 API 时静默退化成
+    #: 「不重排」，而「静默不生效」是本项目踩得最多的一类坑（``docs/12-§3``）。
     reranker_provider: Literal["bge", "siliconflow"] = "bge"
     reranker_model: str = "BAAI/bge-reranker-v2-m3"
     reranker_device: str = "cpu"
@@ -392,7 +366,7 @@ class Settings(BaseSettings):
     #: 补偿重投上限；超过则置 FAILED + ``MQ_UNAVAILABLE``
     task_compensation_max_attempts: int = 3
     #: 兜底年龄上限：超过该时长仍卡在 PENDING 的任务一律置 FAILED。
-    #: 计数器在进程内存里，重启会清零，所以必须有这条**持久**的兜底 —— 否则
+    #: 计数器在进程内存里、重启会清零，所以必须有这条持久的兜底 —— 否则
     #: 「补偿重投一直失败 + 每次重启」会让任务永远停在 PENDING。
     task_pending_max_age_seconds: float = 600.0
     #: 优雅退出时等待在飞任务到检查点的最长时间（``docs/08`` §5.4）
@@ -424,8 +398,8 @@ class Settings(BaseSettings):
     def auth_required(self) -> bool:
         """是否必须校验 JWT。
 
-        生产环境忽略 ``AUTH_ENABLED``（docs/02 §2.1 第 3 条）：允许关掉鉴权
-        是本地开发的便利，绝不能成为线上后门。
+        生产环境忽略 ``AUTH_ENABLED``（docs/02 §2.1 第 3 条）：允许关掉鉴权是本地开发的
+        便利，绝不能成为线上后门。
         """
         return self.is_prod or self.auth_enabled
 
@@ -441,11 +415,11 @@ class Settings(BaseSettings):
 
     @property
     def uses_shared_task_store(self) -> bool:
-        """任务状态是否存放在**进程外**的共享存储里。
+        """任务状态是否存放在进程外的共享存储里。
 
-        只有共享存储才能让「API 建任务 → 独立 Worker 执行」成立：内存实现下
-        Worker 拿到消息后查不到那行任务。所以它是 ``TASK_RUNNER=kafka`` 的
-        前置条件，也是 ``/tasks/{id}/events`` 能跨进程推事件的前提。
+        只有共享存储才能让「API 建任务 → 独立 Worker 执行」成立：内存实现下 Worker
+        拿到消息后查不到那行任务。所以它是 ``TASK_RUNNER=kafka`` 的前置条件，
+        也是 ``/tasks/{id}/events`` 能跨进程推事件的前提。
         """
         return self.infra_backend == "real"
 
@@ -489,8 +463,8 @@ class Settings(BaseSettings):
         if self.auth_required and not self.jwt_secret:
             errors.append("AUTH_ENABLED 开启时 JWT_SECRET 必填（与 Go 侧共享的 HS256 密钥）")
 
-        # 无鉴权的 gRPC 一旦绑到非回环地址，等于把一个可写库、可读知识库的
-        # 接口开到内网上；这种配置错误必须在启动期暴露，而不是等到被扫到。
+        # 无鉴权的 gRPC 一旦绑到非回环地址，等于把一个可写库、可读知识库的接口开到
+        # 内网上；这种配置错误必须在启动期暴露，而不是等到被扫到。
         if self.grpc_enabled and not self.auth_required and not _is_loopback(self.grpc_host):
             errors.append(
                 f"GRPC_HOST={self.grpc_host} 非回环地址时 AUTH_ENABLED 必须为 true"
@@ -544,10 +518,9 @@ class Settings(BaseSettings):
             and known_dim is not None
             and self.embedding_dim != known_dim
         ):
-            # 「换了模型没换维度」是最容易踩的一步（候选档位见 EMBEDDING_MODEL_DIMS）：
-            # 只改 EMBEDDING_MODEL 时两个维度配置项仍然彼此一致，所以上一条校验不会响，
-            # 而真实向量维度已经变了 ⇒ 表现为「写入成功但永远检索不到」。
-            # 只在**已知模型**上判断：自训 / 本地路径 / 表外的云模型，一律放行
+            # 「换了模型没换维度」是最容易踩的一步：只改 EMBEDDING_MODEL 时两个维度配置项
+            # 仍然彼此一致，上一条校验不会响，而真实向量维度已经变了 ⇒ 写入成功但永远检索不到。
+            # 只在已知模型上判断：自训 / 本地路径 / 表外的云模型一律放行
             # （真实维度由 provider 在第一次编码后自检，见 ark.py::_check_dim）。
             errors.append(
                 f"EMBEDDING_MODEL({self.embedding_model}) 的真实输出维度是 {known_dim}，"
@@ -670,8 +643,8 @@ class Settings(BaseSettings):
             errors.append(f"INGEST_QUEUE_MAX 必须 ≥ 1（当前 {self.ingest_queue_max}）")
 
         if self.task_runner == "kafka" and not self.uses_shared_task_store and self.is_prod:
-            # 内存任务表 + 独立进程消费 = Worker 永远查不到任务（消息被 ack 丢弃，
-            # 任务永久停在 PENDING）。本地调试允许，生产直接拒绝启动。
+            # 内存任务表 + 独立进程消费 = Worker 永远查不到任务（消息被 ack 丢弃，任务永久
+            # 停在 PENDING）。本地调试允许，生产直接拒绝启动。
             errors.append(
                 "TASK_RUNNER=kafka 时 INFRA_BACKEND 必须为 real（任务状态需要跨进程共享）"
             )
@@ -691,8 +664,8 @@ class Settings(BaseSettings):
         if self.tool_write_allowlist and self.tool_denylist:
             clash = sorted(set(self.tool_write_allowlist) & set(self.tool_denylist))
             if clash:
-                # 同时出现在「写白名单」和「全局黑名单」里 = 配置自相矛盾，
-                # 运行期会表现为「某些写工具时有时无」，不如启动即失败。
+                # 同时出现在写白名单与全局黑名单里 = 配置自相矛盾，运行期会表现为
+                # 「某些写工具时有时无」，不如启动即失败。
                 errors.append(f"TOOL_WRITE_ALLOWLIST 与 TOOL_DENYLIST 冲突：{clash}")
 
         if self.memory_top_n < 1:
@@ -742,13 +715,10 @@ class Settings(BaseSettings):
 def _is_loopback(host: str) -> bool:
     """判断监听地址是否只在回环上。
 
-    只看字面量，不做 DNS 解析：``localhost`` 在有些环境里会解析到非回环地址，
-    而校验的目的恰恰是「不要相信环境」。
-
-    .. note::
-       写成独立函数是为了能被测试直接覆盖 —— 把它内联进
-       ``validate_for_startup`` 的话，验证这条规则就得先构造一个非法配置，
-       而得靠「启动失败」来断言，测试会变成对异常文案的断言。
+    只看字面量、不做 DNS 解析：``localhost`` 在有些环境里会解析到非回环地址，而校验的
+    目的恰恰是「不要相信环境」。写成独立函数是为了能被测试直接覆盖 —— 内联进
+    ``validate_for_startup`` 的话，验证这条规则就得先构造一个非法配置，测试会变成
+    对异常文案的断言。
     """
     return host.strip().lower() in {"127.0.0.1", "::1", "localhost"}
 
@@ -762,28 +732,18 @@ def get_settings() -> Settings:
 def apply_hf_endpoint(settings: Settings) -> str | None:
     """让 ``HF_ENDPOINT`` 真正对 ``huggingface_hub`` 生效，返回生效值（未配置则 ``None``）。
 
-    为什么需要这个函数（这是个真踩过的坑，见 docs/12-§13.1）：
+    这是个真踩过的坑（``docs/12-§13.1``）。``huggingface_hub`` 只认进程环境变量、
+    不读 ``.env``，且在 import 期就把值固化进 ``ENDPOINT`` /
+    ``HUGGINGFACE_CO_URL_TEMPLATE`` 两个常量；只有显式传 ``endpoint=`` 参数时
+    ``hf_hub_url()`` 才会重写域名，所以「import 之后再设环境变量」完全不生效。
 
-    1. ``huggingface_hub`` 只认**进程环境变量**，不读 ``.env``；于是
-       「在 .env 里写了 ``HF_ENDPOINT``」看起来配了镜像、实际仍去连
-       ``huggingface.co``，表现为「首次加载模型卡 5 次重试 × 超时后才降级」。
-    2. 更糟的是它在 **import 期** 就把值固化进模块常量::
+    而 ``app`` 自己会在 ``import app.main`` 期间就把 ``huggingface_hub`` 拉进来
+    （``app.rag.chunking`` → ``langchain_text_splitters`` → ``transformers``），
+    等 ``create_app()`` 执行时早已错过窗口期 —— 实测 ``os.environ`` 里明明有值，
+    请求仍发往 ``huggingface.co``，表现为「首次加载模型卡 5 次重试 × 超时后才降级」。
 
-           ENDPOINT = os.getenv("HF_ENDPOINT", _HF_DEFAULT_ENDPOINT).rstrip("/")
-           HUGGINGFACE_CO_URL_TEMPLATE = ENDPOINT + "/{repo_id}/resolve/{revision}/{filename}"
-
-       ``hf_hub_url()`` 用的是 ``HUGGINGFACE_CO_URL_TEMPLATE``，**只有显式传
-       ``endpoint=`` 参数时**才会把 URL 重写成别的域名。所以「import 之后再设
-       环境变量」是**完全不生效**的。
-    3. 而 ``app`` 自己会在 ``import app.main`` 期间就把 ``huggingface_hub``
-       拉进来：``app.rag.chunking`` → ``langchain_text_splitters`` →
-       ``transformers`` → ``huggingface_hub``。等 ``create_app()`` 执行时早已
-       错过了窗口期 —— 实测 ``os.environ`` 里明明有值，请求仍发往
-       ``huggingface.co``。
-
-    因此这里做两件事：写环境变量（对本进程后续才导入的模块、以及子进程有效），
-    并且**如果 huggingface_hub 已经被导入，就同步改写它那两个常量**
-    （这是唯一能在导入顺序不可控时确定性生效的办法）。
+    因此这里写环境变量之外，还同步改写上面那两个常量 —— 这是导入顺序不可控时
+    唯一能确定性生效的办法。
     """
     configured = settings.hf_endpoint.strip()
     existing = os.environ.get("HF_ENDPOINT", "").strip()

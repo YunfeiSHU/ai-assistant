@@ -21,12 +21,11 @@ def build_reranker(settings: Settings) -> Reranker:
     """按配置选择重排器。
 
     ``RERANKER_ENABLED=false`` ⇒ :class:`IdentityReranker`（上层统一记
-    ``rerank_skipped``）。否则按**显式的** ``RERANKER_PROVIDER`` 选实现。
+    ``rerank_skipped``）。否则按显式的 ``RERANKER_PROVIDER`` 选实现。
 
-    早期版本用"模型名里含不含 ``bge``"来猜，那是个静默陷阱：换成任何名字里没有
-    ``bge`` 的模型（例如现在这个 ``Qwen/Qwen3-Reranker-0.6B``）都会**悄悄退化成
-    不重排**，只在日志里留一行 ``unsupported_reranker_model`` —— 检索质量下降而
-    没有任何显式报错。现在改成枚举，名字不再参与判断（``docs/12-§3`` 同类教训）。
+    早期版本用“模型名里含不含 ``bge``”来猜，那是个静默陷阱：换成任何名字里没有 ``bge``
+    的模型（如现在这个 ``Qwen/Qwen3-Reranker-0.6B``）都会悄悄退化成不重排，只在日志里
+    留一行 ``unsupported_reranker_model``（``docs/12-§3`` 同类教训）。
     """
     if not settings.reranker_enabled:
         return IdentityReranker(reason="reranker_disabled")

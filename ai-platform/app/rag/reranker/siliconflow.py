@@ -1,23 +1,15 @@
 """硅基流动重排序（``RERANKER_PROVIDER=siliconflow``）。
 
-**换它的理由是一个实测数字**：本机 ``BAAI/bge-reranker-v2-m3``（CPU）在
-``top_k=20 → top_n=5`` 时要 **70~83s**（详见 ``ai-platform-go/docs/11-§6.6``），
-而 ``Qwen/Qwen3-Reranker-0.6B`` 走这个端点 **562~663ms** ⇒ 约 **120×**，
-并且回到了 SRS 的目标区间（``docs/10-§1``：「含 Rerank」P95 ≤ 1.5~2.5s）。
+换它的理由是一个实测数字：本机 ``BAAI/bge-reranker-v2-m3``（CPU）在 ``top_k=20 → top_n=5``
+时要 70~83s（``ai-platform-go/docs/11-§6.6``），而 ``Qwen/Qwen3-Reranker-0.6B`` 走这个端点
+只要 562~663ms（约 120×），回到了 SRS 的目标区间（``docs/10-§1``）。
 
-实测过的接口细节（都有坑，别按常识写）：
+实测过的接口细节（都有坑）：响应是 ``{id, results: [{index, relevance_score, document}], meta}``
+—— 没有 ``usage``，计费在 ``meta`` 里；``documents`` 必须是字符串数组（传 ``[{"text": ...}]``
+会 400，那是 VL 端点的形状）；``return_documents`` 默认 ``false``；实测 201 条候选仍是 200，
+但为控尾延迟本实现按 ``SILICONFLOW_RERANK_MAX_DOCUMENTS`` 分片，每片各取 ``top_n`` 再全局归并。
 
-* 响应是 ``{id, results: [{index, relevance_score, document}], meta}`` ——
-  **没有 OpenAI 那种 ``usage``**，计费信息在 ``meta.tokens.input_tokens`` /
-  ``meta.billed_units`` 里；``results`` 已按分数降序，但仍会自己再排一次。
-* ``documents`` **必须是字符串数组**：传 ``[{"text": ...}]`` 会 400
-  （``Input should be a valid string``）—— 那是 VL 端点的形状。
-* ``return_documents`` 默认 ``false``，我们不需要文档正文（正文在上游候选里已有）。
-* 实测 50 / 100 / **201** 条候选都是 200（文档未给上限）。为控住单次请求的尾延迟，
-  本实现按 ``SILICONFLOW_RERANK_MAX_DOCUMENTS`` 分片，每片各取 ``top_n`` 再全局归并
-  —— 同模型同尺度，分数可比，归并结果与"一次全发"等价。
-* 失败**必须退化而不是抛**：重排是可选增强，让一次网络抖动变成对话 500 是把
-  可选依赖变成硬依赖（与 :class:`~app.rag.reranker.bge.BgeReranker` 同一策略）。
+失败必须退化而不是抛：重排是可选增强，让一次网络抖动变成对话 500 是把可选依赖变成硬依赖。
 """
 
 from __future__ import annotations
@@ -148,7 +140,7 @@ class SiliconFlowReranker:
                 continue
             raw_index = item.get("index")
             if raw_index is None:
-                # 缺 index 属于上游契约变化：显式报错 ⇒ 外层退化成"不重排"（可见的
+                # 缺 index 属于上游契约变化：显式报错 ⇒ 外层退化成「不重排」（可见的
                 # rerank_skipped），好过静默丢一个候选让排序悄悄变形。
                 raise AppError(
                     ErrorCode.RETRIEVAL_FAILED,

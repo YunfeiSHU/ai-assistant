@@ -1,12 +1,8 @@
-"""路由注册：所有子路由统一挂载到 ``api_router``。
+"""路由注册：所有子路由统一挂载到 ``api_router``（前缀与 tag 集中在这里声明）。
 
-前缀与 tag 都集中在这里声明，避免散落在各路由文件里。
-
-**注册顺序无关紧要，但路径不能互相遮蔽**：``/documents/{doc_id}`` 与
-``/knowledge-bases/{kb_id}/documents`` 前缀不同，不会冲突；真正要注意的是
-``APIRouter`` 必须保持 ``redirect_slashes=False``（见 ``app/main.py``），
-否则 ``GET /knowledge-bases/`` 会被 307 重定向到 ``/knowledge-bases``，
-前端拿到的响应语义会变。
+注册顺序无关紧要，但路径不能互相遮蔽。真正要注意的是 ``APIRouter`` 必须保持
+``redirect_slashes=False``（见 ``app/main.py``），否则 ``GET /knowledge-bases/`` 会被
+307 重定向到 ``/knowledge-bases``，前端拿到的响应语义会变。
 """
 
 from fastapi import APIRouter

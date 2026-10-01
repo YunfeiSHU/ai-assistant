@@ -1,12 +1,10 @@
 """DOCX 解析（``python-docx``）。
 
-``docs/06`` §4.1 明确要求 **MUST NOT 丢失表格内容**。这不只是「别漏数据」：
-企业文档里的规格、报价、对照关系常常**只存在于表格里**，丢掉表格等于丢掉
-最需要被检索的那部分。
+``docs/06`` §4.1 要求 MUST NOT 丢失表格内容：企业文档里的规格、报价、对照关系常常只存在
+于表格里，丢掉表格等于丢掉最需要被检索的那部分。
 
-实现上按文档流顺序遍历 ``document.element.body``（而不是分别遍历
-``paragraphs`` 与 ``tables``）：后者会把表格全部搬到末尾，正文与表格的相对
-位置就乱了，切出来的上下文会缺失指代对象。
+按文档流顺序遍历 ``document.element.body``，而不是分别遍历 ``paragraphs`` 与 ``tables``
+—— 后者会把表格全部搬到末尾，正文与表格的相对位置就乱了，切出的上下文会缺失指代对象。
 """
 
 from __future__ import annotations
@@ -130,9 +128,8 @@ def _heading_level(paragraph: Paragraph) -> int | None:
 def _render_table(table: Table) -> str:
     """把表格渲染成带 ``|`` 分隔的文本行。
 
-    刻意保留成文本而不是结构化存储：检索与 Embedding 都只吃文本，把表格转成
-    文本是唯一能让它「被搜到」的方式。单元格内换行折叠成空格，避免一行表格
-    在渲染后变成多行、破坏「一行一记录」的可读性。
+    刻意保留成文本而不是结构化存储：检索与 Embedding 都只吃文本。单元格内换行折叠成
+    空格，避免一行表格在渲染后变成多行、破坏「一行一记录」的可读性。
     """
     rows: list[str] = []
     for row in table.rows:

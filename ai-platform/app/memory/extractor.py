@@ -1,12 +1,12 @@
 """长期记忆抽取（``REQ-MEM-004``，``docs/07`` §5.1）。
 
-这一层做两件事，且**刻意分开**：
+两件事刻意分开：
 
-1. :func:`parse_candidates` —— 把模型输出变成结构化候选。模型经常带 ```json 包裹、
-   前后加解释、把 ``confidence`` 写成 ``"0.9"``；解析必须容错，否则「抽取失败」会
-   伪装成「这轮没有值得记的东西」。
-2. :func:`accept_candidates` —— 按规则过滤。**这是安全边界**，不是格式整理：
-   敏感凭证一旦被记住，就会在此后每一次对话里被注入 Prompt。
+1. :func:`parse_candidates` —— 把模型输出变成结构化候选。模型经常带 ```json 包裹、前后加
+   解释、把 ``confidence`` 写成 ``"0.9"``；解析必须容错，否则「抽取失败」会伪装成
+   「这轮没有值得记的东西」。
+2. :func:`accept_candidates` —— 按规则过滤。这是安全边界，不是格式整理：敏感凭证一旦被
+   记住，就会在此后每一次对话里被注入 Prompt。
 
 过滤规则宁可保守（漏掉一些偏好）也不能激进（记住一串 API Key）。
 """
@@ -52,9 +52,8 @@ _SENSITIVE_PATTERNS: tuple[re.Pattern[str], ...] = (
 
 #: 疑问句：问句不是「关于用户的事实」，记住它只会污染后续上下文。
 #:
-#: 多字疑问词（是不是/要不要…）**不要求**后面跟问号：抽取器的输入是模型改写过的
-#: 第三人称句子，问号经常被丢掉，要求标点等于让这条规则半失效。
-#: 单字语气助词（吗/呢）只在句尾才算，避免误伤「干吗」这类正常词。
+#: 多字疑问词（是不是/要不要…）不要求后面跟问号：抽取器的输入是模型改写过的第三人称句子，
+#: 问号经常被丢掉，要求标点等于让这条规则半失效。单字语气助词（吗/呢）只在句尾才算。
 _QUESTION_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"[?？]\s*$"),
     re.compile(r"(是不是|能不能|可不可以|有没有|要不要|会不会|能不能|何必)"),
@@ -90,7 +89,7 @@ class RejectedCandidate:
     """被过滤掉的候选（连同原因）。
 
     保留原因而不是静默丢弃：``docs/07`` §7 的验收要求「过滤规则生效」可被观察，
-    否则规则写错了也看不出来（表现为「明明抽取了却一条没写」）。
+    否则规则写错了也看不出来。
     """
 
     content: str
@@ -151,7 +150,7 @@ def _to_float(value: Any) -> float:
 def rejection_reason(content: str, confidence: float, settings: Settings) -> str | None:
     """给出拒绝原因；``None`` 表示通过。
 
-    顺序即优先级：**先查敏感信息**。哪怕置信度只有 0.1，一串 API Key 也不能因为
+    顺序即优先级：先查敏感信息。哪怕置信度只有 0.1，一串 API Key 也不能因为
     「置信度不够」以外的原因被留下。
     """
     text = content.strip()
@@ -183,8 +182,8 @@ def accept_candidates(
         reason = rejection_reason(candidate.content, candidate.confidence, settings)
         if reason is None:
             # 同一轮里的精确重复也只在内存里去一次；跨轮次的判重由仓储的唯一索引负责。
-            # 规范化必须调**同一个**函数（见 ``normalise_content``），否则两处规则
-            # 一旦有一丝差异就会出现「批内不去重、但存储把它当重复而丢掉」的静默丢数据。
+            # 规范化必须调同一个 ``normalise_content``，否则两处规则一旦有一丝差异就会出现
+            # 「批内不去重、但存储把它当重复而丢掉」的静默丢数据。
             fingerprint = normalise_content(candidate.content)
             if fingerprint in seen:
                 rejected.append(RejectedCandidate(candidate.content, "duplicate_in_batch"))

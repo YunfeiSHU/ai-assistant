@@ -1,10 +1,8 @@
 """请求级上下文（``contextvars``）。
 
-用于把 ``trace_id`` / ``request_id`` / ``user_id`` 透传到**任意深度**的调用栈，
-而不必层层传参：日志格式化器、指标记录器、上游客户端都从这里取。
-
-.. note::
-   ``contextvars`` 在 asyncio 下天然按任务隔离，因此并发请求互不串味。
+把 ``trace_id`` / ``request_id`` / ``user_id`` 透传到任意深度的调用栈而不必层层传参：
+日志格式化器、指标记录器、上游客户端都从这里取。``contextvars`` 在 asyncio 下按任务隔离，
+并发请求互不串味。
 """
 
 from __future__ import annotations

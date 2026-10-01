@@ -1,16 +1,15 @@
 """``http_fetch``：抓取网页正文（``docs/04`` §3，P2，**默认禁用**）。
 
-这是整个工具层里**唯一会主动访问外部网络**的工具，所以 SSRF 防护是它的主体逻辑，
-而不是附加项。攻击路径很具体：用户说「帮我看看 http://169.254.169.254/latest/meta-data/
-里的内容」或「http://localhost:6379/」，模型就会照办 —— 那就是一次从内网发起的
-云元数据读取 / 内网端口探测。
+这是整个工具层里唯一会主动访问外部网络的工具，所以 SSRF 防护是它的主体逻辑。攻击路径很具体：
+用户说「帮我看看 http://169.254.169.254/latest/meta-data/ 里的内容」或「http://localhost:6379/」，
+模型就会照办 —— 那就是一次从内网发起的云元数据读取 / 内网端口探测。
 
 防护清单（``docs/04`` §3.1）：
 
 1. 只允许 ``http`` / ``https``；
 2. 解析域名后**逐个**检查 IP：私网 / 回环 / 链路本地 / 保留段一律拒绝；
-3. **不自动跟随重定向**（``follow_redirects=False``）：跟随等于把「只检查第一次解析」
-   变成「每次都检查」的复杂度，而返回 3xx 给模型更透明；
+3. **不自动跟随重定向**：跟随等于把「只检查第一次解析」变成「每次都检查」的复杂度，
+   而返回 3xx 给模型更透明；
 4. 响应体积上限（``max_bytes``），避免把几十 MB 的文件灌进上下文。
 """
 
@@ -75,8 +74,8 @@ class HttpFetchArgs(BaseModel):
 def _assert_public_host(hostname: str) -> None:
     """解析主机名并拒绝一切非公网地址。
 
-    **逐个检查所有解析结果**：一个域名可以同时解析出公网与私网 IP
-    （DNS rebinding 的常见手法），只看第一个等于没防。
+    **逐个检查所有解析结果**：一个域名可以同时解析出公网与私网 IP（DNS rebinding 的常见手法），
+    只看第一个等于没防。
     """
     literal = _literal_ip(hostname)
     candidates = [literal] if literal is not None else _resolve(hostname)
@@ -117,9 +116,8 @@ def _resolve(hostname: str) -> list[ipaddress.IPv4Address | ipaddress.IPv6Addres
 def _is_public(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     """是否公网可访问地址。
 
-    ``is_private`` 覆盖私网/回环/链路本地；``is_reserved`` 覆盖 0.0.0.0/8、
-    240.0.0.0/4 等保留段；``is_multicast`` 与 ``is_unspecified`` 单列是因为
-    它们不属于上面任一类但同样不该被访问。
+    ``is_private`` 覆盖私网/回环/链路本地；``is_reserved`` 覆盖 0.0.0.0/8、240.0.0.0/4 等保留段；
+    ``is_multicast`` 与 ``is_unspecified`` 单列是因为它们不属于上面任一类但同样不该被访问。
     """
     return not (
         address.is_private
@@ -183,8 +181,8 @@ class HttpFetchTool(BuiltinTool):
 def _to_text(body: str, content_type: str) -> str:
     """HTML → 纯文本；其它类型原样返回（截断）。
 
-    只做「剥标签」这一件事：工具的目的是把页面内容给模型看，不是做正文抽取
-    （那需要 readability 之类的算法，收益不稳定且难测）。
+    只做「剥标签」这一件事：工具的目的是把页面内容给模型看，不是做正文抽取（那需要
+    readability 之类的算法，收益不稳定且难测）。
     """
     text = body
     if "html" in content_type.lower() or "<html" in body[:2000].lower():

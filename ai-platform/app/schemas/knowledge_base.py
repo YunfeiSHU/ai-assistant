@@ -1,9 +1,9 @@
 """知识库请求 / 响应契约（``docs/06`` §2）。
 
-约束值刻意与 SRS 表格**逐格对齐**（``chunk_size`` 128..2048、``name`` ≤ 64 等）：
-这些边界同时被 ``app.rag.service`` 再校验一次。看起来重复，但两份校验拦的
-不是同一件事——pydantic 给客户端一个「哪个字段错了」的精确 400，服务层保证
-无论从哪条路径进来（路由、Worker、将来可能的批量脚本）都不会绕过业务规则。
+约束值刻意与 SRS 表格逐格对齐（``chunk_size`` 128..2048、``name`` ≤ 64 等），
+且 ``app.rag.service`` 会再校验一次。看起来重复，但两份校验拦的不是同一件事：pydantic
+给客户端「哪个字段错了」的精确 400，服务层保证无论从哪条路径进来（路由、Worker、将来
+可能的批量脚本）都不会绕过业务规则。
 """
 
 from __future__ import annotations
@@ -41,10 +41,9 @@ class KnowledgeBaseCreate(StrictModel):
 
     name: str = Field(min_length=1, max_length=64, description="知识库名称（同用户内唯一）")
     description: str = Field(default="", max_length=500, description="描述")
-    # 切分参数**不在这里**做范围/关系校验：HTTP 层的 pydantic 校验只能给出
-    # ``INVALID_ARGUMENT``，而 ``docs/02`` 要求切分参数不合法时返回
-    # ``CHUNK_STRATEGY_INVALID``。校验器又无法在 pydantic 里抛 ``AppError``
-    # （非 ValueError 会穿透出去变成 500），所以统一交给服务层的
+    # 切分参数不在这里做范围/关系校验：HTTP 层只能给出 ``INVALID_ARGUMENT``，而
+    # ``docs/02`` 要求切分参数不合法时返回 ``CHUNK_STRATEGY_INVALID``。校验器又无法在
+    # pydantic 里抛 ``AppError``（非 ValueError 会穿透成 500），所以统一交给服务层的
     # ``resolve_chunk_params()`` —— KB 创建、KB 修改、文档级覆盖三个入口共用它。
     chunk_size: int = Field(default=CHUNK_SIZE_DEFAULT, description="切片 token 目标长度")
     chunk_overlap: int = Field(default=CHUNK_OVERLAP_DEFAULT, description="重叠长度")

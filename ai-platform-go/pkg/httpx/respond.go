@@ -19,16 +19,15 @@ const (
 
 // Fail 按统一信封写出错误并终止后续处理。
 //
-// 这是**唯一**允许写 4xx/5xx 的出口：所有错误都必须经过它，才能保证 `error.code/message/details/trace_id/retryable` 结构一致，
+// 这是唯一允许写 4xx/5xx 的出口：所有错误都必须经过它，才能保证信封字段结构一致，
 // 且 trace_id 与响应头 X-Trace-Id、日志三者相同（docs/02-§2.2）。
 func Fail(c *gin.Context, err error) {
 	writeError(c, err)
 	c.Abort()
 }
 
-// FailAfter 与 Fail 相同，但在已写出部分响应体后使用（如 SSE 中途出错）。
-//
-// 此时不能再写 JSON 信封（响应头已发出），只能记日志并中断。
+// FailAfter 与 Fail 相同，但在已写出部分响应体后使用（如 SSE 中途出错）：
+// 此时响应头已发出，不能再写 JSON 信封，只能记日志并中断。
 func FailAfter(c *gin.Context, err error) {
 	appErr := errs.From(err)
 	logx.From(c.Request.Context(), nil).ErrorContext(c.Request.Context(), "http.fail_after_write",
@@ -64,7 +63,7 @@ func writeError(c *gin.Context, err error) {
 	c.Set(keyFailed, true)
 	c.Set(keyFailedAt, appErr.Code())
 
-	// 5xx 记 ERROR（含内部原因），4xx 记 INFO（客户端的问题，不是服务端故障）。
+	// 5xx 记 ERROR（含内部原因），4xx 记 INFO（客户端的问题）。
 	// base 传 nil：logger 由 AccessLog 放进 context，这里只补充字段。
 	log := logx.From(c.Request.Context(), nil)
 	attrs := []any{

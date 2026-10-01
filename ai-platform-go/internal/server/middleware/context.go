@@ -2,11 +2,8 @@
 //
 // 顺序（在 server/router.go 里装配）：Recovery → RequestID → Trace → Logger
 // → Security → CORS → BodyLimit → Auth（按路由组）→ Handler。
-//
-// 顺序有语义：
-//   - Recovery 最外层，保证 panic 也能被记成结构化日志；
-//   - RequestID/Trace 在 Logger 之前，日志才能带上这两个字段；
-//   - BodyLimit 在 Auth 之前：未认证的超大请求不该消耗验签成本。
+// 顺序有语义：Recovery 最外层保证 panic 也能被记成结构化日志；RequestID/Trace 在 Logger
+// 之前，日志才能带上这两个字段；BodyLimit 在 Auth 之前，未认证的超大请求不该消耗验签成本。
 package middleware
 
 import (
@@ -92,9 +89,7 @@ func SpanID(c *gin.Context) string {
 func SetSpanID(c *gin.Context, id string) { c.Set(keySpanID, id) }
 
 // ClientIP 返回按可信代理层数解析出的真实客户端 IP。
-//
-// 不用 `c.ClientIP()`：Gin 默认信任全部 XFF，攻击者只要伪造
-// `X-Forwarded-For: <随便什么>` 就能绕过按 IP 的限流（AC-NFR-07）。
+// 不用 `c.ClientIP()`：Gin 默认信任全部 XFF，伪造 `X-Forwarded-For` 就能绕过按 IP 的限流（AC-NFR-07）。
 func ClientIP(c *gin.Context) string {
 	if v, ok := c.Get(keyClientIP); ok {
 		if s, ok := v.(string); ok {

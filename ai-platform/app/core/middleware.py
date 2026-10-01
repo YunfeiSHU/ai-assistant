@@ -1,8 +1,7 @@
 """ASGI 中间件：请求上下文（trace / request id / 访问日志）与请求体大小限制。
 
-刻意用**纯 ASGI 中间件**而非 ``BaseHTTPMiddleware``：后者会把响应包成
-``anyio`` 的内存流，SSE 场景下可能被整段缓冲，直接违背「逐 token 推送」的需求
-（docs/02 §6.4 明确要求关闭应用层缓冲）。
+刻意用纯 ASGI 中间件而非 ``BaseHTTPMiddleware``：后者会把响应包成 ``anyio`` 的内存流，
+SSE 场景下可能被整段缓冲，直接违背「逐 token 推送」（docs/02 §6.4 要求关闭应用层缓冲）。
 """
 
 from __future__ import annotations
@@ -33,8 +32,8 @@ logger = get_logger("app.access")
 _QUIET_PATHS = ("/health", "/metrics", "/favicon.ico")
 
 #: 没匹配到路由时的指标标签值。
-#: **绝不能**用原始 path 当标签：``/kb/{id}`` 之类的路径变量会让标签基数
-#: 随数据量增长，Prometheus 的内存会被拖垮（``docs/10`` §5.2）。
+#: 绝不能用原始 path 当标签：``/kb/{id}`` 之类的路径变量会让标签基数随数据量增长，
+#: Prometheus 的内存会被拖垮（``docs/10`` §5.2）。
 UNMATCHED_ENDPOINT = "unmatched"
 
 #: FastAPI 存放「有效路由上下文」的 scope 键（不是公开 API，见 ``route_template``）
@@ -43,22 +42,16 @@ _FASTAPI_EFFECTIVE_CONTEXT_KEY = "effective_route_context"
 
 
 def route_template(scope: Scope) -> str:
-    """还原命中路由的**完整模板**，如 ``/api/v1/knowledge-bases/{kb_id}``。
+    """还原命中路由的完整模板，如 ``/api/v1/knowledge-bases/{kb_id}``。
 
-    为什么不能直接用 ``scope["route"].path``：FastAPI 0.141 起 ``include_router``
-    **不再把子路由扁平化**进父路由表（内部放的是 ``_IncludedRouter`` 节点），
-    于是 ``scope["route"]`` 是**最内层**那条路由，各层前缀全被丢掉。
-    实测 ``GET /api/v1/health/live`` 用旧写法会得到标签 ``GET /live`` ——
-    不同模块下同名的 ``/live`` 会撞进同一个标签，看板上根本分不出是哪个接口。
+    不能直接用 ``scope["route"].path``：FastAPI 0.141 起 ``include_router`` 不再把子路由
+    扁平化进父路由表（内部是 ``_IncludedRouter`` 节点），于是 ``scope["route"]`` 是最内层
+    那条路由、各层前缀全被丢掉。实测 ``GET /api/v1/health/live`` 用旧写法会得到标签
+    ``GET /live``，不同模块下同名的 ``/live`` 会撞进同一个标签，看板上分不出是哪个接口。
 
-    完整路径只存在于 FastAPI 的「有效路由上下文」里
-    （``scope["fastapi"]["effective_route_context"].path``，形如
-    ``/api/v1/knowledge-bases/{kb_id}``，占位符没有被实例值替换）。这两个键名都
-    不是公开 API，所以这里**逐级降级**，任何一级失败都不会影响请求：
-
-    1. 有效路由上下文 —— 嵌套 ``include_router`` 时唯一含完整前缀的来源；
-    2. ``scope["route"].path`` —— 未嵌套注册时它本身就是完整模板；
-    3. :data:`UNMATCHED_ENDPOINT` —— 404 等没命中任何路由的情况。
+    完整路径只存在于 FastAPI 的「有效路由上下文」里。两个键名都不是公开 API，所以逐级
+    降级，任何一级失败都不影响请求：有效路由上下文 → ``scope["route"].path`` →
+    :data:`UNMATCHED_ENDPOINT`（404 等没命中任何路由的情况）。
     """
     fastapi_scope = scope.get(_FASTAPI_SCOPE_KEY)
     if isinstance(fastapi_scope, dict):
@@ -75,8 +68,8 @@ def route_template(scope: Scope) -> str:
 class RequestContextMiddleware:
     """为每个 HTTP 请求安装 ``trace_id`` / ``span_id`` / ``request_id``，并记录访问日志。
 
-    ``metrics`` / ``tracing`` 允许注入：一个进程里可能同时存在多个应用实例
-    （测试常态），而模块级单例只记得最后一个。不注入时回退到进程级门面。
+    ``metrics`` / ``tracing`` 允许注入：一个进程里可能同时存在多个应用实例（测试常态），
+    而模块级单例只记得最后一个。不注入时回退到进程级门面。
     """
 
     def __init__(
@@ -172,7 +165,7 @@ class RequestContextMiddleware:
     def _observe(self, scope: Scope, method: str, status_code: int, started: float) -> None:
         """记一次 HTTP 指标（``ai_requests_total`` / ``ai_request_duration_seconds``）。
 
-        ``endpoint`` 标签取**路由模板**而非原始路径（见 :func:`route_template`），
+        ``endpoint`` 标签取路由模板而非原始路径（见 :func:`route_template`），
         否则 ``/kb/{kb_id}`` 这类路径会按数据量产生无穷多个标签值。
         """
         template = route_template(scope)
@@ -270,8 +263,8 @@ def install_middlewares(
 ) -> None:
     """安装中间件。
 
-    顺序很重要：``RequestContextMiddleware`` MUST 最外层（最后添加），
-    这样 413 / 500 的响应也能带上 ``X-Request-Id`` 与 ``trace_id``。
+    顺序很重要：``RequestContextMiddleware`` MUST 最外层（最后添加），这样 413 / 500
+    的响应也能带上 ``X-Request-Id`` 与 ``trace_id``。
     """
     app.add_middleware(BodySizeLimitMiddleware, max_bytes=max_json_body_bytes)
     app.add_middleware(

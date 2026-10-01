@@ -18,14 +18,10 @@ func NewMessageHandler(svc *biz.MessageService) *MessageHandler {
 }
 
 // Send 处理 `POST /conversations/{conversation_id}/messages`（200）。
-//
-// M2 的事实行为：编排未接线（配置里没有 AI 客户端）时，用户消息**已经落库**，
-// 接口返回 503 `AI_UNAVAILABLE`（`details.reason=orchestrator_not_configured`）。
-// 这正是 docs/03-§5 的落库顺序（先写 user 消息再调 AI）在「AI 不可用」下的表现，
-// M3 注入编排实现后同一个接口就会返回 200 + assistant 消息。
-//
-// 重复提交由 `Idempotency-Key` 挡住（docs/02-§7）—— 包括这一次 503：
-// 重试不会在台账里多出一条提问。
+// 编排未接线时用户消息已经落库，接口返回 503 `AI_UNAVAILABLE`
+// （`details.reason=orchestrator_not_configured`）—— 这是 docs/03-§5 的落库顺序
+// （先写 user 消息再调 AI）在 AI 不可用下的表现。
+// 重复提交由 `Idempotency-Key` 挡住（docs/02-§7），包括这一次 503：重试不会多出一条提问。
 func (h *MessageHandler) Send(c *gin.Context) {
 	var in biz.SendMessageInput
 	if err := httpx.BindJSON(c, &in); err != nil {

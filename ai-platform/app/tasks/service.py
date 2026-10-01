@@ -1,11 +1,10 @@
 """任务用例服务（``REQ-TASK-001`` / ``REQ-TASK-003`` / ``REQ-TASK-004``）。
 
-职责：把「谁能改任务状态、怎么改」收口到一处。业务代码（入库、删除、摘要）
-只调用这里的方法，不直接碰 :class:`~app.tasks.store.TaskStore`。
+职责：把「谁能改任务状态、怎么改」收口到一处。业务代码（入库、删除、摘要）只调用这里的
+方法，不直接碰 :class:`~app.tasks.store.TaskStore`。
 
-乐观锁冲突的处理口径：**读-改-重试**。冲突说明有并发的状态推进（例如 Worker
-正在上报进度、用户同时点了取消），重试即可收敛；直接把冲突抛给调用方会把
-「并发上报进度」变成用户可见的 409。
+乐观锁冲突的处理口径是**读-改-重试**：冲突只说明有并发的状态推进（Worker 正在上报进度、
+用户同时点了取消），重试即可收敛；直接把冲突抛给调用方会把「并发上报进度」变成用户可见的 409。
 """
 
 from __future__ import annotations
@@ -41,8 +40,8 @@ MAX_UPDATE_RETRIES = 5
 def make_idem_key(*parts: object) -> str:
     """生成幂等键（sha256）。
 
-    ``docs/09`` §2.4 的 ``idem_key`` 是 ``CHAR(64)`` 且带唯一索引，所以固定产出
-    64 位 hex；调用方只需给出「能唯一刻画这次意图」的字段组合。
+    ``docs/09`` §2.4 的 ``idem_key`` 是 ``CHAR(64)`` 且带唯一索引，所以固定产出 64 位 hex；
+    调用方只需给出「能唯一刻画这次意图」的字段组合。
     """
     raw = "\x1f".join(str(part) for part in parts)
     return hashlib.sha256(raw.encode()).hexdigest()
@@ -78,21 +77,20 @@ class TaskService:
     ) -> None:
         self._store = store
         self._max_retries = max_retries
-        #: 状态变更后的广播（``GET /tasks/{id}/events`` 的事件源）。
-        #: 刻意放在 service 而不是 Worker 里：状态变更的**唯一入口**就在这里，
-        #: 放在 Worker 会让 ``inline`` 执行器与「接口直接取消任务」两条路径都静默不推事件。
+        #: 状态变更后的广播（``GET /tasks/{id}/events`` 的事件源）。放在 service 而不是 Worker：
+        #: 状态变更的唯一入口在这里，放 Worker 会让 ``inline`` 执行器与「接口直接取消任务」
+        #: 两条路径都静默不推事件。
         self._events = events
-        #: 未结束任务的条数上限（``INGEST_QUEUE_MAX``）；``None`` = 不做过载检查。
-        #: 放在 service 而非各业务路由：``docs/08`` §174 说的是「新**任务**创建」
-        #: 返回 503，六个任务类型都得走这里，散在各个路由注定会漏。
+        #: 未结束任务的条数上限（``INGEST_QUEUE_MAX``）；``None`` = 不做过载检查。放在 service
+        #: 而非各业务路由：``docs/08`` §174 说的是「新任务创建」返回 503，六个任务类型都得走
+        #: 这里，散在各个路由注定会漏。
         self._queue_max = queue_max
 
     async def _publish(self, task_id: str, event: TaskEvent) -> None:
         """广播一次状态变更。
 
-        这里**不吞异常**：吞异常的策略在 :func:`app.tasks.events.make_publisher`
-        （生产里唯一的发布者，失败只记日志）。两处都写 try/except 会让「总线连不上」
-        这类真问题被静默两遍，排查时连一条日志都对不上号。
+        这里不吞异常：吞异常的策略在 :func:`app.tasks.events.make_publisher`（生产里唯一的
+        发布者，失败只记日志）。两处都写 try/except 会让「总线连不上」这类真问题被静默两遍。
         """
         if self._events is None:
             return
@@ -164,9 +162,9 @@ class TaskService:
         stored = await self._store.create(task)
         created = stored.id == task.id
         logger.info(
-            # 键名刻意避开 ``created``：``LogRecord`` 自带 ``created``（记录时间戳），
-            # 用同名键会抛 ``KeyError: Attempt to overwrite 'created' in LogRecord``，
-            # 而它只在日志级别允许输出时才触发 —— 于是「测试里好好的、生产上建任务即 500」。
+            # 键名刻意避开 ``created``：``LogRecord`` 自带 ``created``（记录时间戳），用同名键会抛
+            # ``KeyError: Attempt to overwrite 'created' in LogRecord``，且只在日志级别允许输出时
+            # 才触发 —— 于是「测试里好好的、生产上建任务即 500」。
             "task.created",
             extra={"task_id": stored.id, "type": str(stored.type), "is_new": created},
         )
@@ -175,14 +173,13 @@ class TaskService:
     async def _ensure_capacity(self) -> None:
         """队列过载就拒绝新建（``docs/08`` §174 / ``docs/10`` §3.3）。
 
-        检查在 ``store.create`` **之前**：饱和时连幂等重放也会拿到 503。这是刻意的
-        ——503 本身可重试，客户端退避后再来就能拿到那条既有任务；而为了区分「重放」
-        去给端点加一个 ``get_by_idem`` 查询，代价大于收益（``docs/12`` 已记录取舍）。
+        检查在 ``store.create`` 之前：饱和时连幂等重放也会拿到 503。这是刻意的 —— 503 本身
+        可重试，客户端退避后再来就能拿到那条既有任务；而为了区分「重放」去给端点加一个
+        ``get_by_idem`` 查询，代价大于收益（``docs/12`` 已记录取舍）。
 
-        **边界取「已达上限」而不是「超过上限」**：统计的是**本次入队之前**的未结束
-        任务数，所以 ``open_count == queue_max`` 意味着「加上这一个正好越界」，此
-        时就该拒绝。写成 ``>`` 会让实际并发数变成 ``queue_max + 1`` —— 配置项叫
-        ``MAX``，差一的话没人能一眼看出真正的上限。
+        边界取「已达上限」而不是「超过上限」：统计的是本次入队之前的未结束任务数，所以
+        ``open_count == queue_max`` 意味着「加上这一个正好越界」。写成 ``>`` 会让实际并发数
+        变成 ``queue_max + 1``。
         """
         if self._queue_max is None:
             return
@@ -219,17 +216,12 @@ class TaskService:
     ) -> Task:
         """上报阶段与进度（``REQ-TASK-002``）。进度只允许单调不减。
 
-        ``chunks_done`` / ``chunks_total``（``docs/10`` UP-02）是可选的**绝对口径**：
-        百分比只能画进度条，只有计数能回答「还要多久」，也才能让客户端自己发现
-        「总数比最终入库数大 ⇒ 被截断了」。
+        ``chunks_done`` / ``chunks_total``（``docs/10`` UP-02）是可选的绝对口径：百分比只能画
+        进度条，只有计数能回答「还要多久」，也才能让客户端自己发现「总数比最终入库数大 ⇒ 被截断」。
 
-        三条不变量与 ``progress`` 同源，回退一律报错：
-
-        * ``progress`` 单调不减；
-        * ``chunks_done`` 单调不减；
-        * ``chunks_total`` 一旦定下就不再变化（由切分阶段一次算定）。
-          允许它漂移会让客户端算出的 ETA 在批与批之间突然跳变，而跳变的原因
-          （重算？截断？）从响应里完全看不出来。
+        三条不变量回退一律报错：``progress`` 单调不减、``chunks_done`` 单调不减、
+        ``chunks_total`` 一旦定下就不再变化（由切分阶段一次算定）。允许 ``chunks_total`` 漂移
+        会让客户端算出的 ETA 在批与批之间突然跳变，而跳变的原因（重算？截断？）从响应里看不出来。
         """
         bounded = max(0, min(100, int(progress)))
         total = None if chunks_total is None else max(0, int(chunks_total))
@@ -265,9 +257,9 @@ class TaskService:
             TaskEvent.progress(
                 stage=task.stage,
                 progress=task.progress,
-                # 0 表示「还不知道 / 不适用」而不是「 0 片」：不转成 None 的话，
-                # 摘要/记忆抽取这类没有切片概念的任务，其进度帧会多出
-                # `chunks_total: 0`，把「无此概念」渲染成「一片都没有」。
+                # 0 表示「还不知道 / 不适用」而不是「0 片」：不转成 None 的话，摘要/记忆抽取这类
+                # 没有切片概念的任务，其进度帧会多出 ``chunks_total: 0``，把「无此概念」渲染成
+                # 「一片都没有」。
                 chunks_done=task.chunks_done or None,
                 chunks_total=task.chunks_total or None,
             ),
@@ -290,9 +282,9 @@ class TaskService:
             task.finished_at = now_iso()
 
         task = await self._transition(task_id, TaskStatus.FAILED, mutate)
-        # 失败只发 ``error``、**不发 done**：``docs/02`` §6.3 规定 ``error`` 与 ``done``
-        # 互斥。对任务而言 ``FAILED`` 还不是终点（可能自动重试回 ``QUEUED``），
-        # 所以流也不关 —— 客户端看到 ``error`` 后继续等，可能等来新的 ``progress``。
+        # 失败只发 ``error``、不发 done：``docs/02`` §6.3 规定两者互斥。对任务而言 ``FAILED``
+        # 还不是终点（可能自动重试回 ``QUEUED``），所以流也不关 —— 客户端看到 ``error`` 后继续等，
+        # 可能等来新的 ``progress``。
         await self._publish(
             task_id,
             TaskEvent.error(
@@ -332,11 +324,10 @@ class TaskService:
         """重试失败任务（``FAILED → QUEUED``，``docs/08`` §4.4）。
 
         Returns:
-            ``(任务, 是否重新排队)``。第二个值是给调用方判断**要不要投递**的：
-            ``docs/08`` §4.4 要求「置 QUEUED 并投递」，同时要求 ``QUEUED/RUNNING``
-            下的重复调用「不重复投递」。只返回任务的话，路由层无法区分
-            「这次真的重置了」和「本来就排着队」，要么漏投（任务永远卡 QUEUED，
-            而且不报错），要么重复投（同一个文档被并行入库两次）。
+            ``(任务, 是否重新排队)``。第二个值是给调用方判断要不要投递的：``docs/08`` §4.4
+            要求「置 QUEUED 并投递」，同时要求 ``QUEUED/RUNNING`` 下的重复调用「不重复投递」。
+            只返回任务的话，路由层无法区分「这次真的重置了」和「本来就排着队」，要么漏投
+            （任务永远卡 QUEUED 且不报错），要么重复投（同一个文档被并行入库两次）。
         """
         task = await self._store.get(task_id, user_id)
         if task.status in (TaskStatus.QUEUED, TaskStatus.RUNNING):
@@ -354,15 +345,14 @@ class TaskService:
             current.retry_count += 1
             current.progress = 0
             current.stage = None
-            # 切片计数与 progress 同样必须归零：本轮会从解析开始重跑，
-            # 留着上一轮的总数会让新一次切分的 ``chunks_total`` 与它不等并直接被拒。
+            # 切片计数与 progress 同样必须归零：本轮会从解析开始重跑，留着上一轮的总数会让新一次
+            # 切分的 ``chunks_total`` 与它不等并直接被拒。
             current.chunks_total = 0
             current.chunks_done = 0
             current.error = None
             current.finished_at = None
-            # ``started_at`` 必须一起清：它是**本次**尝试的开始时间，留着上一轮的
-            # 会让「耗时 = finished - started」算出跨轮次的怪数字，也会让
-            # 「这个任务跑了多久」这类排障问题得到错误答案。
+            # ``started_at`` 必须一起清：它是本次尝试的开始时间，留着上一轮的会让
+            # 「耗时 = finished - started」算出跨轮次的怪数字。
             current.started_at = None
             current.queued_at = now_iso()
 
@@ -378,13 +368,10 @@ class TaskService:
     async def requeue(self, task_id: str) -> Task:
         """自动重试：``FAILED → QUEUED``（``docs/08`` §2 的 ``FAILED --> QUEUED``）。
 
-        与用户可见的 :meth:`retry` 的区别：
-
-        * 不做 ``409 TASK_NOT_RETRYABLE`` 的语义判断 —— 重试预算由 Worker 判
-          （它才是那个知道「这是第几次尝试」的人）；非法迁移仍会被状态机拦住；
-        * **不投递**：调用方（Worker）自己安排延迟重投（``retry:zset``）。
-          在这里投递会把「延迟退避」变成「立即重试」，与 ``docs/08`` §5.2 的
-          ``1s/4s/16s`` 直接冲突。
+        与用户可见的 :meth:`retry` 的区别有两点：不做 ``409 TASK_NOT_RETRYABLE`` 的语义判断
+        （重试预算由 Worker 判，它才是那个知道「这是第几次尝试」的人，非法迁移仍会被状态机
+        拦住）；**不投递** —— 调用方（Worker）自己安排延迟重投（``retry:zset``），在这里投递
+        会把「延迟退避」变成「立即重试」，与 ``docs/08`` §5.2 的 ``1s/4s/16s`` 直接冲突。
         """
 
         def mutate(current: Task) -> None:
@@ -420,9 +407,9 @@ class TaskService:
     async def track(self, task_id: str) -> AsyncIterator[None]:
         """把「领取 → 执行 → 成功/失败」的状态流转打包。
 
-        ``RUNNING`` 之后必须落到 ``SUCCEEDED`` / ``FAILED`` / ``CANCELED`` 之一，
-        否则任务永远卡在 RUNNING（前端就一直转圈）。用上下文管理器统一收尾，
-        而不是指望每个执行函数都记得写 try/finally。
+        ``RUNNING`` 之后必须落到 ``SUCCEEDED`` / ``FAILED`` / ``CANCELED`` 之一，否则任务永远
+        卡在 RUNNING（前端就一直转圈）。用上下文管理器统一收尾，而不是指望每个执行函数都记得
+        写 try/finally。
         """
         await self.mark_running(task_id)
         try:
@@ -446,17 +433,13 @@ class TaskService:
     async def _cancel_or_keep(self, task_id: str) -> None:
         """取消收尾：只在「确实是取消」时落 ``CANCELED``。
 
-        **不能无条件落 ``CANCELED``**：``FAILED`` 也能迁到 ``CANCELED``，
-        于是「Worker 超时把它判失败（``TASK_TIMEOUT``）→ 再取消执行协程」
-        会把刚写好的失败覆盖成取消 —— 用户看到一个自己从没取消过的「已取消」
-        任务，而 ``error`` 里写着「任务执行超时」。
+        **不能无条件落 ``CANCELED``**：``FAILED`` 也能迁到 ``CANCELED``，于是「Worker 超时把它
+        判失败（``TASK_TIMEOUT``）→ 再取消执行协程」会把刚写好的失败覆盖成取消 —— 用户看到一个
+        自己从没取消过的「已取消」任务，而 ``error`` 里写着「任务执行超时」。
 
-        判据（按顺序）：
-
-        1. 存储里有取消标记 → 确实有人请求过取消（``docs/08`` §4.3）→ 落 ``CANCELED``；
-        2. 没标记但状态仍是 ``RUNNING`` → 没人负责收尾（例如被外部硬取消）→
-           仍然落 ``CANCELED``，否则任务永远停在 ``RUNNING`` 转圈；
-        3. 其他情况（已被超时判失败等）→ **保留**现有状态。
+        判据按顺序：存储里有取消标记 → 落 ``CANCELED``（``docs/08`` §4.3）；没标记但状态仍是
+        ``RUNNING`` → 也落 ``CANCELED``（没人负责收尾，例如被外部硬取消），否则任务永远停在
+        ``RUNNING`` 转圈；其他情况（已被超时判失败等）→ **保留**现有状态。
         """
         try:
             if not await self._store.is_cancel_requested(task_id):

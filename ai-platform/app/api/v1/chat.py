@@ -1,13 +1,12 @@
 """对话路由（``docs/03`` §3 / §4）。
 
-流式接口的**关键点**：准备阶段必须先于 ``StreamingResponse`` 完成 ——
-HTTP 状态码只有响应头发出之前能改。所以这里先 ``await service.prepare(...)``
-（可能抛 400/404/429，由统一异常处理器变成正常错误响应），拿到结果后再开始推帧。
+准备阶段必须先于 ``StreamingResponse`` 完成 —— HTTP 状态码只有响应头发出之前能改。
+所以先 ``await service.prepare(...)``（可能抛 400/404/429，由统一异常处理器变成正常错误
+响应），拿到结果后再开始推帧。
 
-``use_tools=true`` 时这里**分派给 Agent 服务**（``docs/03`` §3.1：走
-``docs/04`` 的流程）。放在路由层分派而不是在服务层内部分支，是因为 Agent 的响应
-多一个 ``steps``、流式事件多出 ``tool_call``/``tool_result``；混在一个方法里会让
-「返回类型取决于入参」扩散到整个服务层。
+``use_tools=true`` 时分派给 Agent 服务（``docs/03`` §3.1）。放在路由层分派而不是服务层内部
+分支：Agent 的响应多一个 ``steps``、流式事件多出 ``tool_call``/``tool_result``，混在一个
+方法里会让「返回类型取决于入参」扩散到整个服务层。
 """
 
 from __future__ import annotations
@@ -42,8 +41,8 @@ async def create_chat(
 ) -> ChatResponse:
     """非流式对话（``use_tools=true`` 时走 Agent 流程）。"""
     if body.stream:
-        # 语义固化：/chat 只接受 stream=false（docs/03 §1），
-        # 否则流式与非流式的响应体类型会混淆，OpenAPI 也无法生成两份 schema。
+        # /chat 只接受 stream=false（docs/03 §1）；否则流式与非流式的响应体类型会混淆，
+        # OpenAPI 也无法生成两份 schema。
         raise AppError(
             ErrorCode.INVALID_ARGUMENT,
             "stream=true 请改用 POST /chat/stream",
@@ -104,7 +103,7 @@ def _as_agent_request(body: ChatRequest) -> AgentRunRequest:
     """``ChatRequest`` → ``AgentRunRequest``（``use_tools`` 强制为 true）。
 
     用 ``model_dump`` 而不是逐字段复制：``ChatRequest`` 以后新增字段时会自动带上，
-    漏掉一个字段的表现是「该开关静默失效」——最难发现的一类 bug。
+    漏掉一个字段的表现是「该开关静默失效」—— 最难发现的一类 bug。
     """
     return AgentRunRequest(**{**body.model_dump(), "use_tools": True})
 

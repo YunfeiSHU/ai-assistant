@@ -1,10 +1,7 @@
 """工具路由（``docs/04`` §4.1 / §4.2）。
 
-两条路由的鉴权策略不同，这是刻意的：
-
-* ``GET /tools``：**需要鉴权**。它虽有信息价值，但工具清单会暴露内部能力边界。
-* ``POST /tools/{name}/invoke``：**prod 下不存在**（404）。理由见
-  :meth:`app.tools.service.ToolService.invoke` —— 连「有这个工具」都不该被外部确认。
+两条路由的鉴权策略刻意不同：``GET /tools`` 需要鉴权（工具清单会暴露内部能力边界）；
+``POST /tools/{name}/invoke`` 在 prod 下不存在（404），连「有这个工具」都不该被外部确认。
 """
 
 from __future__ import annotations
