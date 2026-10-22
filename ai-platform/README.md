@@ -1,306 +1,189 @@
 # ai-platform
 
-基于 **FastAPI + LangChain / LangGraph** 的 AI 平台后端，内置 RAG 检索增强（向量召回 + BGE 重排序）、
-Agent 工具调用循环（Agent Loop，含步数/时长/重复调用三重护栅）、
-MCP（Model Context Protocol）工具接入（多 Server / 两种传输 / 命名空间 / 熔断重连），
-以及完整的可观测性（OTel 链路 + Prometheus 指标 + 熔断器 + 独立指标端口）。
+Python 侧 AI 服务。FastAPI 承载全部对外 HTTP/SSE，工具调用主链路是**自研 Agent Loop**
+（`app/agent/loop.py`）；RAG（召回 → 重排 → 引用溯源）、Memory（短期上下文 / 摘要 / 长期记忆）、
+MCP 工具接入、异步任务（Kafka + 独立 Worker）与可观测（OTel + Prometheus）按模块装配在同一个进程里。
 
-## 技术栈
+> Go 网关、两侧分工与整体架构图见[仓库根 README](../README.md)，本文不重复。
+> 与 SRS 重复的接口明细一律给指针，不复制表格。
 
-| 层次 | 选型 |
+## 1. 规模（以代码为准）
+
+| 项 | 数值 | 口径 |
+| --- | --- | --- |
+| HTTP 路由 | **41** 条 | `app/api/**` 的 `@router.*` 装饰器计数（见 §6） |
+| 监听端口 | **8000** HTTP / **9100** 指标 / **50051** gRPC（默认关闭） | §5 |
+| `ai_*` 指标 | **19** 个 | `app/infrastructure/observability/metrics.py` |
+| 配置字段 | 150 个（`.env.example` 123 个赋值） | `app/core/config.py::Settings` |
+| pytest | **1698 collected / 1688 passed / 10 skipped**，112.8 s | 本机 Windows 实测，见 §8 |
+| 覆盖率 | **89%**（11561 语句 / 1315 未覆盖，门槛 70%） | `pytest --cov=app` |
+| MySQL 表 | **15** 张｜AI 独占 7 + 共享 2 + 网关独占 6 | `deploy/mysql/`、`docs/09` §2 |
+
+## 2. 技术选型
+
+| 层次 | 选型 | 关键事实 |
+| --- | --- | --- |
+| 语言 / 依赖 | Python **3.12** + uv | `.python-version` 固定（torch / transformers / FlagEmbedding 对 3.14 适配不全）；`uv.lock` 入库 |
+| Web | FastAPI + Uvicorn | `create_app(settings)` 可注入配置；全异步 |
+| 校验 / 配置 | Pydantic v2 + pydantic-settings | 唯一事实来源 `app/core/config.py::Settings`，启动期 `validate_for_startup()` |
+| LLM 客户端 | 自研 OpenAI 兼容适配器（`app/llm/`） | 默认 DeepSeek；换供应商只改 `OPENAI_BASE_URL` + `LLM_MODEL` |
+| Agent 主链路 | **自研 Agent Loop**（`app/agent/loop.py`） | 步数 / 总时长 / 重复调用三重护栅；`langgraph` 状态图只在 `app/agent/graph/` 做占位，**未接入主链路**，`generate` 节点仍是 TODO |
+| Embedding | 默认 `hash`（词法向量，零下载）｜本地档 `bge`（`BAAI/bge-m3`）｜云端档 `siliconflow` | `.env.example` 出厂档 = 硅基流动 `Qwen/Qwen3-Embedding-0.6B`（1024 维、真批量 N 进 N 出）；本地档也是 1024 维但**向量空间不同，换档必须换集合名** |
+| Rerank | 默认 `bge`（`BAAI/bge-reranker-v2-m3` 本地交叉编码器）｜云端 `siliconflow` | 出厂档 = `Qwen/Qwen3-Reranker-0.6B`（20 条候选实测 320ms）；两者都惰性加载，出厂档不下载权重 |
+| 向量库 | **Milvus**（PyMilvus + langchain-milvus） | 集合 `ai_platform_chunks` / `ai_platform_memories`，HNSW/COSINE + `user_id`/`kind` 标量倒排索引 |
+| 工具协议 | MCP Python SDK | `stdio` 与 `streamable_http` 两种传输，工具命名空间 `mcp__{server}__{tool}` |
+| 消息队列 | **Kafka**（aiokafka，可选 extra） | 主题 `ai.task.<type>`、死信 `ai.task.dlq`；`TASK_RUNNER=inline` 时整个 Kafka 不参与 |
+| 缓存 / 任务态 | Redis（可选 extra） | 短期上下文、幂等键、退避重试 ZSET、pub/sub 事件总线 |
+| 关系库 / 对象存储 | MySQL 8（SQLAlchemy Core + asyncmy）/ MinIO | 都在可选依赖组，按 `--extra` 装 |
+| 对内 gRPC | grpcio / grpcio-tools | `python -m app.grpc`；默认 `GRPC_ENABLED=false`、只听回环 |
+| 可观测 | OpenTelemetry（OTLP gRPC）+ Prometheus client | 19 个 `ai_*`；指标走独立端口，主应用不暴露 `/metrics` |
+| 质量门禁 | ruff + mypy + pytest(asyncio / cov) | 见 §8 |
+
+## 3. 目录结构
+
+| 路径 | 内容 |
 | --- | --- |
-| Web 框架 | FastAPI + Uvicorn |
-| 数据校验 / 配置 | Pydantic v2 + pydantic-settings |
-| LLM 编排 | LangChain + LangGraph |
-| 向量化 | Transformers + Sentence Transformers（默认 `BAAI/bge-m3`） |
-| 重排序 | FlagEmbedding（默认 `BAAI/bge-reranker-v2-m3`） |
-| 向量库 | Milvus（PyMilvus + langchain-milvus） |
-| 工具协议 | MCP Python SDK |
-| 环境 / 依赖管理 | uv |
+| `app/core/` | 叶子层：配置、错误码、ULID、trace 上下文、结构化日志 + 脱敏、中间件、JWT、token 计数、游标分页、SSE 帧、探活注册表 |
+| `app/api/` | v1 路由（41 条）、依赖注入、统一错误信封；只做参数绑定，不写业务判断 |
+| `app/application/` | 用例编排：context 装配 / chat / agent / memory |
+| `app/schemas/` | Pydantic 请求 / 响应模型（逐条对齐 SRS） |
+| `app/llm/` | LLM 协议 + OpenAI 兼容适配器 + 上游异常映射 |
+| `app/agent/` | `loop.py` 主链路；`graph/` 为 LangGraph 占位（未接入） |
+| `app/tools/` | ToolSpec / 注册表 / 执行器（读并发、写串行、超时、截断）/ 内置工具：`kb_retrieve`、`calculator`、`current_time`、`http_fetch`、`memory_save`、`memory_search` |
+| `app/rag/` | 解析（pdf/docx/md/html/txt，扩展名 + 魔数双校验）、结构感知切片、embedding、reranker、retriever、Milvus 向量库 |
+| `app/memory/` | 短期上下文（内存 / Redis 两套）、摘要、长期记忆、抽取、偏好、记忆向量索引 |
+| `app/tasks/` | 状态机、仓储（内存 / Redis）、退避重试队列、补偿扫描、事件总线、三个 runner、SSE 进度流 |
+| `app/worker/` | 独立 Worker 进程：启动自检、消费循环、按分区连续水位线提交偏移 |
+| `app/mcp/` | 配置校验、两种传输、单 Server 状态机（懒重连 + 行内熔断）、多 Server 编排、工具适配 |
+| `app/infrastructure/` | 适配层：MySQL、Redis、storage（知识库 / 文档 / 切片 / 对象存储）、observability（指标门面 / OTel / 熔断器 / 指标端口） |
+| `app/grpc/` | 对内 gRPC 服务端：`Chat` / `ChatStream`；生成物在 `aiplatform/v1/`（不手改） |
+| `deploy/` | `mysql/`（001→004 建表 + verify）、`infra/`（Redis / Kafka）、`observability/`（Jaeger + Prometheus + Grafana 18 面板） |
+| `tests/` | `unit/` 纯逻辑、`contract/` 接口契约、`integration/` 5 个真依赖文件、`support/` 替身 |
+| `tools/` | `curl_e2e.ps1`、`kafka_e2e_check.py`、`worker_e2e_check.py`、`gen_grpc_stubs.ps1`、`ingest_bench*.py` |
+| `docs/` | 01–11 SRS + 12 故障史 + 13 技术设计 + 14 逐接口 curl 实测 |
 
-## 环境要求
+## 4. 快速开始
 
-- **Python 3.12**：已由 `.python-version` 固定，uv 会自动使用托管解释器，无需手动安装
-  （`torch` / `transformers` / `FlagEmbedding` 生态对刚发布的 3.14 支持尚不完整，故不用系统默认版本）
-- **uv** ≥ 0.5：<https://docs.astral.sh/uv/getting-started/installation/>
-
-## 快速开始
+### 4.1 起服务（uv sync，零外部依赖）
 
 ```powershell
-# 1. 按 uv.lock 创建 .venv 并安装全部依赖
-uv sync
-
-# 2. 准备环境变量
-Copy-Item .env.example .env
-# 然后编辑 .env，至少填入真实的 OPENAI_API_KEY（默认用 DeepSeek，见下方说明）
-# 注意 .env.example 的 EMBEDDING_PROVIDER=siliconflow：向量化走硅基流动云端（需填 SILICONFLOW_API_KEY），
-#   不占本机 CPU/内存。不想联网 ⇒ 改成 hash（词法向量，零下载）；想用本地权重 ⇒ bge。
-
-# ⚠ .env.example 的出厂档是「隔离档」：TASK_RUNNER=kafka + INFRA_BACKEND=real，
-#   即任务由独立 Worker 进程消费（大文件不拖垮在线请求），代价是需要 Redis + Kafka，
-#   而且要能看到文档「上传后入库完成」还得另开一个终端跑 Worker（见下方 §异步任务）。
-#   只想起一个进程就把接口跑通 → 在 .env 里改成下面这一组（零外部依赖）：
-#     INFRA_BACKEND=memory
-#     TASK_RUNNER=inline
-#   代价说清楚：inline 下 8MB 文档的解析/切分/向量化跑在 API 进程里，
-#   期间同机所有请求一起变慢（实测 49MB 会直接把 /health 拖到不应答）。
-
-# 3. 启动开发服务器（热重载）
+uv sync                        # 按 uv.lock 建 .venv 并安装全部依赖
+Copy-Item .env.example .env    # 至少填真实的 OPENAI_API_KEY（默认 DeepSeek）
 uv run uvicorn app.main:app --reload
-
-# 4. 接口文档
-#    Swagger UI : http://127.0.0.1:8000/docs
-#    ReDoc      : http://127.0.0.1:8000/redoc
-#    健康检查   : http://127.0.0.1:8000/api/v1/health
+# Swagger UI : http://127.0.0.1:8000/docs
+# 健康检查   : http://127.0.0.1:8000/api/v1/health
 ```
 
-要跑「API 投递 → 独立 Worker 消费」的真形态（也是 `.env.example` 的默认档）：
+`.env.example` 出厂档是**隔离档**（`INFRA_BACKEND=real` + `TASK_RUNNER=kafka` +
+`EMBEDDING_PROVIDER=siliconflow`），真实但要多起 Redis / Kafka / Worker。只想单进程跑通就改成
+`INFRA_BACKEND=memory` + `TASK_RUNNER=inline`：代价说清楚——文档解析/切分/向量化跑在 API 进程里，
+8MB 文档会让同机请求一起变慢，实测 49MB 能把 `/health` 拖到不应答。
+
+### 4.2 起真基础设施（Redis / Kafka / MySQL / Milvus / MinIO）
 
 ```powershell
-# Redis / Kafka 驱动属于可选依赖（`uv sync` 不带 --extra 时不会装）
-uv sync --extra redis --extra kafka
+uv sync --extra redis --extra kafka --extra mysql --extra minio
 
-# 只起 Redis（任务进度 / 幂等键 / 退避重试 ZSET 都在这里）
-docker compose -f deploy/infra/compose.yml up -d redis
+docker compose -f deploy/infra/compose.yml up -d redis            # 任务仓储 / 总线 / 重试都在 Redis
+docker compose -f deploy/infra/compose.yml --profile kafka up -d  # 单节点 KRaft，localhost:9092
 
-# 连 Kafka 一起起（单节点 KRaft，监听 localhost:9092）
-docker compose -f deploy/infra/compose.yml --profile kafka up -d
+# 建表（幂等，全部 CREATE ... IF NOT EXISTS，不含 DROP）：AI 独占 7 + 共享 2
+mysql --default-character-set=utf8mb4 -u root -p -e "source deploy/mysql/001_init_schema.sql"
+mysql --default-character-set=utf8mb4 -u root -p -e "source deploy/mysql/002_align_shared_tables.sql"  # 仅旧库
+mysql --default-character-set=utf8mb4 -u root -p -e "source deploy/mysql/003_add_chunk_metadata.sql"   # 仅旧库
+mysql --default-character-set=utf8mb4 -u root -p -e "source deploy/mysql/004_add_ingest_facts.sql"
+mysql --default-character-set=utf8mb4 -u root -p -e "source deploy/mysql/verify_schema.sql"            # 断言 1/0/1/1/0/1/4/4
 
-# 然后另开一个终端跑独立 Worker（它自己会拒绝在 INFRA_BACKEND != real 下启动）
-uv run python -m app.worker     # 与 API 共用同一份 .env，不需要再传 --env
+$env:INFRA_BACKEND="real"; $env:TASK_RUNNER="kafka"
+uv run uvicorn app.main:app --reload      # 终端 1：API（投递方）
+uv run python -m app.worker               # 终端 2：Worker（消费方），与 API 共用同一份 .env
+
+uv run python tools/kafka_e2e_check.py    # 跨进程验真：建任务 → Kafka → Worker → 事件帧
 ```
 
-## 目录结构
+`deploy/infra/compose.yml` 只起 Redis / Kafka / MinIO（三者各自独立，不合成一个 project）；MySQL 与 Milvus
+用外部实例——Milvus 走官方 standalone compose，默认 `19530`(gRPC) / `9091`(HTTP 健康) / `2379`(etcd)，
+集合与索引由启动期 `ensure_ready()` 幂等创建。
+
+Worker 启动先自检，不满足就拒绝启动——这是故意的：
 
 ```text
-ai-platform/
-├── .venv/                  # uv 创建的虚拟环境（不入库）
-├── .env                    # 本地环境变量（不入库）
-├── .env.example            # 环境变量模板
-├── .python-version         # 固定 Python 3.12
-├── pyproject.toml          # 依赖与工具配置（唯一事实来源）
-├── uv.lock                 # 锁定版本，保证可复现
-├── README.md
-├── docs/                   # 11 篇接口级 SRS + 实现问题记录 + 技术设计说明
-├── deploy/                 # 部署与基础设施脚本
-│   ├── mysql/              # 建表 001 + 共享表升级 002 + 自检 verify（同库 15 张表）
-│   ├── infra/              # 本地基础设施：Redis（默认）+ Kafka（--profile kafka）
-│   └── observability/      # 本地可观测栈：Jaeger + Prometheus + Grafana（含 18 面板看板）
-├── tools/
-│   └── kafka_e2e_check.py  # 跨进程验真脚本（API 建任务 → Kafka → Worker 执行 → 收到事件）
-├── tests/
-│   ├── conftest.py         # 夹具：配置 / 应用 / 客户端 / 对话・Agent・MCP 替身
-│   ├── support/            # 测试替身（脚本化 LLM / 确定性向量化 / 假 MCP Server / 假消息总线）
-│   ├── unit/               # 纯逻辑单测（不启 HTTP）
-│   ├── contract/           # 接口契约测试（错误信封 / 鉴权 / SSE / 分页 / 可观测）
-│   └── integration/        # 真基础设施（当前：真 Redis）；不可达时 1 秒内 skip
-└── app/
-    ├── main.py             # FastAPI 入口（create_app + lifespan）
-    ├── core/               # 与框架无关的基础能力（叶子层，不 import 上层）
-    │   ├── config.py       # pydantic-settings 全局配置（唯一事实来源）
-    │   ├── exceptions.py   # 错误码枚举 + 规格表 + AppError
-    │   ├── ids.py          # ULID 资源 ID（同毫秒单调）
-    │   ├── context.py      # trace_id / span_id / request_id 上下文
-    │   ├── logging.py      # 结构化日志 + 敏感字段脱敏
-    │   ├── middleware.py   # 请求上下文、请求体大小限制、访问日志
-    │   ├── security.py     # JWT 校验
-    │   ├── tokens.py       # token 计数与截断
-    │   ├── pagination.py   # 游标分页
-    │   ├── sse.py          # SSE 帧构造 + 心跳
-    │   └── health.py       # 依赖探活注册表
-    ├── api/
-    │   ├── deps.py         # 依赖注入（配置 / 当前用户 / 分页 / 服务）
-    │   ├── exception_handlers.py
-    │   └── v1/             # v1 路由，统一挂到 api_router
-    ├── application/        # 应用层：用例编排（context 装配 / chat / agent / memory）
-    ├── schemas/            # Pydantic 请求 / 响应模型（逐条对齐 SRS）
-    ├── llm/                # LLM 协议 + OpenAI 兼容适配器 + 异常映射
-    ├── tools/
-    │   ├── base.py         # ToolSpec / ToolContext / ToolOutcome / BuiltinTool
-    │   ├── registry.py     # 工具注册表（重名 fail-fast、白/黑名单过滤）
-    │   ├── executor.py     # 执行器（读并发/写串行、超时、截断、错误归一）
-    │   ├── service.py      # 对外列表/调试调用
-    │   └── builtin/        # kb_retrieve / calculator / current_time / http_fetch / memory_save / memory_search
-    ├── memory/             # 记忆层：短期上下文 / 摘要 / 长期记忆（含 Redis 实现）
-    │   ├── context_store.py # ConversationStore 协议 + 内存实现 + 503 占位
-    │   ├── redis_store.py  # Redis 实现（LTRIM + TTL + SET NX 锁 + Lua 释放）
-    │   ├── long_term.py    # 长期记忆正文/元数据 + 哈希去重 + 游标分页
-    │   ├── vector_index.py # 记忆向量索引（只管向量，与关系库按 mem_id 对齐）
-    │   ├── summary.py      # 摘要：触发条件 + 四段结构 + 增量合并 + 防抖
-    │   ├── extractor.py    # 抽取：候选解析 + 敏感/疑问句/推测过滤
-    │   ├── preferences.py  # 用户级开关与 top_n、清空冷静期
-    │   └── tasks.py        # summary_build / memory_extract 处理器
-    ├── tasks/              # 异步任务：状态机 + 仓储 + 投递器 + 按类型分派的分发器
-    │   ├── models.py       # Task 领域模型 + 状态机（唯一事实来源）
-    │   ├── store.py        # 进程内实现；redis_store.py 为跨进程实现
-    │   ├── service.py      # 状态迁移 + 事件发布 + 队列容量闸（超限 503 OVERLOADED）
-    │   ├── retry.py        # 退避重试队列（Redis ZSET + Lua 原子认领）
-    │   ├── compensation.py # 补偿扫描：兜「建好了但没投出去」的 PENDING
-    │   ├── events.py       # 事件总线（内存 / Redis pub/sub）
-    │   ├── runner.py       # 三个执行器：none / inline / kafka
-    │   ├── transport.py    # Kafka Producer/Consumer + 消息体
-    │   └── stream.py       # GET /tasks/{id}/events 的进度流（快照 + 增量）
-    ├── worker/             # 独立 Worker 进程（python -m app.worker）
-    │   ├── __main__.py     # 启动自检（配置不对直接 exit 2）+ 信号优雅退出
-    │   ├── loop.py         # 消费循环：领取 → 执行 → 提交偏移
-    │   └── offsets.py      # 按分区连续水位线提交（避免乱序完成丢消息）
-    ├── rag/
-    │   ├── retriever.py    # Retriever 真实实现（召回 → 合并 → 重排 → 裁剪）
-    │   ├── base.py         # Retriever 协议 + NullRetriever（降级用）
-    │   ├── service.py      # 入库编排：上传 → 解析 → 切片 → 嵌入 → 落库
-    │   ├── chunking.py     # 结构感知切片（标题/页码/原子块/合并）
-    │   ├── parsers/        # pdf / docx / md / html / txt 解析（扩展名 + 魔数双校验）
-    │   ├── embedding/      # EmbeddingService（BGE 向量化，懒加载 + 缓存）
-    │   ├── reranker/       # RerankerService（BGE Reranker，懒加载）
-    │   └── vectorstore/    # MilvusVectorStore + 进程内实现（测试用）
-    ├── agent/
-    │   ├── loop.py         # Agent Loop：推理 → 工具调用 → 回注（三重护栅）
-    │   └── graph/          # LangGraph 状态图占位（retrieve → generate，未接入）
-    ├── mcp/                # MCP 客户端：配置校验 / 两种传输 / 单 Server 状态机 / 多 Server 编排 / 工具适配
-    └── infrastructure/     # 基础设施适配层：外部依赖的具体实现（最下层）
-        ├── mysql/db.py     # 引擎按 DSN 进程内复用 + 时间戳转换 + DB 错误分类
-        ├── redis/client.py # Redis 连接构造（懒导入驱动）+ 取值兼容
-        ├── storage/        # 知识库/文档/切片仓储（memory 实现 + real 的 503 占位）
-        └── observability/  # 可观测：指标门面 / OTel 链路 / 熔断器 / 独立指标端口服务
+$env:INFRA_BACKEND="memory"; uv run python -m app.worker
+ERROR app.worker  worker.misconfigured  reason=任务存储不是共享的（INFRA_BACKEND=memory）
+# 退出码 2
 ```
 
-> `app/mcp` 与站点包 `mcp` 同名但不冲突：Python 3 使用绝对导入，`import mcp` 指向已安装的 SDK。
+内存任务存储是**进程私有**的，Worker 拿到消息后查不到那行任务，表现为「消息被消费了但任务永远停在
+`QUEUED`」——一个不报错、只静默转圈的故障。
 
-## 已实现接口
-
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| `GET` | `/api/v1/health` | 汇总健康（含各依赖探活结果） |
-| `GET` | `/api/v1/health/live` | 存活探针（进程活着即 200） |
-| `GET` | `/api/v1/health/ready` | 就绪探针（依赖不可用时 503） |
-| `POST` | `/api/v1/chat` | 非流式对话（`stream=true` 会返回 `400`，请用 `/chat/stream`） |
-| `POST` | `/api/v1/chat/stream` | 流式对话（SSE：`meta → reference* → token* → usage → done`） |
-| `POST` | `/api/v1/agent/run` | Agent 非流式（工具调用 `tool_calls` 轨迹 + 步数/引用/降级原因） |
-| `POST` | `/api/v1/agent/run/stream` | Agent 流式（`meta → (tool_call → tool_result → reference*)* → token* → usage → done`） |
-| `GET` | `/api/v1/tools` | 工具清单（含 `parameters` JSON Schema，可按 `source`/`enabled` 过滤） |
-| `POST` | `/api/v1/tools/{name}/invoke` | 调试调用（**仅 local/dev**；prod 返回 `404`；`write` 类强制 `dry_run`） |
-| `GET` | `/api/v1/models` | 可用模型白名单（静态配置表） |
-| `POST` | `/api/v1/knowledge-bases` | 新建知识库（切片策略、`CHUNK_STRATEGY_INVALID` 校验） |
-| `GET` | `/api/v1/knowledge-bases` | 知识库列表（游标分页） |
-| `GET/PATCH/DELETE` | `/api/v1/knowledge-bases/{kb_id}` | 详情 / 局部更新 / 删除（非空需 `force=true`） |
-| `POST` | `/api/v1/knowledge-bases/{kb_id}/documents` | 上传入库（`file` 或 `text` 二选一，`202` + `task_id`） |
-| `GET` | `/api/v1/knowledge-bases/{kb_id}/documents` | 文档列表（按状态过滤） |
-| `POST` | `/api/v1/knowledge-bases/{kb_id}/search` | 检索调试（召回/重排分数、耗时） |
-| `GET` | `/api/v1/documents/{doc_id}` | 文档详情（含切片参数快照） |
-| `GET` | `/api/v1/documents/{doc_id}/chunks` | 切片列表（游标分页） |
-| `DELETE` | `/api/v1/documents/{doc_id}` | 删除文档（`202`，级联删切片） |
-| `GET` | `/api/v1/tasks` | 任务列表（状态/类型/资源过滤） |
-| `GET` | `/api/v1/tasks/{task_id}` | 任务详情（进度、阶段、错误、可否取消/重试） |
-| `POST` | `/api/v1/tasks/{task_id}/cancel` | 取消（`RUNNING` 只置标记，由 Worker 在检查点退出） |
-| `POST` | `/api/v1/tasks/{task_id}/retry` | 重试（`FAILED → QUEUED`，`QUEUED/RUNNING` 幂等不重复投递） |
-| `GET` | `/api/v1/tasks/{task_id}/events` | **任务进度流（SSE）**：`progress` / `error` / `done` / `ping`；终态立即 `done` 并关流 |
-| `GET` | `/api/v1/memories` | 长期记忆列表（`kind` / `expired` 过滤 + 游标分页） |
-| `POST` | `/api/v1/memories` | 手动新增（`201`；重复内容不新建，而是累加 `hit_count`） |
-| `GET/PATCH/DELETE` | `/api/v1/memories/{mem_id}` | 详情 / 修改（正文变化重新向量化）/ 删除（关系库 + 向量库双删） |
-| `DELETE` | `/api/v1/memories?all=true` | 清空全部记忆（**必须显式带 `all=true`**，否则 `400`） |
-| `GET/PUT` | `/api/v1/memory-settings` | 用户级开关与 `top_n`（关闭时读写记忆接口返回 `409`） |
-| `GET` | `/api/v1/conversations/{id}/context` | 会话上下文 + 各片段 token 占用 + 裁剪明细（排障用） |
-| `DELETE` | `/api/v1/conversations/{id}/context` | 清空短期上下文（幂等；**不删**长期记忆） |
-| `GET` | `/api/v1/conversations/{id}/summary` | 取摘要（未生成 → `404 SUMMARY_UNAVAILABLE`） |
-| `POST` | `/api/v1/conversations/{id}/summary/rebuild` | 手动重建摘要（`202` + `task_id`） |
-| `GET` | `/api/v1/mcp/servers` | MCP Server 列表（状态 / 工具数 / 最近错误 / 往返耗时，游标分页） |
-| `GET` | `/api/v1/mcp/servers/{name}/tools` | 该 Server 注册后的工具清单（与 `/tools?source=mcp` 一致） |
-| `POST` | `/api/v1/mcp/servers/{name}/reload` | 重载单个 Server（`{ "force": bool }`；不影响其它 Server） |
-
-> 任务进度流的事件字段与广播规则见 `docs/08-§4.5`；`error` 帧里的 `retryable` 是
-> 「错误码值得重试 **且** 重试预算没用完」两个条件同时成立才为 `true`，客户端按它决定要不要重试。
-> 注意：`FAILED` 之后**不会**关流（`FAILED → QUEUED` 是合法迁移，自动重试可能随后发生）。
-
-本地快速验证：
+### 4.3 起对内 gRPC（供网关的 `Chat` / `ChatStream`）
 
 ```powershell
-# 非流式
-curl.exe -s http://127.0.0.1:8000/api/v1/chat -H "Content-Type: application/json" `
-  -d '{\"query\":\"用一句话介绍你自己\",\"use_memory\":false,\"use_rag\":false}'
-
-# 流式（-N 关闭 curl 侧缓冲，才能看到逐段到达）
-curl.exe -N http://127.0.0.1:8000/api/v1/chat/stream -H "Content-Type: application/json" `
-  -d '{\"query\":\"数到三\",\"use_memory\":false,\"use_rag\":false}'
-
-# Agent：模型会自己决定调 calculator 还是 current_time
-curl.exe -s http://127.0.0.1:8000/api/v1/agent/run -H "Content-Type: application/json" `
-  -d '{\"query\":\"(12.5-8)/8 是多少百分点\",\"use_memory\":false,\"use_rag\":false}'
-
-# 看看有哪些工具（含发给上游的 JSON Schema）
-curl.exe -s http://127.0.0.1:8000/api/v1/tools
-
-# 写一条长期记忆，再用它问一次（第二次对话应带上「记忆」段）
-curl.exe -s -X POST http://127.0.0.1:8000/api/v1/memories -H "Content-Type: application/json" `
-  -d '{\"content\":\"用户偏好用表格回答\",\"kind\":\"preference\"}'
-
-# 看上下文装配明细（各段 token 与裁剪原因，排障首选）
-curl.exe -s http://127.0.0.1:8000/api/v1/conversations/{conversation_id}/context
+$env:GRPC_ENABLED="true"   # 默认 false；未开启时 python -m app.grpc 以退出码 2 退出
+$env:GRPC_HOST="127.0.0.1" # 默认只听回环；非回环地址必须 AUTH_ENABLED=true，否则启动校验直接拒绝
+uv run python -m app.grpc  # 默认端口 50051
 ```
 
-> 短期上下文默认是**进程内**实现（重启即丢）；想用 Redis 托管则需要
-> `uv sync --extra redis` 并把 `INFRA_BACKEND` 设为 `real`。`real` 下 Redis 不可用会直接
-> `503 DEPENDENCY_UNAVAILABLE`，**不会**静默退化成进程内实现。
+gRPC 是**独立进程**，不是「HTTP 启动时顺带开个端口」：两者的生命周期、并发模型与故障域都不同，
+gRPC 挂了不该连带 SSE 一起挂。`Chat` / `ChatStream` 与 `POST /chat`、`POST /chat/stream` 共用同一套
+service 与错误映射，行为等价；并发上限 `GRPC_MAX_CONCURRENCY=64`（LLM 是长尾 IO，给得比 HTTP 小）。
+长驻 gRPC 进程的已知缺陷见 §9。
 
-## 常用命令
+## 5. 配置与端口
 
-```powershell
-uv sync                      # 同步依赖（新增/删除包后执行）
-uv add <package>             # 添加运行时依赖
-uv add --dev <package>       # 添加开发依赖
-uv lock --upgrade            # 全量升级并刷新 uv.lock
-uv run python -c "import app"  # 在虚拟环境里执行任意命令
-uv run pytest                # 跑测试
-uv run pytest --cov=app --cov-report=term-missing   # 带覆盖率（docs/11 §6 的验收命令）
-uv run ruff check .          # 代码检查
-uv run ruff format .         # 代码格式化
-uv run mypy app              # 类型检查
-```
-
-> 说明：`uv.lock` 应当入库，以保证任何机器上 `uv sync` 得到完全一致的依赖树。
-
-## 配置说明
-
-配置全部集中在 `app/core/config.py` 的 `Settings` 类，字段可用同名环境变量覆盖（不区分大小写）。
-关键项：
-
-| 变量 | 默认值 | 说明 |
+| 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `OPENAI_API_KEY` / `OPENAI_BASE_URL` | 空 / `https://api.deepseek.com/v1` | **OpenAI 兼容协议**，默认已接 DeepSeek |
-| `LLM_MODEL` | `deepseek-flash` | DeepSeek 官方模型：`deepseek-flash`（默认）/ `deepseek-v4-pro` |
-| `EMBEDDING_MODEL` | `Qwen/Qwen3-Embedding-0.6B` | 云端、**1024 维**、端点支持**真批量**（本地档 `BAAI/bge-m3` 也是 1024 维但向量空间不同）；换模型必须换集合名 |
-| `RERANKER_MODEL` | `Qwen/Qwen3-Reranker-0.6B` | 云端重排（20 条候选实测 320ms）；`RERANKER_PROVIDER=bge` 可切本地交叉编码器 |
-| `*_DEVICE` | `cpu` | 有 GPU 时改为 `cuda`（会自动启用 fp16） |
-| `MILVUS_URI` | `http://localhost:19530` | 有 `MILVUS_TOKEN` 时优先用 Token 鉴权 |
-| `CORS_ORIGINS` | `["*"]` | JSON 数组格式 |
-| `AGENT_MAX_STEPS` | `8` | Agent 单请求工具调用轮数上限（请求里的 `max_steps` **只能调小**） |
-| `AGENT_TIMEOUT_SECONDS` | `30` | Agent 单请求总时长预算（超出返回 `504`，不编答案） |
-| `TOOL_TIMEOUT_SECONDS` | `10` | 单个工具默认超时（工具自身 `timeout_seconds` 优先，封顶 60s） |
-| `TOOL_HTTP_FETCH_ENABLED` | `false` | `http_fetch` 是**外发请求**能力，默认关闭（需显式开启） |
-| `TOOL_DENYLIST` / `TOOL_WRITE_ALLOWLIST` | `[]` | 运维级黑名单；与写操作放行名单不得相交（启动期校验） |
-| `DEBUG_TOOLS_ENABLED` | `true`（local/dev） | 为 `false` 时 `/tools/{name}/invoke` 返回 `404` |
-| `MEMORY_ENABLED` | `true` | 长期记忆总开关（用户级设置只能在其为 `true` 时打开） |
-| `MEMORY_TTL_DAYS` / `MEMORY_MAX_MESSAGES` / `MEMORY_RECENT_TURNS` | `7` / `200` / `10` | 短期上下文：TTL、条数上限、每次注入最近几轮 |
-| `MEMORY_TOP_N` / `MEMORY_SCORE_THRESHOLD` | `3` / `0.45` | 长期记忆注入条数与相似度门限 |
-| `MEMORY_DEDUPE_THRESHOLD` / `MEMORY_MIN_CONFIDENCE` | `0.92` / `0.7` | 语义去重阈值与抽取置信度下限（`[0.85, 0.92)` 两条并存） |
-| `MEMORY_CLEAR_COOLDOWN_HOURS` | `24` | 清空全部记忆后不再重新抽取旧内容的冷静期 |
-| `SUMMARY_ENABLED` / `SUMMARY_MIN_NEW_MESSAGES` / `SUMMARY_TRIGGER_RATIO` | `true` / `20` / `0.8` | 摘要开关与两个触发条件（新增消息数 / 历史 token 占比） |
-| `SUMMARY_KEEP_RECENT_TURNS` / `SUMMARY_TOKEN_BUDGET` / `SUMMARY_DEBOUNCE_SECONDS` | `10` / `1200` / `300` | 保留原文轮数、摘要长度上限、同会话生成防抖窗口 |
-| `REDIS_URL` | `redis://localhost:6379/0` | `INFRA_BACKEND=real` 时的短期上下文载体（需 `uv add redis`） |
-| `MCP_SERVERS` | `{}` | MCP Server 配置（JSON）；字段表见 `docs/05-§2.2`，支持 `${VAR}` 引用密钥 |
-| `MCP_STARTUP_TIMEOUT_SECONDS` | `15` | 启动期连接全部 MCP Server 的**总**超时（并发建连，超时者标 `unavailable`） |
-| `OTEL_ENABLED` / `OTEL_SERVICE_NAME` | `true` / `ai-platform` | 链路追踪开关与服务名（`otel_enabled=false` 时不建 provider） |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` | OTLP gRPC 端点（Jaeger / Collector） |
-| `OTEL_TRACES_SAMPLER_ARG` | `0.1` | 采样率（`0~1`）；本地想看全量链路就设 `1.0` |
-| `METRICS_ENABLED` / `METRICS_HOST` / `METRICS_PORT` | `true` / `0.0.0.0` / `9100` | 指标端口总开关、绑定地址、端口（**`0` = 由 OS 分配随机端口**，不是关闭） |
-| `LOG_LEVEL` | `INFO`（local 为 `DEBUG`） | 日志级别；`log_format=console` 时本地彩色输出 |
+| `INFRA_BACKEND` | `memory`（库内）/ `real`（`.env.example`） | `real` 下依赖不可用直接 `503 DEPENDENCY_UNAVAILABLE`，**不静默退化**成进程内实现 |
+| `TASK_RUNNER` | `inline`（库内）/ `kafka`（`.env.example`） | `none` / `inline` / `kafka` 三档由配置决定装配，不是运行期分支 |
+| `GRPC_ENABLED` / `GRPC_HOST` / `GRPC_PORT` | `false` / `127.0.0.1` / `50051` | 非回环 + `AUTH_ENABLED=false` 会被启动校验拒；无鉴权 gRPC 等于把可写接口开到网卡上 |
+| `METRICS_ENABLED` / `METRICS_PORT` | `true` / `9100` | `METRICS_PORT=0` 是**由 OS 分配随机端口**，不是关闭；真实端口见启动日志 `app.metrics_ready` |
+| `OTEL_ENABLED` / `OTEL_EXPORTER_OTLP_ENDPOINT` | `true` / `http://localhost:4317` | `OTEL_TRACES_SAMPLER_ARG=0.1` 为采样率，本地看全量设 `1.0` |
+| `EMBEDDING_PROVIDER` / `EMBEDDING_MODEL` / `EMBEDDING_DIM` | `hash` / `BAAI/bge-m3` / `1024` | 换模型必须同时改 `EMBEDDING_DIM` 与 `MILVUS_VECTOR_DIM`，否则启动期报 `VECTOR_DIM_MISMATCH` |
+| `RERANKER_PROVIDER` / `RERANKER_MODEL` | `bge` / `BAAI/bge-reranker-v2-m3` | `siliconflow` 档走云端 `/v1/rerank` |
+| `MILVUS_URI` / `MILVUS_COLLECTION` | `http://localhost:19530` / `ai_platform_chunks` | 有 `MILVUS_TOKEN` 时优先 Token 鉴权 |
+| `MCP_SERVERS` / `MCP_STARTUP_TIMEOUT_SECONDS` | `{}` / `15` | JSON 配置，支持 `${VAR}` 引用密钥；字段表见 `docs/05` §2.2 |
+| `AGENT_MAX_STEPS` / `AGENT_TIMEOUT_SECONDS` / `TOOL_TIMEOUT_SECONDS` | `8` / `30` / `10` | 请求里的 `max_steps` **只能调小**；Agent 超时返回 `504`，不编答案 |
 
-### MCP 接入
+| 端口 | 用途 |
+| --- | --- |
+| 8000 | HTTP / SSE（`/api/v1/*`，前缀由 `API_PREFIX` 决定） |
+| 9100 | 指标独立端口（只服务 `GET /metrics`；主应用该路径返回 404） |
+| 50051 | 对内 gRPC（默认关闭） |
+| 6379 / 9092 / 3306 / 19530 / 9000 | Redis / Kafka / MySQL / Milvus / MinIO |
 
-在 `.env` 里写一条 JSON 即可加一个 Server，**不需要改代码**（工具会自动以
-`mcp__{server}__{tool}` 注册进统一工具表，Agent 与 `/tools` 立即可见）：
+| 名称空间 | 具体键 / 主题 / 表 |
+| --- | --- |
+| Redis 短期上下文 | `ctx:{id}`、`ctx:owner:{id}`、`ctx:summary:{id}`、`lock:ctx:{id}` |
+| Redis 任务 | `task:{id}`、`task:idem:{key}`、`task:user:{uid}`、`task:open`、`cancel:{id}`、`retry:zset` |
+| Kafka | `ai.task.<type>`、死信 `ai.task.dlq` |
+| Milvus | `ai_platform_chunks`、`ai_platform_memories`（1024 维） |
+| MySQL | 15 张：AI 独占 7 + 共享 2（`idempotency_record` / `audit_log`）+ 网关独占 6 |
+
+> 以上 10 组是真正会动的开关；其余字段（合计 150 个）见 `app/core/config.py` 与 `docs/13` §5，
+> 本文不复制全量清单。
+
+### 5.1 换 LLM 供应商
+
+走 OpenAI 兼容协议，换供应商只改两个环境变量，代码一行不动：
+
+| 供应商 | `OPENAI_BASE_URL` | `LLM_MODEL` |
+| --- | --- | --- |
+| DeepSeek（默认） | `https://api.deepseek.com/v1` | `deepseek-flash` / `deepseek-v4-pro` |
+| 官方 OpenAI | `https://api.openai.com/v1` | `gpt-4o-mini` |
+| 阿里百炼 | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-plus` |
+| 本地 Ollama / vLLM | `http://localhost:11434/v1`（Ollama 默认；vLLM 默认 8000 与本服务端口冲突，换一个） | 本地模型名（key 随便填） |
+
+> Embedding **不能**跟着这么换：DeepSeek 不提供 embedding。出厂档走硅基流动云端（需
+> `SILICONFLOW_API_KEY`，按 `SILICONFLOW_EMBEDDING_CONCURRENCY` 分批并发），零依赖用 `hash`，
+> 本地权重用 `bge`。换档等于换向量空间或维度，必须换 `MILVUS_COLLECTION`（否则召回静默变差）。
+
+### 5.2 MCP 接入
+
+在 `.env` 里写一条 JSON 就加一个 Server，不改代码：工具自动以 `mcp__{server}__{tool}` 注册进统一工具表，
+Agent 与 `GET /tools` 立即可见。
 
 ```dotenv
-# stdio：本地子进程（注意 command 只能来自服务端配置，不能由请求参数决定）
+# stdio：本地子进程（command 只能来自服务端配置，不能由请求参数决定）
 MCP_SERVERS={"fs":{"command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","D:/docs"],"tools_allowlist":["read_file"],"write_tools":["write_file"]}}
 
 # streamable_http：远端 Server（令牌用 ${VAR} 引用，不落明文）
@@ -308,299 +191,112 @@ MCP_SERVERS={"fetch":{"transport":"streamable_http","url":"http://localhost:3100
 ```
 
 ```powershell
-# 看状态（`required=false` 的 Server 连不上只标 unavailable，不影响启动）
-curl.exe -s http://127.0.0.1:8000/api/v1/mcp/servers
-# 改完上游工具后重载单个 Server（不影响其它 Server）
-curl.exe -s -X POST http://127.0.0.1:8000/api/v1/mcp/servers/fs/reload -H "Content-Type: application/json" -d '{\"force\":false}'
+curl.exe -s http://127.0.0.1:8000/api/v1/mcp/servers   # 状态 / 工具数 / 最近错误 / 往返耗时
+curl.exe -s -X POST http://127.0.0.1:8000/api/v1/mcp/servers/fs/reload `
+  -H "Content-Type: application/json" -d '{\"force\":false}'   # 只重载这一个 Server
 ```
 
-### 切换 LLM 供应商
+`required=false` 的 Server 连不上只标 `unavailable`，不阻断启动；单 Server 走懒重连 + 行内熔断
+（目标名 `mcp:{server}`）；写类工具由 `write_tools` 声明并留审计。
 
-因为走的是 OpenAI 兼容协议，换供应商**只需改两个环境变量**，代码一行不用动：
+## 6. 接口索引（41 条）
 
-| 供应商 | `OPENAI_BASE_URL` | `LLM_MODEL` |
-| --- | --- | --- |
-| DeepSeek（默认） | `https://api.deepseek.com/v1` | `deepseek-flash` / `deepseek-v4-pro` |
-| 官方 OpenAI | `https://api.openai.com/v1` | `gpt-4o-mini` |
-| Moonshot | `https://api.moonshot.cn/v1` | `moonshot-v1-8k` |
-| 阿里百炼 | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-plus` |
-| 本地 vLLM / Ollama | `http://localhost:8000/v1` | 本地部署的模型名（key 随便填） |
+路由按能力域分组，明细一律指向接口表，避免第二份会漂移的清单：
 
-> ⚠️ **Embedding 的换法与 LLM 不同**：DeepSeek 不提供 embedding，本项目默认走
-> **硅基流动云端向量化**（`EMBEDDING_PROVIDER=siliconflow`，需 `SILICONFLOW_API_KEY`：真批量 N 进 N 出、
-> 按 `SILICONFLOW_EMBEDDING_CONCURRENCY` 分批并发，语义见 `docs/10-§7.3.2`）；
-> 也可切回本地权重（`bge`，需下载模型名可解析的 HuggingFace 仓库）或零依赖的 `hash`。
-
-模型加载是**惰性**的，而且**只有本地档才会加载模型**（`EMBEDDING_PROVIDER=bge` 或 `RERANKER_PROVIDER=bge`）：
-只有第一次真正调用 `embed` / `rerank` 时才会下载权重，应用启动不会拉取 —— 出厂档（两个都走云端）**不下载任何权重**。
-国内网络可在 `.env` 中打开 `HF_ENDPOINT=https://hf-mirror.com` 加速。
-
-## Milvus
-
-本地起一个 Milvus（Standalone）：
-
-```powershell
-# 需要先安装 Docker Desktop
-Invoke-WebRequest https://github.com/milvus-io/milvus/releases/download/v2.5.4/milvus-standalone-docker-compose.yml -OutFile docker-compose.yml
-docker compose up -d
-# 默认端口：19530(gRPC) / 9091(HTTP 健康检查) / 2379(etcd)
-```
-
-## MySQL
-
-表结构定义在 `docs/09-数据存储模型.md` §2，已固化为可执行脚本。
-**两个服务共用一个库 `ai_platform`，合计 15 张表**（AI 独占 7 + 共享 2 + 网关独占 6）：
-
-```powershell
-# 1. 建库 + AI 独占 7 张表 + 共享 2 张表（幂等：全部 CREATE ... IF NOT EXISTS，不含任何 DROP）
-mysql --default-character-set=utf8mb4 -u root -p -e "source deploy/mysql/001_init_schema.sql"
-
-# 2. 仅「已存在旧库」需要：给共享表补 method / request_hash / ip / user_agent 并扩宽 uk_idem
-#    （CREATE ... IF NOT EXISTS 对已存在的表是空操作，不会补列）
-mysql --default-character-set=utf8mb4 -u root -p -e "source deploy/mysql/002_align_shared_tables.sql"
-
-# 3. 仅「已存在旧库」需要：给 document_chunk 补 metadata JSON 列（M8 固化切分参数）
-mysql --default-character-set=utf8mb4 -u root -p -e "source deploy/mysql/003_add_chunk_metadata.sql"
-
-# 4. 网关独占的 6 张表（脚本在 ai-platform-go 仓库目录下，仍打在同一个库）
-mysql --default-character-set=utf8mb4 -u root -p -e "source ../ai-platform-go/deploy/mysql/001_gateway_tables.sql"
-
-# 5. 两侧自检：断言值应依次为 1/0/1/1/0/1/4/4 与 6/15/1/0/0/1/2/0/1/0/0/1/0/4/0/1
-mysql --default-character-set=utf8mb4 -u root -p -e "source deploy/mysql/verify_schema.sql"
-mysql --default-character-set=utf8mb4 -u root -p -e "source ../ai-platform-go/deploy/mysql/verify_schema.sql"
-```
-
-> `idempotency_record` 与 `audit_log` 是**两个服务共享**的表：同库同名只能有一张表，
-> 所以 `001_init_schema.sql` 给出的是**并集**定义（网关要的 `method` / `request_hash` /
-> `ip` / `user_agent` 一并包含），网关侧不再重复 `CREATE`。
-
-> **Windows 注意**：不要写 `Get-Content 文件.sql | mysql`（PowerShell 管道会弄坏编码），
-> 也尽量不要让脚本路径含中文（mysql 客户端按 ANSI 解释路径，实测直接报
-> `Failed to open file ... error: 2`）。用 mysql 自带的 `source` 命令，并保持路径为 ASCII。
-
-建表脚本对 `docs/09` 有三处已记录的偏差（`deleted_key` 生成列、`user_settings.cleared_at`、
-`user_memory.source`），原因见 `docs/09-§2.9` 与 `docs/12-§10`。
-
-> 默认 `INFRA_BACKEND=memory` 时不连 MySQL。切到 `real` 后，仓储由
-> `app/infrastructure/storage/mysql.py`（知识库/文档/切片）与 `app/memory/mysql_repo.py`（长期记忆）
-> 用 **SQLAlchemy Core** 实现，另有一份 `app/memory/milvus_index.py` 负责长期记忆的向量索引。
-> 依赖装在可选依赖组里：`uv sync --extra mysql --extra minio --extra redis --extra kafka`。
->
-> **任一依赖初始化失败都不会让服务起不来**：仓储退化为 `Unavailable*`（写接口答
-> `503 DEPENDENCY_UNAVAILABLE`），启动期自检只记日志；连接池按 DSN 进程内共享并引用计数，
-> 关停时统一 dispose（见 `app/infrastructure/mysql/db.py`）。
-> （当前由 `app/infrastructure/storage/unavailable.py` 返回 `503 DEPENDENCY_UNAVAILABLE`）——
-> 表先建好，是为了让仓储实现能直接开工。注意这一项**不属于 M6/M7**
-> （`docs/01-§7` 定义 M6 = MCP + 可观测、M7 = 异步任务），而是后续工作量。
-
-## 下一步 TODO
-
-- [x] **M3 RAG 闭环**：`Retriever` 真实实现（召回 top-k → 合并相邻 → 重排 top-n → token 预算裁剪）+
-      知识库/文档 CRUD + 上传解析入库；回答里的 `[n]` 与 `references[].index` 打通，
-      越界引用会被裁剪并记 `chat.citation_out_of_range_removed`
-- [x] **M4 Agent 闭环**：工具注册表 + 执行器 + Agent Loop（步数/总时长/重复调用三重护栅）+
-      `POST /agent/run` 与 SSE、`GET /tools` 与调试调用；`use_tools=true` 自动转交 Agent 链路；
-      工具改走「pydantic 模型 → `model_json_schema()`」单一事实来源，参数不合法作为**可回复结果**回注
-- [x] **M5 Memory 闭环**：短期上下文（内存 + Redis 两套实现、`SET NX` 锁、摘要覆盖过滤）、
-      摘要压缩（四段结构 / 增量合并 / 5 分钟防抖）、长期记忆（哈希 + 语义两层去重、
-      `0.85/0.92` 双阈值、过期与清空冷静期、作为**独立 system 段**注入）、
-      `memory_save` / `memory_search` 两个内置工具、`TaskDispatcher` 按任务类型分派；
-      轮末抽取与摘要**两条路径都接**（`/chat` 与 `/chat/stream`），幂等键带每轮标记
-- [x] **M6 MCP 与可观测**：
-      MCP 配置校验（未知字段报错、`${VAR}` 展开、名字/超时约束）、
-      stdio 与 `streamable_http` 两种传输（适配层把 SDK 差异关在 `app/mcp/session.py`）、
-      多 Server 并发启动与总超时（`required=true` 失败则拒绝启动）、
-      工具命名空间 `mcp__{server}__{tool}` + allowlist/denylist + `write_tools` 审计、
-      单 Server 状态机（懒重连 + 行内熔断 `mcp:{server}`）、三个 `/mcp/servers*` 接口；
-      **可观测**：20 个 Prometheus 指标（`endpoint` 标签取路由模板、无高基数字段）、
-      独立指标端口（主应用不暴露 `/metrics`）、OTel 链路（**Jaeger trace id == 日志/响应头**）、
-      熔断器状态机、`deploy/observability/` 一键起 Jaeger + Prometheus + Grafana（18 面板）
-- [x] **M7 异步任务与 Worker**：三个执行器（`none` / `inline` / `kafka`）、
-      Redis 任务仓储（幂等键 + 游标分页 + 乐观锁）、Redis pub/sub 事件总线、
-      退避重试 ZSET（Lua 原子认领）、补偿扫描、独立 Worker 进程（`python -m app.worker`，
-      配置不对直接 `exit 2`）、`GET /tasks/{id}/events`（SSE 进度：快照 + 增量 + 心跳），
-      `deploy/infra/compose.yml` 一键起 Redis / Kafka；真机验证：真 Kafka + 两个真进程跑通
-      （`tools/kafka_e2e_check.py`）
-- [x] **M8 真实基础设施落地**：
-      MySQL 仓储（`app/infrastructure/storage/mysql.py` + `app/memory/mysql_repo.py`，SQLAlchemy Core，
-      按 DSN 共享连接池 + 引用计数、唯一键冲突映射成领域错误、原子 `hit_count + 1`、
-      行值游标分页）、MinIO 对象存储（原文档字节落桶）、
-      Milvus 长期记忆集合（`ai_platform_memories`：HNSW/COSINE + `user_id`/`kind`
-      **倒排索引**，没有标量索引就会静默丢召回）、
-      `document_chunk.metadata` 迁移（`deploy/mysql/003_add_chunk_metadata.sql`）、
-      启动期 MySQL 建表自检、依赖故障统一分类成 `503`（`app/infrastructure/mysql/db.py`）；
-      真机验证：`INFRA_BACKEND=real` 下全部 **42 个「路径 + 方法」组合 / 45 次请求**
-      的一键 curl 冒烟（`tools/curl_e2e.ps1`：39 个 2xx + 6 个白名单内的正确负例，
-      0 个非预期失败，退出码表示结论）+ 5 个真依赖集成测试文件
-      （MySQL 仓储 / MySQL 记忆仓储 / Milvus 记忆索引 / MinIO 对象存储 / Redis），
-      逐接口实测响应见 `docs/14-接口 curl 示例.md`
-- [x] 真实环境（`INFRA_BACKEND=real`）下 Milvus 集合与长期记忆向量索引的建表/建索引
-      （启动期 `ensure_ready()` 幂等建集合 + 建索引，落地情况见 `docs/14-接口 curl 示例.md`）
-
-## 对外接口 curl 示例与一键验证
-
-[`docs/14-接口 curl 示例.md`](docs/14-接口%20curl%20示例.md) 给出**每一个对外接口**的
-可直接执行 curl 命令，以及**真实依赖下实测的响应** —— 包括 409 / 404 这些
-「设计上的正确负例」（取消已完成的任务、查未配置的 MCP Server），
-它们和 2xx 一起被记录下来，否则错误分支等于没验证。
-
-```powershell
-# 前提：依赖已起、服务已启动、INFRA_BACKEND=real（见 docs/14-§2）
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/curl_e2e.ps1
-# LOG=…\curl_log.txt
-# REQUESTS=45 PASSED=39 UNEXPECTED=0
-```
-
-脚本遍历全部 42 个「路径 + 方法」组合（共 45 次请求，含 3 个 SSE 端点），
-把非 2xx 与白名单里的正确负例逐条比对，
-最后**用退出码表示结论**：
-
-| 退出码 | 含义 |
-| --- | --- |
-| `0` | 全部请求要么 2xx，要么落在白名单里的正确负例上 |
-| `1` | 存在非预期失败（脚本会打印 `UNEXPECTED:` 明细） |
-
-「跑通了没有」因此是机器可判定的，不靠人眼看日志。
-
-## 异步任务（Redis / Kafka / Worker / SSE）
-
-三个执行器**由配置决定装配**（而不是运行期分支）：
-
-| `TASK_RUNNER` | 谁在跑 | 任务存储要求 | 适用 |
+| 分组 | 条数 | 路径 | 接口表 |
 | --- | --- | --- | --- |
-| `none` | 只建任务不执行 | 任意 | 契约测试 / 演示「排队」 |
-| `inline` | API 进程自己跑 | 任意 | 单进程开发（大文件会拖垮在线请求） |
-| `kafka` | **独立 Worker 进程** | 必须 `INFRA_BACKEND=real` | 生产形态 / **`.env.example` 出厂默认** |
+| 健康检查 | 3 | `/health`、`/health/live`、`/health/ready` | `docs/14` §4 |
+| 对话与模型 | 3 | `/chat`、`/chat/stream`、`/models` | `docs/03` §1 |
+| Agent 与工具 | 4 | `/agent/run`、`/agent/run/stream`、`/tools`、`/tools/{name}/invoke` | `docs/04` §4 |
+| 知识库与文档 | 11 | `/knowledge-bases*`、`/documents/*` | `docs/06` §2、§3 |
+| 异步任务 | 5 | `/tasks*`（含 `/tasks/{id}/events` SSE） | `docs/08` §4 |
+| Memory | 12 | `/memories*`、`/memory-settings`、`/conversations/{id}/context`、`/conversations/{id}/summary*` | `docs/07` §6 |
+| MCP | 3 | `/mcp/servers*` | `docs/05` §5 |
 
-> `app/core/config.py` 里的**库内默认**仍是 `inline`（测试与单进程开发零依赖），
-> 而 `.env.example`（也就是 `Copy-Item` 出来的那份 `.env`）给的是 **`kafka` + `real`**：
-> 隔离档是推荐形态，`inline` 是明确的降级选择而不是起点。
+三点口径，避免「41 / 42」这类数字被反复误读：
 
-```powershell
-# 1. 起基础设施
-docker compose -f deploy/infra/compose.yml up -d redis            # 任务仓储/总线/重试都在 Redis
-docker compose -f deploy/infra/compose.yml --profile kafka up -d   # 再加单节点 Kafka
+* **41** 是 `@router.*` 装饰器数；`tools/curl_e2e.ps1` 按「路径 + 方法」组合算是 **42 个组合 / 45 次请求**
+  （含 3 个 SSE 端点），两者差 1 条，待逐条对齐（见 §9）。
+* 统一错误信封为 `{"error":{"code","message","details"}}`，错误码总表与 SSE 帧规范见 `docs/02` §5、§6；
+  常见：`503 DEPENDENCY_UNAVAILABLE`、`409 KB_NOT_EMPTY`、`404 SUMMARY_UNAVAILABLE`、`404 MCP_SERVER_NOT_FOUND`。
+* 逐接口的可执行 curl 与真实依赖下的实测响应（含 409 / 404 这些**设计上的正确负例**）见
+  [`docs/14-接口 curl 示例.md`](docs/14-接口%20curl%20示例.md)。
 
-# 2. API（投递方）—— .env 已是 kafka + real；若不是，临时覆盖也行：
-$env:INFRA_BACKEND="real"; $env:TASK_RUNNER="kafka"
-uv run uvicorn app.main:app --reload
+## 7. 关键取舍
 
-# 3. Worker（消费方，另开终端）
-uv run python -m app.worker
+| 项 | 选择 | 原因 / 留下的防线 |
+| --- | --- | --- |
+| Agent 链路 | 自研 Loop，不是 LangGraph | 三重护栅（步数 8 / 总时长 30s / 重复调用回注 `duplicate_call`）需要精确控制「何时回注、何时截断」；`app/agent/graph/` 的图保留为占位，**未接入**，`generate` 仍是 TODO |
+| 向量库 | 设计原选 Qdrant，实现是 **Milvus** | `langchain-milvus` 集成与生态更顺；`user_id`/`kind` 标量倒排索引必须建——没有它不会报错，只静默丢召回 |
+| 任务执行 | 配置决定装配（`none`/`inline`/`kafka`） | 大文件解析/向量化不拖垮在线请求；Worker 自己在错误配置下 exit 2，因为内存任务存储跨进程只会静默转圈 |
+| 两库共存 | 与网关共用一个 MySQL 库 | `idempotency_record` / `audit_log` 同库同名只能一张表，`001_init_schema.sql` 给的是并集定义，网关侧不再重复 `CREATE` |
+| 对内通信 | `Chat`/`ChatStream` 走 gRPC，其余 HTTP 透传 | SSE 不进 gRPC，取消传播用连接断开表达；gRPC 独立进程，故障域与 HTTP 分开 |
+| 短期上下文 | `memory` / `real` 两套实现，不自动降级 | `real` 下 Redis 不可用直接 503 —— 静默退化成进程内会让「多实例共享上下文」变成假象 |
+| 重试 | Redis ZSET 延迟队列 + 补偿扫描 | 退避重试不占 Worker 并发额度；补偿扫描兜「建好了但没投出去」的 `PENDING` |
+| 指标端口 | 独立 9100，主应用不暴露 `/metrics` | 指标是运维能力、不是可用性前置条件：端口被占不阻断启动，只用 `app.metrics_ready port=0` 提示；判断「抓到的是不是我们」看 `ai_build_info` 哨兵，不看 `up`（9100 常驻别的 Go exporter 时，job 是 `up` 但全是 `go_*`） |
 
-# 4. 看进度流（-N 关缓冲，--max-time 自己控制等多久）
-curl.exe -sS -N --max-time 30 -D - http://127.0.0.1:8000/api/v1/tasks/{task_id}/events -H "Authorization: Bearer <token>"
-```
+## 8. 质量门禁（本机实测）
 
-Worker 启动会先自检，不满足就直接拒绝启动：
+| 命令 | 实测结果 |
+| --- | --- |
+| `uv run ruff format --check .` | `232 files already formatted`（exit 0） |
+| `uv run ruff check .` | `All checks passed!`（exit 0） |
+| `uv run mypy app` | `Success: no issues found in 147 source files`（exit 0） |
+| `uv run pytest` | **1698 collected / 1688 passed / 10 skipped / 0 failed**，112.8 s |
+| `uv run pytest --cov=app --cov-report=term-missing` | **89%**（11561 语句 / 1315 未覆盖） |
 
-```text
-$env:INFRA_BACKEND="memory"; uv run python -m app.worker
-ERROR app.worker  worker.misconfigured  reason=任务存储不是共享的（INFRA_BACKEND=memory）
-      hint=Worker 与 API 必须是两个进程，请用 INFRA_BACKEND=real（Redis）
-# 退出码 2
-```
-
-这是故意的：内存任务存储是**进程私有**的，Worker 拿到消息后查不到那行任务，
-表现为「消息被消费了但任务永远停在 `QUEUED`」—— 一个不报错、只静默转圈的故障。
-
-跨进程验真（不启 uvicorn，用一个脚本把 API 侧与 Worker 侧都跑一遍）：
-
-```powershell
-$env:INFRA_BACKEND="real"; $env:TASK_RUNNER="kafka"
-uv run python tools/kafka_e2e_check.py   # 建任务 → 投 Kafka → 等 Worker 执行 → 打印事件帧
-```
-
-> 脚本用 `memory_extract` 任务类型，因为它不需要 MySQL / MinIO / Milvus，
-> 能在只起 Redis + Kafka 的前提下跑通全链路。
-
-## 可观测性
-
-应用侧只需开三个开关（`.env`）：
-
-```dotenv
-OTEL_ENABLED=true
-OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
-METRICS_ENABLED=true
-METRICS_PORT=9100
-```
-
-然后一键起本地观测栈（Jaeger 看链路、Prometheus 抓指标、Grafana 看板）：
+* 10 个 `@pytest.mark.integration` 用例在本次运行中**按设计跳过**：未起 Redis / MySQL / Milvus / MinIO，
+  不可达时 1 秒内 skip（先 TCP 探测，不叫 redis-py 的重试退避带着用例干等）；覆盖率 89% 同样受此影响。
+* 集成层 5 个文件覆盖 4 类真依赖：Redis（Lua 脚本、pub/sub 不重放、并发幂等键、`ZSET` 原子认领）、
+  MySQL 仓储、MySQL 记忆仓储、Milvus 记忆索引、MinIO 对象存储。Redis 夹具会 `FLUSHDB`，
+  因此**拒绝指向 db 0**（默认 `AI_TEST_REDIS_URL=redis://localhost:6379/15`）。
+* 外部依赖一律走替身（`tests/support/`：脚本化 LLM、确定性向量化、假 MCP Server、假消息总线），
+  所以「片段顺序」「断连是否停掉上游」「熔断是否真的打开」都能被机械断言。
+* 接口级验真另走脚本：`tools/curl_e2e.ps1` 输出 `REQUESTS=45 PASSED=39 UNEXPECTED=0`，
+  39 个 2xx + 6 个白名单内正确负例，**退出码即结论**（0 = 无预期外失败，1 = 打印 `UNEXPECTED:` 明细）。
 
 ```powershell
-# 在 ai-platform/ 目录下
-docker compose -f deploy/observability/compose.yml up -d
-# Grafana     http://localhost:3000   （匿名可看；admin/admin）→「ai-platform 总览」
-# Prometheus  http://localhost:9090
-# Jaeger UI   http://localhost:16686
-# 清理（含数据卷）
-docker compose -f deploy/observability/compose.yml down -v
+uv run pytest                      # unit + contract + integration
+uv run pytest -m "not integration" # 不碰真基础设施（无 Docker 时用）
+uv run ruff check . ; uv run mypy app
 ```
 
-排障路径（场景 S10）：从响应头或日志里拿 `trace_id` →
-Jaeger 搜该 id 得到完整 span 树（`chat.request → rag.retrieve → llm.invoke → tool.call`）→
-同一 id 在日志里能查到召回 chunk、重排分数与降级原因。
+## 9. 现状与差距
 
-> Prometheus 抓的是**宿主机**上的 `:9100/metrics`（compose 里用 `host.docker.internal`），
-> 所以应用不必跑在容器里。`METRICS_PORT=0` 时端口由 OS 分配，
-> 启动日志里的 `app.metrics_ready` 会打出真实端口。
+### 9.1 未实现 / 占位
 
-### 指标端口排查（实测踩过）
+| 项 | 状态 | 说明 |
+| --- | --- | --- |
+| LangGraph 状态图 | **占位，未接入** | `app/agent/graph/` 的 `retrieve` / `generate` 两个节点都返回空值，没有调用方；主链路是 `app/agent/loop.py` |
+| Kubernetes 清单 | **没有** | 仓库内只有 Docker Compose（本地基础设施 + 可观测栈），没有 Deployment / Service / Helm |
+| CI 流水线 | **没有** | 仓库无任何 CI 配置；§8 的数字全部是本机手工执行的结果 |
+| 检索评测 | 脚本在，评测集缺 | `tests/eval/` 有入口，真实 recall@5 未跑（需要 BGE 权重与标注集） |
+| MCP `prompts` / `sampling` | 按 SRS 明示不做 | 只做 tools 能力 |
+| Go 侧未做项 | 见根 README | 审计查询接口、`SIGTERM` 实机验收等不在本仓 |
 
-**`METRICS_PORT` 与 `prometheus.yml` 的 `targets` 必须指同一个端口**。
-端口被占时**不会**阻断启动（指标是运维能力，不是可用性前置条件），
-只会有这样一对方便自查的日志：
+### 9.2 已知长期缺陷
 
-```text
-WARNING app.metrics.server  metrics.server_failed  port=9100 error=OSError
-INFO    app.main            app.metrics_ready      host=0.0.0.0 port=0     # ← 0 表示没起来
-```
+| 症状 | 影响面 | 现状 |
+| --- | --- | --- |
+| 长驻 Python gRPC 进程运行约 3 小时后，所有 `Chat` 退化为 `503 DEPENDENCY_UNAVAILABLE`；Python 直连探测同样失败（排除网关侧） | 只影响 gRPC 通道，重启进程即恢复 | **根因未定位**，无自动告警，只表现为「网关突然全红」。现场记录见 `ai-platform-go/docs/08` §6.4；当前手段是监控 503 比例 + 定期重启 |
 
-**警惕「假绿」**：本机实测 9100 上常驻着另一个 Go exporter，
-此时 Prometheus 里该 job 的 `health` 是 `up`、样本数也不为 0 ——
-但抓到的全是 `go_*` / `node_*` 指标，`ai_*` 一个都没有。所以
+### 9.3 文档与实测口径不一致（以代码与本文数字为准）
 
-```powershell
-# 抓到的到底是不是我们？
-curl.exe -s "http://localhost:9090/api/v1/label/__name__/values" | Select-String "ai_build_info"
-```
+| 项 | 文档口径 | 实测 |
+| --- | --- | --- |
+| Python 路由数 | 41（openapi）/ 42（curl 冒烟） | `app/api/**` **41** 个 `@router.*`；curl 脚本 42 个路径+方法组合，差 1 条待逐条对齐 |
+| `ai_*` 指标数 | 曾记 20 | `metrics.py` **19** 个 |
+| pytest 用例数 | 曾记 1284 / 1616 | **1698 collected / 1688 passed / 10 skipped** |
+| 覆盖率 | 90% | **89%**（未起基础设施，10 个集成用例跳过） |
+| 向量库 | 设计文档写 Qdrant | 实现是 **Milvus** |
+| 服务拆分 | 设计原写 User / Conversation / Task 三个微服务 | Go 侧**单进程多模块**；Python 侧同样是单进程内按域分包 |
 
-判断手段就这一条：**看目标里有没有 `ai_build_info`**（它是常量 1 的哨兵指标），
-而不是看目标是否 `up`。
+## 10. 文档索引
 
-## 测试
-
-```powershell
-uv run pytest                 # 全部（unit + contract + integration）
-uv run pytest tests/unit      # 纯逻辑单测
-uv run pytest tests/contract  # 接口契约测试
-uv run pytest -m "not integration"  # 不碰真基础设施（CI/无 Docker 时用）
-```
-
-**集成测试层**（`tests/integration/`，当前只含真 Redis）：
-
-```powershell
-$env:AI_TEST_REDIS_URL="redis://localhost:6379/15"   # 默认就是它（db 15，不是 db 0）
-uv run pytest tests/integration
-```
-
-* Redis 不可达时**1 秒内 skip**（先做 TCP 探测，不叫 redis-py 的重试退避带着 19 个用例耗 78 秒）；
-* 每个用例前 `FLUSHDB`，所以**拒绝指向 db 0** —— 宁可 skip 也不帮你把开发库洗了；
-* 这里跑的是替身替不掉的东西：真实连接上的 Lua 脚本、pub/sub 的「不重放」语义、
-  并发创建同一幂等键只产生一条任务、两个并发认领者身上 `ZSET` 的原子性。
-
-测试纪律（`docs/11-§2`）：
-
-* 每个用例使用独立资源标识，互不干扰；
-* 配置一律用 `Settings(_env_file=None, ...)` 构造，**不读开发机 `.env`**；
-* 外部依赖（LLM / 向量库）一律走替身：`tests/support/fake_llm.py` 会记录发给模型的
-  messages，因此「片段顺序」「断连是否停掉上游」这类事情都能被机械断言。
-* MCP 的替身是 `tests/support/fake_mcp.py`：它直接替掉传输层（`open_session`），
-  因此用例**不需要 npx / 外网 / 子进程**，却能真实跑完「建连 → 工具发现 → 调用 → 重载」
-  与失败分支（按阶段划分故障开关：`fail_connect` / `fail_calls` / `delay`）。
-* 可观测性也有契约测试（`tests/contract/test_observability.py`）：真的去独立端口抓一次
-  `/metrics`、真的断言标签里不出现用户/路径参数、真的把熔断器打到 `open` 再看指标。
-* 记忆相关替身见 `tests/support/memory.py`：`ScriptedEmbedding` 让**每个未登记文本落在互不
-  相同的方向上**（否则 N 条不同记忆会在 0.92 语义去重下塌成 1 条，断言就假失败了），
-  `MemoryScriptLLM` 按「system 里有没有『摘要』」区分摘要与抽取两类调用。
-
+| 文档 | 内容 |
+| --- | --- |
+| [`docs/README.md`](docs/README.md) | SRS 总览：范围边界、阅读路径、术语、现状 |
+| [`docs/01`–`11`](docs) | 需求规格：总体需求 · 接口与错误码 · 对话流式 · Agent · MCP · RAG · Memory · 异步任务 · 数据模型 · 非功能与可观测 · 验收标准 |
+| [`docs/12-实现问题记录.md`](docs/12-实现问题记录.md) | 故障史：症状 / 根因 / 修法 / 留下的防线 |
+| [`docs/13-技术设计说明.md`](docs/13-技术设计说明.md) | 分层与装配、各链路设计、扩展点、已知取舍 |
+| [`docs/14-接口 curl 示例.md`](docs/14-接口%20curl%20示例.md) | 逐接口 curl + 真实依赖下实测响应（含正确负例） |
