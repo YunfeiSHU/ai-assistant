@@ -25,7 +25,7 @@ flowchart TD
 
 ### 1.2 与检索的关系
 
-`use_tools=false` 时，RAG 是**前置固定步骤**（一次检索 → 一次生成），即 `app/agent/graph/` 现有骨架的 `retrieve → generate`。
+`use_tools=false` 时，RAG 是**前置固定步骤**（一次检索 → 一次生成），即实际链路的「前置检索 → 生成」。
 `use_tools=true` 时，RAG 改为**由模型自主决定**是否调用 `kb_retrieve` 工具，可多次调用、可换 query 重试。
 
 | 模式 | 检索触发 | 检索次数 | 适用 |

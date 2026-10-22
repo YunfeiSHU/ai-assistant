@@ -53,7 +53,7 @@
 | 错误与鉴权 | 统一错误信封、错误码总表、JWT 校验、trace_id 贯通 | — |
 | 对话 | `POST /chat`、`POST /chat/stream`、`GET /models`；`use_rag=true` 注入片段与 `references`，`use_tools=true` 转交 Agent 链路 | — |
 | 上下文装配 | system→memory→summary→history→rag→query；按 07-§4.2 确定性裁剪；长期记忆作为**独立** system 段注入 | — |
-| Agent | 主链路是自研 `app/agent/loop.py`（步数 / 总时长 / 重复调用三重护栅）+ `POST /agent/run`、`/agent/run/stream` | `app/agent/graph/` 的 LangGraph 图**未接入主链路**，`generate` 节点仍是 TODO |
+| Agent | 主链路是自研 `app/agent/loop.py`（步数 / 总时长 / 重复调用三重护栅）+ `POST /agent/run`、`/agent/run/stream` | 设计初期考虑过 LangGraph 状态图，最终未采用，仓库内无状态图代码 |
 | 工具 | `app/tools/`（`ToolSpec` + 注册表 + 执行器 + 服务）+ 6 个内置工具（含 `memory_save` / `memory_search`）；`GET /tools`、`POST /tools/{name}/invoke`（仅 local/dev） | `http_fetch` 默认关闭 |
 | MCP | `app/mcp/`：`extra="forbid"` + `${VAR}` 展开、stdio 与 `streamable_http` 两种传输、多 Server 并发启动 + 总超时、状态机与懒重连、行内熔断（`mcp:{server}`）、命名空间 `mcp__{server}__{tool}`、allowlist/denylist 与 `write_tools` 审计；`/mcp/servers*` 三个接口 | 不代理 MCP 的 `prompts` / `sampling`（SRS 明示不做） |
 | RAG | 解析（pdf/docx/md/html/txt，扩展名 + 魔数双校验）→ 结构感知切片 → 嵌入 → 落库；召回 → 合并相邻 → 重排 → token 预算裁剪；`[n]` ↔ `references[].index` + `content_sha256` 溯源 | 设计原选 Qdrant，实现是 **Milvus**；重排默认 `RERANKER_PROVIDER=bge`（`config.py` 出厂默认，`.env.example` 出厂档改走硅基流动云端），`INFRA_BACKEND=memory` 时检索走进程内实现 |

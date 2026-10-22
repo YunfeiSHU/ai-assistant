@@ -49,7 +49,7 @@ flowchart TB
     GW --> REDIS
 ```
 
-图里没画 `langgraph`：`app/agent/graph/` 是**未接入主链路的占位**，`generate` 节点仍是 TODO，
+图里没有 `langgraph`：设计初期考虑过 LangGraph 状态图，最终未采用，
 真正在跑的是 `app/agent/loop.py` 的自研循环。三条与图对应的实现事实：
 
 - **对外 HTTP / SSE 全部由 Gin 承担**；Kratos v2.8.4 只在 `internal/data/ai/grpc.go` 里做 `kratosgrpc.DialInsecure`，
@@ -97,7 +97,7 @@ AI 独占 7 张 + 共享 2 张在 [`ai-platform/deploy/mysql`](./ai-platform/dep
 | --- | --- |
 | 语言 | **Python 3.12**（`.python-version` 固定：`torch` / `transformers` / `FlagEmbedding` 对更高版本适配不全） |
 | Web / 配置 | FastAPI + Uvicorn（全异步，`create_app(settings)` 支持注入配置）；Pydantic v2 + pydantic-settings，配置唯一来源 `app/core/config.py`，启动期 `validate_for_startup()` |
-| LLM 编排 | 主链路是**自研 Agent Loop**；`langgraph` 仅占位（`app/agent/graph/` 未接入，`generate` 节点 TODO） |
+| LLM 编排 | 主链路是**自研 Agent Loop**；设计初期考虑过 LangGraph 状态图，最终未采用。`langgraph` 已不是直接依赖，仅随 `langchain` 传递安装 |
 | LLM 供应商 | OpenAI 兼容协议，默认 DeepSeek；换 Moonshot / 百炼 / 本地 vLLM 只改 `base_url` + 模型名 |
 | 嵌入 | 四档 `EMBEDDING_PROVIDER=siliconflow\|ark\|bge\|hash`。出厂 `siliconflow`（`Qwen/Qwen3-Embedding-0.6B`，1024 维，不占本机算力）；`bge` 本地档 `BAAI/bge-m3`；`hash` 为测试用零依赖词法向量 |
 | 重排 | 两档 `RERANKER_PROVIDER=siliconflow\|bge`（显式枚举，早期按模型名猜会静默退化成不重排）。云端 `Qwen/Qwen3-Reranker-0.6B` 20 条候选 320ms；本地 `bge-reranker-v2-m3` 同条件 70~83s（CPU，不可上线） |
@@ -173,7 +173,7 @@ Go 侧 `internal/server/http.go` 有 **58 处路由注册**，分组清单见 [`
 
 | 决策 | 选择 | 备选 | 理由与代价 |
 | --- | --- | --- | --- |
-| Agent 编排 | **自研 Agent Loop**（`app/agent/loop.py`） | LangGraph 状态图 | 三重护栅、`tool_calls` 轨迹与降级原因都可被单测断言；LangGraph 保留为占位，未接主链路 |
+| Agent 编排 | **自研 Agent Loop**（`app/agent/loop.py`） | LangGraph 状态图（设计初期备选） | 三重护栅、`tool_calls` 轨迹与降级原因都可被单测断言；LangGraph 最终未采用，状态图没有落地 |
 | 向量库 | **Milvus**（HNSW + COSINE + 标量倒排索引） | Qdrant（设计原选） | 与 `langchain-milvus` 集成更顺且本机已验证；代价是多带 etcd + 自带 MinIO 的运维 |
 | 内部通信 | **HTTP + SSE 默认**，gRPC 仅 `Chat` / `ChatStream` | 全量 gRPC | 少一层 proto 维护，SSE 天然适合流式透传，取消用连接断开表达；代价是两套客户端各自维护 |
 | 微服务拆分 | Go 侧**单进程多模块** | User / Conversation / Task 三个服务 | 三者共享同一 MySQL 事务边界，拆进程只引入分布式事务而无收益 |
@@ -276,7 +276,7 @@ go test ./...
 
 1. **没有 CI，也没有 Kubernetes 清单**：仓库内只有 Docker Compose（本地基础设施 + 可观测栈）；部署形态（Deployment + Service）是设计目标，不是既成事实。
 2. **没有检索评测集**：改切分、换 embedding、调 `MERGE_FILL_RATIO` 都缺量化验收手段，是当前最大的流程缺口。
-3. **LangGraph 只是占位**：`app/agent/graph/` 未接入主链路、`generate` 节点仍是 TODO；MCP 的 `prompts` / `sampling` 按 SRS 明示不做。
+3. **MCP 的 `prompts` / `sampling` 按 SRS 明示不做**；设计初期考虑过 LangGraph 状态图，最终未采用，Agent 主链路是自研 Agent Loop。
 4. **网关侧未做**：`GET /audit-logs` 只落库不提供查询；容器化与 `SIGTERM` 实机验收缺席（Windows 不提供 `SIGTERM`）；对记忆 / 工具 / MCP 只做透传，不含本土逻辑。
 5. **一处已知长期缺陷**：长驻的 Python gRPC 进程跑约 3 小时后，所有 `Chat` 退化为 `503 DEPENDENCY_UNAVAILABLE`（Python 直连探测同样失败，可排除网关），**重启进程即恢复**；根因未定位，运维上按定期重启兜底（[`docs/08`](./ai-platform-go/docs/08-实现进度与运行手册.md) §6.4-4）。
 
@@ -302,7 +302,7 @@ go test ./...
 | 内部通信 | gRPC | `Chat` / `ChatStream` 走 **gRPC**；其余走 **HTTP 透传**（SSE 不进 gRPC） | 少一层 proto 维护；SSE 天然适合流式透传，取消可用连接断开表达 |
 | 对外 HTTP 框架 | Kratos 或 Gin 二选一 | **Gin 承担全部对外 HTTP/SSE**，Kratos 只用于对内 gRPC 拨号 | 避免框架叠加的复杂度 |
 | 微服务拆分 | User / Conversation / Task 三个服务 | Go 侧**单进程多模块** | 三者共享同一 MySQL 事务边界，拆进程会引入分布式事务而无收益 |
-| Agent 编排 | LangGraph 状态图 | **自研 Agent Loop**，`langgraph` 仅占位 | 护栅、轨迹、降级原因都可机械断言；占位保留以留扩展位 |
+| Agent 编排 | LangGraph 状态图 | **自研 Agent Loop**；LangGraph 状态图未落地 | 护栅、轨迹、降级原因都可机械断言；设计初期考虑、最终未采用 |
 | 基础设施归属 | Go 侧也用 MinIO 与 Kafka | 两者由 Python **独占** | Go 的 Redis Key 空间与客户端集合按此裁定收窄 |
 
 ### 优化建议索引

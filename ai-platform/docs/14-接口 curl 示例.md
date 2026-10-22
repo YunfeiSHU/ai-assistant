@@ -170,7 +170,7 @@ curl -s -w ' [%{http_code}]' -X POST http://127.0.0.1:8000/api/v1/tasks/task_01M
 
 ## 7. 对话、Agent 与会话记忆
 
-> Agent 跑的是自研 Agent Loop（`app/agent/loop.py`）；`app/agent/graph/` 是 LangGraph 占位、未接入主链路（`generate` 节点仍是 TODO），不要按图编排去理解 `steps`。
+> Agent 跑的是自研 Agent Loop（`app/agent/loop.py`）；设计初期考虑过 LangGraph 状态图，最终未采用，不要按图编排去理解 `steps`。
 
 ### 7.1 `POST /chat`
 

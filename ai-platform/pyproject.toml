@@ -1,7 +1,7 @@
 [project]
 name = "ai-platform"
 version = "0.1.0"
-description = "基于 FastAPI + LangChain/LangGraph 的 AI 平台服务（RAG + Agent + MCP）"
+description = "基于 FastAPI + LangChain 的 AI 平台服务（RAG + Agent + MCP）"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -12,7 +12,6 @@ dependencies = [
     "langchain-community>=0.4.2",
     "langchain-milvus>=0.4.0",
     "langchain-openai>=1.6.6",
-    "langgraph>=1.2.12",
     "mcp>=2.2.0",
     "opentelemetry-exporter-otlp-proto-grpc>=1.45.0",
     "opentelemetry-sdk>=1.45.0",

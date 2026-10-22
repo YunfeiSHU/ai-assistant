@@ -27,7 +27,7 @@ MCP 工具接入、异步任务（Kafka + 独立 Worker）与可观测（OTel + 
 | Web | FastAPI + Uvicorn | `create_app(settings)` 可注入配置；全异步 |
 | 校验 / 配置 | Pydantic v2 + pydantic-settings | 唯一事实来源 `app/core/config.py::Settings`，启动期 `validate_for_startup()` |
 | LLM 客户端 | 自研 OpenAI 兼容适配器（`app/llm/`） | 默认 DeepSeek；换供应商只改 `OPENAI_BASE_URL` + `LLM_MODEL` |
-| Agent 主链路 | **自研 Agent Loop**（`app/agent/loop.py`） | 步数 / 总时长 / 重复调用三重护栅；`langgraph` 状态图只在 `app/agent/graph/` 做占位，**未接入主链路**，`generate` 节点仍是 TODO |
+| Agent 主链路 | **自研 Agent Loop**（`app/agent/loop.py`） | 步数 / 总时长 / 重复调用三重护栅；设计初期考虑过 LangGraph 状态图，最终未采用，仓库内没有状态图代码 |
 | Embedding | 默认 `hash`（词法向量，零下载）｜本地档 `bge`（`BAAI/bge-m3`）｜云端档 `siliconflow` | `.env.example` 出厂档 = 硅基流动 `Qwen/Qwen3-Embedding-0.6B`（1024 维、真批量 N 进 N 出）；本地档也是 1024 维但**向量空间不同，换档必须换集合名** |
 | Rerank | 默认 `bge`（`BAAI/bge-reranker-v2-m3` 本地交叉编码器）｜云端 `siliconflow` | 出厂档 = `Qwen/Qwen3-Reranker-0.6B`（20 条候选实测 320ms）；两者都惰性加载，出厂档不下载权重 |
 | 向量库 | **Milvus**（PyMilvus + langchain-milvus） | 集合 `ai_platform_chunks` / `ai_platform_memories`，HNSW/COSINE + `user_id`/`kind` 标量倒排索引 |
@@ -48,7 +48,7 @@ MCP 工具接入、异步任务（Kafka + 独立 Worker）与可观测（OTel + 
 | `app/application/` | 用例编排：context 装配 / chat / agent / memory |
 | `app/schemas/` | Pydantic 请求 / 响应模型（逐条对齐 SRS） |
 | `app/llm/` | LLM 协议 + OpenAI 兼容适配器 + 上游异常映射 |
-| `app/agent/` | `loop.py` 主链路；`graph/` 为 LangGraph 占位（未接入） |
+| `app/agent/` | `loop.py` 主链路（自研 Agent Loop）；设计初期的 LangGraph 状态图未采用 |
 | `app/tools/` | ToolSpec / 注册表 / 执行器（读并发、写串行、超时、截断）/ 内置工具：`kb_retrieve`、`calculator`、`current_time`、`http_fetch`、`memory_save`、`memory_search` |
 | `app/rag/` | 解析（pdf/docx/md/html/txt，扩展名 + 魔数双校验）、结构感知切片、embedding、reranker、retriever、Milvus 向量库 |
 | `app/memory/` | 短期上下文（内存 / Redis 两套）、摘要、长期记忆、抽取、偏好、记忆向量索引 |
@@ -240,7 +240,7 @@ curl.exe -s -X POST http://127.0.0.1:8000/api/v1/mcp/servers/fs/reload `
 
 | 项 | 选择 | 原因 / 留下的防线 |
 | --- | --- | --- |
-| Agent 链路 | 自研 Loop，不是 LangGraph | 三重护栅（步数 8 / 总时长 30s / 重复调用回注 `duplicate_call`）需要精确控制「何时回注、何时截断」；`app/agent/graph/` 的图保留为占位，**未接入**，`generate` 仍是 TODO |
+| Agent 链路 | 自研 Loop，不是 LangGraph | 三重护栅（步数 8 / 总时长 30s / 重复调用回注 `duplicate_call`）需要精确控制「何时回注、何时截断」；LangGraph 状态图是设计初期的备选，最终未采用 |
 | 向量库 | 设计原选 Qdrant，实现是 **Milvus** | `langchain-milvus` 集成与生态更顺；`user_id`/`kind` 标量倒排索引必须建——没有它不会报错，只静默丢召回 |
 | 任务执行 | 配置决定装配（`none`/`inline`/`kafka`） | 大文件解析/向量化不拖垮在线请求；Worker 自己在错误配置下 exit 2，因为内存任务存储跨进程只会静默转圈 |
 | 两库共存 | 与网关共用一个 MySQL 库 | `idempotency_record` / `audit_log` 同库同名只能一张表，`001_init_schema.sql` 给的是并集定义，网关侧不再重复 `CREATE` |
@@ -277,11 +277,11 @@ uv run ruff check . ; uv run mypy app
 
 ## 9. 现状与差距
 
-### 9.1 未实现 / 占位
+### 9.1 未实现 / 未采用
 
 | 项 | 状态 | 说明 |
 | --- | --- | --- |
-| LangGraph 状态图 | **占位，未接入** | `app/agent/graph/` 的 `retrieve` / `generate` 两个节点都返回空值，没有调用方；主链路是 `app/agent/loop.py` |
+| LangGraph 状态图 | **未采用** | 设计初期考虑过，最终未落地；主链路是 `app/agent/loop.py`，仓库内没有 LangGraph 节点/状态图代码 |
 | Kubernetes 清单 | **没有** | 仓库内只有 Docker Compose（本地基础设施 + 可观测栈），没有 Deployment / Service / Helm |
 | CI 流水线 | **没有** | 仓库无任何 CI 配置；§8 的数字全部是本机手工执行的结果 |
 | 检索评测 | 脚本在，评测集缺 | `tests/eval/` 有入口，真实 recall@5 未跑（需要 BGE 权重与标注集） |
