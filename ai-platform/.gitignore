@@ -58,6 +58,10 @@ Thumbs.db
 *.log
 logs/
 
+# ---------- RAG 评测产出物 ----------
+# 评测结果随环境/模型档位变化且可复现，只入库 dataset.jsonl 与 run_eval.py
+tests/eval/results-*.json
+
 
 Python项目代码调整规范.md
 .vscode

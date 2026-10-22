@@ -1,0 +1,61 @@
+{"id": "q01", "type": "fact", "query": "免费版每月最多可以发起多少次对话？", "gold_doc_ids": ["01-产品与套餐"], "gold_spans": ["500 次对话"]}
+{"id": "q02", "type": "paraphrase", "query": "专业版每月的对话额度是多少？", "gold_doc_ids": ["01-产品与套餐"], "gold_spans": ["20000 次对话"]}
+{"id": "q03", "type": "paraphrase", "query": "企业版对对话次数有限制吗？", "gold_doc_ids": ["01-产品与套餐"], "gold_spans": ["不设上限"]}
+{"id": "q04", "type": "fact", "query": "免费版能同时开几路对话？", "gold_doc_ids": ["01-产品与套餐"], "gold_spans": ["1 路对话"]}
+{"id": "q05", "type": "fact", "query": "专业版最多可以建多少个知识库？", "gold_doc_ids": ["01-产品与套餐"], "gold_spans": ["50 个知识库"]}
+{"id": "q06", "type": "fact", "query": "免费版单个上传文件最大是多少？", "gold_doc_ids": ["01-产品与套餐"], "gold_spans": ["10MB"]}
+{"id": "q07", "type": "fact", "query": "全平台统一使用的向量维度是多少？", "gold_doc_ids": ["01-产品与套餐"], "gold_spans": ["1024 维"]}
+{"id": "q08", "type": "fact", "query": "访问令牌多久过期？", "gold_doc_ids": ["02-鉴权与限流"], "gold_spans": ["30 分钟"]}
+{"id": "q09", "type": "fact", "query": "刷新令牌的有效期是多久？", "gold_doc_ids": ["02-鉴权与限流"], "gold_spans": ["14 天"]}
+{"id": "q10", "type": "fact", "query": "登录接口的限流阈值是多少？", "gold_doc_ids": ["02-鉴权与限流"], "gold_spans": ["每分钟最多 10 次"]}
+{"id": "q11", "type": "disambiguation", "query": "免费版对话接口每分钟能调用几次？", "gold_doc_ids": ["02-鉴权与限流"], "gold_spans": ["每分钟最多 20 次"], "note": "干扰项：01 的 500 次/月 与 20 路并发"}
+{"id": "q12", "type": "fact", "query": "专业版对话接口的每分钟限额是多少？", "gold_doc_ids": ["02-鉴权与限流"], "gold_spans": ["每分钟最多 200 次"]}
+{"id": "q13", "type": "fact", "query": "令牌使用什么签名算法？", "gold_doc_ids": ["02-鉴权与限流"], "gold_spans": ["HS256"]}
+{"id": "q14", "type": "fact", "query": "被限流会返回什么错误码，以及有没有重试提示？", "gold_doc_ids": ["02-鉴权与限流"], "gold_spans": ["429，并在响应头中带上 Retry-After"]}
+{"id": "q15", "type": "fact", "query": "配额多久重置一次？", "gold_doc_ids": ["03-配额与计费"], "gold_spans": ["自然月为周期"]}
+{"id": "q16", "type": "fact", "query": "消耗多少 token 算一个计量单位？", "gold_doc_ids": ["03-配额与计费"], "gold_spans": ["1000 token 记 1 个计量单位"]}
+{"id": "q17", "type": "paraphrase", "query": "请求失败了，已经扣掉的额度会退回来吗？", "gold_doc_ids": ["03-配额与计费"], "gold_spans": ["回滚（rollback）"]}
+{"id": "q18", "type": "disambiguation", "query": "额度用光了会报什么错？", "gold_doc_ids": ["03-配额与计费"], "gold_spans": ["返回 402，而不是 403 或 429"], "note": "干扰项：02 的 429 限流"}
+{"id": "q19", "type": "fact", "query": "用量数据多久同步一次？", "gold_doc_ids": ["03-配额与计费"], "gold_spans": ["每 5 分钟回写"]}
+{"id": "q20", "type": "fact", "query": "默认的切片大小和重叠分别是多少？", "gold_doc_ids": ["04-知识库与检索"], "gold_spans": ["512 token"]}
+{"id": "q21", "type": "fact", "query": "一次检索会先召回多少条候选？", "gold_doc_ids": ["04-知识库与检索"], "gold_spans": ["默认为 20"]}
+{"id": "q22", "type": "fact", "query": "重排之后保留几条进入上下文？", "gold_doc_ids": ["04-知识库与检索"], "gold_spans": ["保留 5 条"]}
+{"id": "q23", "type": "fact", "query": "相似度低于多少的片段会被丢弃？", "gold_doc_ids": ["04-知识库与检索"], "gold_spans": ["0.2"]}
+{"id": "q24", "type": "fact", "query": "重排用的是哪个模型？", "gold_doc_ids": ["04-知识库与检索"], "gold_spans": ["Qwen3-Reranker-0.6B"]}
+{"id": "q25", "type": "paraphrase", "query": "重排过程失败会影响正常对话吗？", "gold_doc_ids": ["04-知识库与检索"], "gold_spans": ["rerank_skipped"]}
+{"id": "q26", "type": "paraphrase", "query": "同一篇文档里相邻的命中片段会被怎么处理？", "gold_doc_ids": ["04-知识库与检索"], "gold_spans": ["标题路径相同"]}
+{"id": "q27", "type": "disambiguation", "query": "任务失败后最多重试几次？", "gold_doc_ids": ["05-异步任务与重试"], "gold_spans": ["最多重试 3 次"], "note": "干扰项：07 的熔断连续 5 次失败"}
+{"id": "q28", "type": "fact", "query": "重试的退避间隔是怎么安排的？", "gold_doc_ids": ["05-异步任务与重试"], "gold_spans": ["16 秒"]}
+{"id": "q29", "type": "fact", "query": "补偿扫描多久执行一次？", "gold_doc_ids": ["05-异步任务与重试"], "gold_spans": ["每 60 秒"]}
+{"id": "q30", "type": "fact", "query": "单个任务最长可以执行多久？", "gold_doc_ids": ["05-异步任务与重试"], "gold_spans": ["300 秒"]}
+{"id": "q31", "type": "fact", "query": "任务一共有哪些状态？", "gold_doc_ids": ["05-异步任务与重试"], "gold_spans": ["PENDING、QUEUED、RUNNING、SUCCEEDED、FAILED、CANCELED"]}
+{"id": "q32", "type": "disambiguation", "query": "短期上下文保留多少轮对话？", "gold_doc_ids": ["06-记忆与上下文"], "gold_spans": ["最近 20 轮"], "note": "干扰项：04 的召回 20、01 的 20 路并发"}
+{"id": "q33", "type": "disambiguation", "query": "长期记忆做语义去重时用的阈值是多少？", "gold_doc_ids": ["06-记忆与上下文"], "gold_spans": ["0.92"], "note": "干扰项：04 的相似度阈值 0.2"}
+{"id": "q34", "type": "fact", "query": "长期记忆多久会过期？", "gold_doc_ids": ["06-记忆与上下文"], "gold_spans": ["90 天"]}
+{"id": "q35", "type": "paraphrase", "query": "摘要什么时候会重新生成？", "gold_doc_ids": ["06-记忆与上下文"], "gold_spans": ["6 条消息"]}
+{"id": "q36", "type": "fact", "query": "上下文是按什么顺序拼装的？", "gold_doc_ids": ["06-记忆与上下文"], "gold_spans": ["系统提示、记忆、摘要、历史消息、知识库片段、当前问题"]}
+{"id": "q37", "type": "disambiguation", "query": "熔断器在什么条件下会打开？", "gold_doc_ids": ["07-故障排查手册"], "gold_spans": ["连续 5 次"], "note": "干扰项：05 的最多重试 3 次"}
+{"id": "q38", "type": "paraphrase", "query": "熔断之后多久会尝试恢复？", "gold_doc_ids": ["07-故障排查手册"], "gold_spans": ["30 秒后进入半开"]}
+{"id": "q39", "type": "fact", "query": "MinIO 使用哪个端口？", "gold_doc_ids": ["07-故障排查手册"], "gold_spans": ["9005"]}
+{"id": "q40", "type": "fact", "query": "出现 503 通常是什么原因？", "gold_doc_ids": ["07-故障排查手册"], "gold_spans": ["503 DEPENDENCY_UNAVAILABLE"]}
+{"id": "q41", "type": "fact", "query": "哪个版本开始引入重排能力？", "gold_doc_ids": ["08-发布说明"], "gold_spans": ["引入重排（Rerank）"]}
+{"id": "q42", "type": "fact", "query": "哪个版本开始支持 MCP 工具接入？", "gold_doc_ids": ["08-发布说明"], "gold_spans": ["MCP 工具接入"]}
+{"id": "q43", "type": "paraphrase", "query": "目前有什么已知但还没修的问题？", "gold_doc_ids": ["08-发布说明"], "gold_spans": ["约 3 小时"]}
+{"id": "q44", "type": "disambiguation", "query": "这个项目提供 Kubernetes 部署清单吗？", "gold_doc_ids": ["09-部署与端口", "08-发布说明"], "gold_spans": ["并未提供任何 Kubernetes 清单", "未提供 Kubernetes 部署清单"]}
+{"id": "q45", "type": "fact", "query": "指标走哪个端口？", "gold_doc_ids": ["09-部署与端口"], "gold_spans": ["9105"]}
+{"id": "q46", "type": "paraphrase", "query": "本地怎么把基础设施跑起来？", "gold_doc_ids": ["09-部署与端口"], "gold_spans": ["Docker Compose 一键拉起"]}
+{"id": "q47", "type": "fact", "query": "两个服务共用 Redis，键是怎么隔离的？", "gold_doc_ids": ["10-多租户与数据隔离"], "gold_spans": ["gw:"]}
+{"id": "q48", "type": "fact", "query": "向量检索怎么做用户级隔离？", "gold_doc_ids": ["10-多租户与数据隔离"], "gold_spans": ["user_id 标量字段"]}
+{"id": "q49", "type": "fact", "query": "哪两张表是两个服务共享的？", "gold_doc_ids": ["10-多租户与数据隔离"], "gold_spans": ["idempotency_record 与 audit_log"]}
+{"id": "q50", "type": "fact", "query": "用户口令是怎么存储的？", "gold_doc_ids": ["11-安全与合规"], "gold_spans": ["argon2id"]}
+{"id": "q51", "type": "paraphrase", "query": "上传文件时怎么防止改扩展名绕过校验？", "gold_doc_ids": ["11-安全与合规"], "gold_spans": ["文件头魔数"]}
+{"id": "q52", "type": "fact", "query": "日志里的密钥字段是怎么处理的？", "gold_doc_ids": ["11-安全与合规"], "gold_spans": ["脱敏"]}
+{"id": "q53", "type": "paraphrase", "query": "链路追踪里的用户标识是怎么处理的？", "gold_doc_ids": ["11-安全与合规"], "gold_spans": ["加盐哈希"]}
+{"id": "q54", "type": "fact", "query": "流式响应的首帧延迟目标是多少？", "gold_doc_ids": ["12-性能与容量规划"], "gold_spans": ["不超过 30 毫秒"]}
+{"id": "q55", "type": "paraphrase", "query": "客户端断开连接后系统会做什么？", "gold_doc_ids": ["12-性能与容量规划"], "gold_spans": ["1 秒内停止上游"]}
+{"id": "q56", "type": "paraphrase", "query": "为什么请求指标不用真实路径做标签？", "gold_doc_ids": ["12-性能与容量规划"], "gold_spans": ["取路由模板"]}
+{"id": "q57", "type": "fact", "query": "数据库连接池的生命周期是怎么决定的？", "gold_doc_ids": ["12-性能与容量规划"], "gold_spans": ["引用计数"]}
+{"id": "q58", "type": "negative", "query": "怎么申请开具增值税专用发票？", "gold_doc_ids": [], "gold_spans": []}
+{"id": "q59", "type": "negative", "query": "支持哪些第三方支付方式？", "gold_doc_ids": [], "gold_spans": []}
+{"id": "q60", "type": "negative", "query": "有没有 iOS 原生客户端？", "gold_doc_ids": [], "gold_spans": []}
+{"id": "q61", "type": "negative", "query": "退款要走什么流程，几天到账？", "gold_doc_ids": [], "gold_spans": []}
