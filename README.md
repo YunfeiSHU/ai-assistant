@@ -205,6 +205,10 @@ uv run uvicorn app.main:app --reload     # 代码默认 INFRA_BACKEND=memory：�
 
 切真实基础设施（Redis / MySQL / Milvus / MinIO / Kafka）与独立 Worker：
 
+> MySQL 口令不入库：`real` 档要显式给 `MYSQL_DSN`（代码默认值只保留连接串结构、口令为空），
+> 例：`$env:MYSQL_DSN="mysql+asyncmy://root:<你的口令>@localhost:3306/ai_platform"`；
+> Go 网关侧同理，用 `MYSQL_DSN`（`ai-platform-go/.env`）。
+
 ```powershell
 uv sync --extra redis --extra kafka --extra mysql --extra minio
 docker compose -f deploy/infra/compose.yml up -d redis            # 任务仓储 / 事件总线 / 重试队列

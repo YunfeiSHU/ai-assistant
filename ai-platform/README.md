@@ -107,6 +107,8 @@ mysql --default-character-set=utf8mb4 -u root -p -e "source deploy/mysql/004_add
 mysql --default-character-set=utf8mb4 -u root -p -e "source deploy/mysql/verify_schema.sql"            # 断言 1/0/1/1/0/1/4/4
 
 $env:INFRA_BACKEND="real"; $env:TASK_RUNNER="kafka"
+# MySQL 口令不在仓库里：real 档必须显式给连接串（代码默认值只留结构、口令为空）
+$env:MYSQL_DSN="mysql+asyncmy://root:<你的口令>@localhost:3306/ai_platform"
 uv run uvicorn app.main:app --reload      # 终端 1：API（投递方）
 uv run python -m app.worker               # 终端 2：Worker（消费方），与 API 共用同一份 .env
 

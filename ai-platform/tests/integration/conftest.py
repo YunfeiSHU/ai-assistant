@@ -49,7 +49,7 @@ DEFAULT_REDIS_URL = "redis://localhost:6379/15"
 
 #: MySQL：指向本机开发库。测试靠 ``user_id`` 隔离，不做删库操作。
 MYSQL_DSN_ENV = "AI_TEST_MYSQL_DSN"
-DEFAULT_MYSQL_DSN = "mysql+asyncmy://root:***REMOVED***@localhost:3306/ai_platform"
+DEFAULT_MYSQL_DSN = "mysql+asyncmy://root:@localhost:3306/ai_platform"
 
 MILVUS_URI_ENV = "AI_TEST_MILVUS_URI"
 DEFAULT_MILVUS_URI = "http://localhost:19530"

@@ -274,7 +274,7 @@ class Settings(BaseSettings):
     milvus_vector_dim: int = 1024
 
     # ==================== 关系库 / 缓存 / 对象存储 / 队列 ====================
-    mysql_dsn: str = "mysql+asyncmy://root:***REMOVED***@localhost:3306/ai_platform"
+    mysql_dsn: str = "mysql+asyncmy://root:@localhost:3306/ai_platform"
     redis_url: str = "redis://localhost:6379/0"
     minio_endpoint: str = "localhost:9000"
     minio_access_key: str = ""
