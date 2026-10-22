@@ -1,7 +1,7 @@
 """硅基流动重排序（``RERANKER_PROVIDER=siliconflow``）。
 
 换它的理由是一个实测数字：本机 ``BAAI/bge-reranker-v2-m3``（CPU）在 ``top_k=20 → top_n=5``
-时要 70~83s（``ai-platform-go/docs/11-§6.6``），而 ``Qwen/Qwen3-Reranker-0.6B`` 走这个端点
+时要 70~83s（``ai-platform-go/docs/09-优化清单与实测记录.md`` §4.4），而 ``Qwen/Qwen3-Reranker-0.6B`` 走这个端点
 只要 562~663ms（约 120×），回到了 SRS 的目标区间（``docs/10-§1``）。
 
 实测过的接口细节（都有坑）：响应是 ``{id, results: [{index, relevance_score, document}], meta}``

@@ -15,7 +15,7 @@
 对同机其它进程的影响）。2026-10-02 换成云端 provider 后它们已无法运行 ——
 embedding 走硅基流动 API，本地 HF 权重（``BAAI/bge-m3`` / ``bge-reranker-v2-m3``，
 共 8.5GB）与 torch 都不再在链路上，故连同代码一起删除；历史数字保留在
-``ai-platform-go/docs/11-优化项实测记录.md``（§6.5/§6.6）与 ``docs/09/10``。
+``ai-platform-go/docs/09-优化清单与实测记录.md``（§4.5 / §4.4）。
 
 用法：
     python tools/ingest_bench.py --mb 8
