@@ -16,7 +16,7 @@
 
 ```powershell
 docker compose -f deploy/infra/compose.yml up -d      # Redis + Kafka + MinIO；MySQL/Milvus 是外部依赖（见 README）
-uv sync --extra mysql --extra minio --extra redis --extra kafka --extra local   # 不带 extra 时走内存实现
+uv sync --extra mysql --extra minio --extra redis --extra kafka --extra local-ml   # 不带 extra 时走内存实现
 # 建表（幂等；顺序 AI 侧 → 共享表补列 → 网关侧，不能换）
 mysql --default-character-set=utf8mb4 -u root -p -e "source deploy/mysql/001_init_schema.sql"
 mysql --default-character-set=utf8mb4 -u root -p -e "source deploy/mysql/002_align_shared_tables.sql"

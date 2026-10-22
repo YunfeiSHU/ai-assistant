@@ -41,7 +41,6 @@ source = { editable = "." }
 dependencies = [
     { name = "beautifulsoup4" },
     { name = "fastapi" },
-    { name = "flagembedding" },
     { name = "grpcio" },
     { name = "langchain" },
     { name = "langchain-community" },
@@ -58,15 +57,18 @@ dependencies = [
     { name = "pypdf" },
     { name = "python-docx" },
     { name = "python-dotenv" },
-    { name = "sentence-transformers" },
-    { name = "torch" },
-    { name = "transformers" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
 [package.optional-dependencies]
 kafka = [
     { name = "aiokafka" },
+]
+local-ml = [
+    { name = "flagembedding" },
+    { name = "sentence-transformers" },
+    { name = "torch" },
+    { name = "transformers" },
 ]
 minio = [
     { name = "minio" },
@@ -95,7 +97,7 @@ requires-dist = [
     { name = "asyncmy", marker = "extra == 'mysql'", specifier = ">=0.2.10" },
     { name = "beautifulsoup4", specifier = ">=4.15.0" },
     { name = "fastapi", specifier = ">=0.141.1" },
-    { name = "flagembedding", specifier = ">=1.4.2" },
+    { name = "flagembedding", marker = "extra == 'local-ml'", specifier = ">=1.4.2" },
     { name = "grpcio", specifier = ">=1.84.0" },
     { name = "langchain", specifier = ">=1.4.2" },
     { name = "langchain-community", specifier = ">=0.4.2" },
@@ -114,13 +116,13 @@ requires-dist = [
     { name = "python-docx", specifier = ">=1.2.0" },
     { name = "python-dotenv", specifier = ">=1.2.3" },
     { name = "redis", marker = "extra == 'redis'", specifier = ">=6.5.0" },
-    { name = "sentence-transformers", specifier = ">=6.1.0" },
+    { name = "sentence-transformers", marker = "extra == 'local-ml'", specifier = ">=6.1.0" },
     { name = "sqlalchemy", extras = ["asyncio"], marker = "extra == 'mysql'", specifier = ">=2.0" },
-    { name = "torch", specifier = ">=2.14.0" },
-    { name = "transformers", specifier = ">=5.17.0" },
+    { name = "torch", marker = "extra == 'local-ml'", specifier = ">=2.14.0" },
+    { name = "transformers", marker = "extra == 'local-ml'", specifier = ">=5.17.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.54.0" },
 ]
-provides-extras = ["redis", "kafka", "mysql", "minio"]
+provides-extras = ["local-ml", "redis", "kafka", "mysql", "minio"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -1716,9 +1718,9 @@ source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }
 dependencies = [
     { name = "jsonpointer" },
 ]
-sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/42/78/18813351fe5d63acad16aec57f94ec2b70a09e53ca98145589e185423873/jsonpatch-1.33.tar.gz", hash = "sha256:9fcd4009c41e6d12348b4a0ff2563ba56a2923a7dfee731d004e212e1ee5030c" }
+sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/42/78/18813351fe5d63acad16aec57f94ec2b70a09e53ca98145589e185423873/jsonpatch-1.33.tar.gz", hash = "sha256:9fcd4009c41e6d12348b4a0ff2563ba56a2923a7dfee731d004e212e1ee5030c", size = 21699, upload-time = "2023-06-26T12:07:29.144Z" }
 wheels = [
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/73/07/02e16ed01e04a374e644b575638ec7987ae846d25ad97bcc9945a3ee4b0e/jsonpatch-1.33-py2.py3-none-any.whl", hash = "sha256:0ae28c0cd062bbd8b8ecc26d7d164fbbea9652a1a3693f3b956c1eae5145dade" },
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/73/07/02e16ed01e04a374e644b575638ec7987ae846d25ad97bcc9945a3ee4b0e/jsonpatch-1.33-py2.py3-none-any.whl", hash = "sha256:0ae28c0cd062bbd8b8ecc26d7d164fbbea9652a1a3693f3b956c1eae5145dade", size = 12898, upload-time = "2023-06-16T21:01:28.466Z" },
 ]
 
 [[package]]

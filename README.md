@@ -106,7 +106,7 @@ AI 独占 7 张 + 共享 2 张在 [`ai-platform/deploy/mysql`](./ai-platform/dep
 | 工具 / 流式 | MCP Python SDK（stdio + streamable_http，命名空间 `mcp__{server}__{tool}`）；SSE 自研帧构造 + 心跳 + 断连收尾 |
 | 对内 gRPC | grpcio / grpcio-tools，`python -m app.grpc` 实现 `Chat` / `ChatStream`；默认 `GRPC_ENABLED=false` 且只听回环，容器里要显式改 |
 | 可观测 | OTel SDK → Jaeger（trace id 与日志、响应头同值）+ Prometheus Client，19 个 `ai_*` 指标，独立指标端口 |
-| 依赖 / 质量 | uv（`uv.lock` 锁定，`--extra redis/kafka/mysql/minio` 按需装可选依赖）+ ruff / mypy / pytest(asyncio、cov) |
+| 依赖 / 质量 | uv（`uv.lock` 锁定，`--extra redis/kafka/mysql/minio` 按需装可选依赖；本地向量化/重排在 `--extra local-ml`）+ ruff / mypy / pytest(asyncio、cov) |
 
 - 本地基础设施：`docker compose`（Redis · Kafka `--profile kafka` · MySQL · Milvus · MinIO · Jaeger · Prometheus · Grafana）。
 - 契约真源：`ai-platform-go/proto/aiplatform/v1/chat.proto`，两侧各自生成；生成物不手改，也不参与 lint。
@@ -191,12 +191,17 @@ Go 侧 `internal/server/http.go` 有 **58 处路由注册**，分组清单见 [`
 ```powershell
 # 前置：Python 3.12（.python-version 固定，uv 自动托管）+ uv ≥ 0.5
 cd ai-platform
-uv sync                                  # 按 uv.lock 建 .venv 并装依赖
+uv sync                                  # 按 uv.lock 建 .venv（默认档，不含本地 ML 4 件套）
 Copy-Item .env.example .env              # 至少填真实的 OPENAI_API_KEY（默认用 DeepSeek）
 uv run uvicorn app.main:app --reload     # 代码默认 INFRA_BACKEND=memory：无外部依赖即可跑通
 # Swagger UI  http://127.0.0.1:8000/docs
 # 健康检查    http://127.0.0.1:8000/api/v1/health
 ```
+
+> `torch` / `transformers` / `sentence-transformers` / `flagembedding` 收在 `local-ml` extra 里
+> （解包 ~800 MB，且会让 `import app.main` 从 2.5 s 变成 17 s）。只有用本地向量化/重排
+> （`EMBEDDING_PROVIDER=bge`）时才 `uv sync --extra local-ml`；没装时是**首次调用**返回
+> `503 DEPENDENCY_UNAVAILABLE`，不影响启动。
 
 切真实基础设施（Redis / MySQL / Milvus / MinIO / Kafka）与独立 Worker：
 

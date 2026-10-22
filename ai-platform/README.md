@@ -67,12 +67,24 @@ MCP 工具接入、异步任务（Kafka + 独立 Worker）与可观测（OTel + 
 ### 4.1 起服务（uv sync，零外部依赖）
 
 ```powershell
-uv sync                        # 按 uv.lock 建 .venv 并安装全部依赖
+uv sync                        # 按 uv.lock 建 .venv（默认档：不装本地 ML 4 件套）
 Copy-Item .env.example .env    # 至少填真实的 OPENAI_API_KEY（默认 DeepSeek）
 uv run uvicorn app.main:app --reload
 # Swagger UI : http://127.0.0.1:8000/docs
 # 健康检查   : http://127.0.0.1:8000/api/v1/health
 ```
+
+> **`torch` / `transformers` / `sentence-transformers` / `flagembedding` 在 `local-ml` 这个 extra 里**，
+> 默认档不装：这 4 个包解包约 800 MB（torch 单它一个 474 MB），而且 `langchain_text_splitters`
+> 在包存在时会 eager 导入它们，把 `import app.main` 从 **2.5 s 拖到 17 s**。
+> 只有切到本地档（`EMBEDDING_PROVIDER=bge` 或 `RERANKER_PROVIDER=bge`）才需要：
+>
+> ```powershell
+> uv sync --extra local-ml     # 一次性下载，之后各项目走全局缓存的硬链接共享
+> ```
+>
+> 没装就走 bge 档时的表现是**首次调用**报 `503 DEPENDENCY_UNAVAILABLE`（不是启动崩溃）——
+> `app/rag/embedding/bge.py` 里是函数内延迟 import + 明确降级。
 
 `.env.example` 出厂档是**隔离档**（`INFRA_BACKEND=real` + `TASK_RUNNER=kafka` +
 `EMBEDDING_PROVIDER=siliconflow`），真实但要多起 Redis / Kafka / Worker。只想单进程跑通就改成
