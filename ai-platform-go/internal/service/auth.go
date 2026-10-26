@@ -5,6 +5,7 @@ import (
 
 	"github.com/YunfeiSHU/ai-assistant/ai-platform-go/internal/biz"
 	"github.com/YunfeiSHU/ai-assistant/ai-platform-go/internal/server/middleware"
+	"github.com/YunfeiSHU/ai-assistant/ai-platform-go/pkg/errs"
 	"github.com/YunfeiSHU/ai-assistant/ai-platform-go/pkg/httpx"
 )
 
@@ -48,26 +49,53 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		httpx.Fail(c, err)
 		return
 	}
+	h.setRefreshCookie(c, pair.RefreshToken)
 	httpx.OK(c, ToTokenResponse(pair))
 }
 
 // Refresh 处理 `POST /auth/refresh`（200）。
+// 刷新令牌优先从 HttpOnly Cookie 读取；保留 body 兼容非浏览器客户端。
 func (h *AuthHandler) Refresh(c *gin.Context) {
-	var in biz.RefreshInput
-	if err := httpx.BindJSON(c, &in); err != nil {
-		httpx.Fail(c, err)
+	if !sameSiteRequest(c) {
+		httpx.Fail(c, errs.New(errs.CodePermissionDenied))
 		return
 	}
+	token := refreshCookieValue(c)
+	var in biz.RefreshInput
+	if c.Request.ContentLength > 0 {
+		if err := httpx.BindJSON(c, &in); err != nil {
+			httpx.Fail(c, err)
+			return
+		}
+		if token == "" {
+			token = in.RefreshToken
+		}
+	}
+	in.RefreshToken = token
+	// body 模式是给 CLI/脚本的兼容路径：它们没有 Cookie jar，必须在 JSON 里拿到新 refresh。
+	// 浏览器走 Cookie，refresh 永远不出现在响应体。
+	bodyMode := refreshCookieValue(c) == "" && in.RefreshToken != ""
+
 	pair, err := h.svc.Refresh(c.Request.Context(), in, metaFrom(c))
 	if err != nil {
+		h.clearRefreshCookie(c)
 		httpx.Fail(c, err)
 		return
 	}
-	httpx.OK(c, ToTokenResponse(pair))
+	h.setRefreshCookie(c, pair.RefreshToken)
+	response := ToTokenResponse(pair)
+	if bodyMode {
+		response.RefreshToken = pair.RefreshToken
+	}
+	httpx.OK(c, response)
 }
 
 // Logout 处理 `POST /auth/logout`（204）。
 func (h *AuthHandler) Logout(c *gin.Context) {
+	if !sameSiteRequest(c) {
+		httpx.Fail(c, errs.New(errs.CodePermissionDenied))
+		return
+	}
 	userID := middleware.UserID(c)
 	var in biz.LogoutInput
 	// body 可选：带 Content-Length 才解析，避免「空 body」被判成 400。
@@ -77,10 +105,15 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 			return
 		}
 	}
+	if in.RefreshToken == "" {
+		in.RefreshToken = refreshCookieValue(c)
+	}
 	if err := h.svc.Logout(c.Request.Context(), userID, in, metaFrom(c)); err != nil {
+		h.clearRefreshCookie(c)
 		httpx.Fail(c, err)
 		return
 	}
+	h.clearRefreshCookie(c)
 	httpx.NoContent(c)
 }
 
@@ -96,5 +129,7 @@ func (h *AuthHandler) ChangePassword(c *gin.Context) {
 		httpx.Fail(c, err)
 		return
 	}
+	// 改密已作废全部 refresh，浏览器 Cookie 也立即清掉。
+	h.clearRefreshCookie(c)
 	httpx.NoContent(c)
 }

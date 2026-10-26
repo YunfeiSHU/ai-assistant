@@ -51,7 +51,7 @@ func CORS(allowedOrigins []string) gin.HandlerFunc {
 		h.Set("Access-Control-Allow-Methods", "GET, POST, PATCH, PUT, DELETE, OPTIONS")
 		h.Set("Access-Control-Allow-Headers",
 			"Authorization, Content-Type, Idempotency-Key, X-Request-Id, traceparent")
-		h.Set("Access-Control-Expose-Headers", "X-Request-Id, X-Trace-Id, Retry-After")
+		h.Set("Access-Control-Expose-Headers", "X-Request-Id, X-Trace-Id, Retry-After, X-RateLimit-Scope, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset")
 		h.Set("Access-Control-Max-Age", strconv.Itoa(600))
 
 		if c.Request.Method == http.MethodOptions {

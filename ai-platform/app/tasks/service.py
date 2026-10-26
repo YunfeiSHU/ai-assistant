@@ -101,7 +101,13 @@ class TaskService:
     # ------------------------------------------------------------------
     async def get(self, task_id: str, user_id: str | None = None) -> Task:
         """取任务详情。"""
-        return await self._store.get(task_id, user_id)
+        return await self._with_cancel_requested(await self._store.get(task_id, user_id))
+
+    async def _with_cancel_requested(self, task: Task) -> Task:
+        """RUNNING 且已有取消标记时补 ``cancel_requested``（B-13）。"""
+        if task.status is TaskStatus.RUNNING and await self._store.is_cancel_requested(task.id):
+            task.cancel_requested = True
+        return task
 
     async def list_tasks(
         self,
@@ -123,6 +129,8 @@ class TaskService:
             cursor=cursor,
         )
         next_cursor = encode_task_cursor(items[-1]) if has_more and items else None
+        for task in items:
+            await self._with_cancel_requested(task)
         return items, next_cursor
 
     # ------------------------------------------------------------------
@@ -312,6 +320,7 @@ class TaskService:
         await self._store.request_cancel(task_id)
         if task.status is TaskStatus.RUNNING:
             # 单批 Embedding 不可中断，最多等一批完成
+            task.cancel_requested = True
             return task
         canceled = await self._transition(task_id, TaskStatus.CANCELED, _stamp_finished)
         await self._publish(

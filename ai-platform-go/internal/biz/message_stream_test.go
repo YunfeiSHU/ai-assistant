@@ -178,6 +178,16 @@ func TestStreamSendForwardsFramesAndPersistsCompleted(t *testing.T) {
 	if meta.MessageID == "" || meta.MessageID == "msg_upstream_1" {
 		t.Errorf("meta.message_id 应为网关预生成的 ID，实际 %q", meta.MessageID)
 	}
+	if meta.UserMessageID == "" || meta.UserSeq <= 0 {
+		t.Errorf("meta 应带 user_message_id/user_seq（B-05），实际 %q/%d", meta.UserMessageID, meta.UserSeq)
+	}
+	if len(f.msgs.appended) > 0 {
+		userRow := f.msgs.appended[0]
+		if meta.UserMessageID != userRow.ID || meta.UserSeq != userRow.Seq {
+			t.Errorf("meta 的 user 身份应与落库一致：meta=%q/%d row=%q/%d",
+				meta.UserMessageID, meta.UserSeq, userRow.ID, userRow.Seq)
+		}
+	}
 	// 上游给的就是网关的会话 id 时不该打「不一致」日志之外的东西，这里只断言相等。
 
 	msg := f.persistAssistant()

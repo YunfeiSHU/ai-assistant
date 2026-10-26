@@ -27,6 +27,8 @@ class TaskOut(StrictModel):
     resource_type: str
     resource_id: str
     progress: int = 0
+    #: 已请求取消、等待 Worker 到检查点（B-13）
+    cancel_requested: bool = False
     stage: str | None = None
     #: 切片总数 / 已完成切片数（``docs/10`` UP-02）：给出绝对的「还要多久」口径，
     #: 同时也是截断的侧证（``chunks_total > 文档 chunk_count``）

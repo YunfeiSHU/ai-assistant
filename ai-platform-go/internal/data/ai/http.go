@@ -132,6 +132,7 @@ func (p *httpProxy) Do(ctx context.Context, req biz.AIProxyRequest) (*biz.AIProx
 		Status:      resp.StatusCode,
 		ContentType: resp.Header.Get("Content-Type"),
 		Body:        body,
+		Location:    resp.Header.Get("Location"),
 		RetryAfter:  resp.Header.Get("Retry-After"),
 		// AI 侧对每个请求回显 `X-Trace-Id`（接缝 J3）。只取这一个头而不是整张 map：
 		// 转发响应头会引入 `Transfer-Encoding`/`Content-Length` 这类必须由本层决定的头，

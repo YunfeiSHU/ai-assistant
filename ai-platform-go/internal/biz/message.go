@@ -112,9 +112,10 @@ type SendMessageInput struct {
 	RerankTopN     *int     `json:"rerank_top_n"`
 	ScoreThreshold *float64 `json:"score_threshold"`
 
-	// Attachments 是附件（P2：需先上传为文档）。M2 只做「非空即拒绝」，
-	// 而不是静默忽略 —— 忽略会让用户以为模型看过那个文件。
+	// Attachments 是旧版二进制附件字段；B-09 只支持已入库文档引用，非空即拒绝。
 	Attachments []json.RawMessage `json:"attachments"`
+	// AttachmentDocIDs 是本轮临时附件（已入库文档 ID，最多 5 个）；参与检索但不改 KB 范围。
+	AttachmentDocIDs []string `json:"attachment_doc_ids"`
 }
 
 // AppendAssistantInput 是写入 assistant 消息的输入。
@@ -142,6 +143,8 @@ type AppendAssistantInput struct {
 type ListMessagesInput struct {
 	PaginationInput
 	Order string
+	// AfterSeq > 0 时只返回 seq 更大的消息（B-11 增量拉取）。
+	AfterSeq int
 }
 
 // MessageList 是消息列表结果。
@@ -410,6 +413,129 @@ func (s *MessageService) Send(ctx context.Context, userID, conversationID string
 	return &SendResult{User: userMsg, Assistant: assistant}, nil
 }
 
+// Regenerate 重新生成某个 assistant 消息（B-03）。
+//
+// 不插入新的 user 消息：复用上一轮用户提问，只写一条新的 assistant 消息；
+// 成功后删除旧 assistant（失败则保留旧回答）。
+func (s *MessageService) Regenerate(
+	ctx context.Context,
+	userID, assistantID string,
+	in SendMessageInput,
+	meta RequestMeta,
+) (*SendResult, error) {
+	assistant, err := s.Get(ctx, userID, assistantID)
+	if err != nil {
+		return nil, err
+	}
+	if assistant.Role != MessageRoleAssistant {
+		return nil, errs.InvalidArgument([]errs.FieldError{
+			{Field: "message_id", Reason: "not_assistant", Message: "只能重新生成 assistant 消息"},
+		})
+	}
+
+	conv, err := s.d.Conversations.GetOwned(ctx, userID, assistant.ConversationID)
+	if err != nil {
+		return nil, conversationLookupError(err)
+	}
+	if !conv.IsActive() {
+		return nil, errs.New(errs.CodeConversationArchived)
+	}
+
+	userMsg, err := s.previousUser(ctx, userID, conv.ID, assistant.Seq)
+	if err != nil {
+		return nil, err
+	}
+
+	reservation, err := s.beginChat(ctx, userID, &UsageRef{
+		ConversationID: conv.ID,
+		MessageID:      userMsg.ID,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	traceID := strings.TrimSpace(meta.TraceID)
+	chatReq := s.chatRequest(userID, conv, in, userMsg.Content, meta)
+	if s.d.Orchestrator == nil {
+		err := errs.New(errs.CodeAIUnavailable).
+			WithDetail("reason", "orchestrator_not_configured")
+		reservation.Rollback(ctx, err)
+		return nil, err
+	}
+	if !chatReq.UseMemory {
+		// 重新生成同样要为 use_memory=false 补历史，但必须排除旧 assistant：
+		// beforeSeq 用 userMsg.Seq，旧回答在它之后，自然不会进入历史。
+		chatReq.History = s.recentHistory(ctx, userID, conv.ID, userMsg.Seq)
+	}
+
+	result, err := s.d.Orchestrator.Chat(ctx, chatReq)
+	if err != nil {
+		if ShouldRollback(err) {
+			reservation.Rollback(ctx, err)
+		}
+		return nil, err
+	}
+	if result == nil {
+		err := errs.New(errs.CodeAIUnavailable).WithDetail("reason", "empty_result")
+		reservation.Rollback(ctx, err)
+		return nil, err
+	}
+
+	ref := UsageRef{ConversationID: conv.ID, MessageID: userMsg.ID, TraceID: traceID}
+	s.commitQuota(ctx, reservation, result.Usage, ref)
+
+	newAssistant, err := s.AppendAssistant(ctx, userID, AppendAssistantInput{
+		ConversationID:  conv.ID,
+		Content:         result.Content,
+		Status:          MessageStatusCompleted,
+		FinishReason:    &result.FinishReason,
+		References:      result.References,
+		ToolCalls:       result.ToolCalls,
+		Usage:           result.Usage,
+		Model:           nilIfEmpty(result.Model),
+		Degraded:        result.Degraded,
+		DegradedReasons: result.DegradedReasons,
+		ElapsedMS:       intPtrIfPositive(result.ElapsedMS),
+		TraceID:         nilIfEmpty(traceID),
+	})
+	if err != nil {
+		s.d.Log.ErrorContext(ctx, "message.regenerate_persist_failed",
+			slog.String("conversation_id", conv.ID), slog.String("error", err.Error()))
+		return nil, err
+	}
+
+	if err := s.Delete(ctx, userID, assistant.ID); err != nil {
+		// 新回答已经落库、旧回答删不掉：保留新回答并告警，不能把已发生的生成变成错误。
+		s.d.Log.WarnContext(ctx, "message.regenerate_old_delete_failed",
+			slog.String("message_id", assistant.ID), slog.String("error", err.Error()))
+	}
+	return &SendResult{User: userMsg, Assistant: newAssistant}, nil
+}
+
+// previousUser 找 assistant 之前最近的一条 user 消息。
+func (s *MessageService) previousUser(
+	ctx context.Context, userID, conversationID string, beforeSeq int,
+) (*Message, error) {
+	page, err := s.d.Messages.ListByConversation(ctx, userID, conversationID, ListMessagesInput{
+		PaginationInput: PaginationInput{Limit: PageLimitMax},
+		Order:           OrderDesc,
+	})
+	if err != nil {
+		return nil, wrapDB(err)
+	}
+	for i := range page.Items {
+		m := &page.Items[i]
+		if m.Seq >= beforeSeq {
+			continue
+		}
+		if m.Role == MessageRoleUser && strings.TrimSpace(m.Content) != "" {
+			return m, nil
+		}
+	}
+	return nil, errs.New(errs.CodeInvalidArgument).WithDetail("field", "message_id").
+		WithDetail("reason", "previous_user_not_found")
+}
+
 // beginChat 是做配额预扣的统一入口（`Quota` 未接线时返回一个空预约）。
 // 返回值总是非 nil 且安全可用，调用点不必写 `if reservation != nil`。
 func (s *MessageService) beginChat(ctx context.Context, userID string, ref *UsageRef) (*QuotaReservation, error) {
@@ -503,8 +629,22 @@ func (s *MessageService) List(ctx context.Context, userID, conversationID string
 
 // Delete 从台账删除一条消息（docs/03-§6：不改变 AI 侧上下文）。
 func (s *MessageService) Delete(ctx context.Context, userID, messageID string) error {
+	msg, err := s.Get(ctx, userID, messageID)
+	if err != nil {
+		return err
+	}
 	if err := s.d.Messages.Delete(ctx, userID, messageID); err != nil {
 		return messageLookupError(err)
+	}
+	// B-04：台账 count 也要减，否则删完消息侧栏/头部仍显示旧条数。
+	// 用可选接口而不是扩展 MessageDeps：测试替身不必实现无关方法。
+	if decrementer, ok := s.d.Conversations.(interface {
+		DecrementMessageCount(ctx context.Context, userID, conversationID string, at time.Time) error
+	}); ok {
+		if err := decrementer.DecrementMessageCount(ctx, userID, msg.ConversationID, s.now()); err != nil {
+			s.d.Log.WarnContext(ctx, "message.count_decrement_failed",
+				slog.String("conversation_id", msg.ConversationID), slog.String("error", err.Error()))
+		}
 	}
 	return nil
 }
@@ -527,20 +667,21 @@ func (s *MessageService) chatRequest(userID string, conv *Conversation, in SendM
 		model = strings.TrimSpace(*in.Model)
 	}
 	return ChatRequest{
-		ConversationID: conv.ID,
-		UserID:         userID,
-		UserToken:      meta.UserToken,
-		Query:          content,
-		UseRAG:         boolDefault(in.UseRAG, true),
-		KBIDs:          normalizeKBIDs(kbIDs),
-		UseMemory:      boolDefault(in.UseMemory, true),
-		UseTools:       boolDefault(in.UseTools, false),
-		Model:          model,
-		Temperature:    in.Temperature,
-		TopK:           in.TopK,
-		RerankTopN:     in.RerankTopN,
-		ScoreThreshold: in.ScoreThreshold,
-		TraceID:        meta.TraceID,
+		ConversationID:   conv.ID,
+		UserID:           userID,
+		UserToken:        meta.UserToken,
+		Query:            content,
+		UseRAG:           boolDefault(in.UseRAG, true),
+		KBIDs:            normalizeKBIDs(kbIDs),
+		AttachmentDocIDs: normalizeKBIDs(in.AttachmentDocIDs),
+		UseMemory:        boolDefault(in.UseMemory, true),
+		UseTools:         boolDefault(in.UseTools, false),
+		Model:            model,
+		Temperature:      in.Temperature,
+		TopK:             in.TopK,
+		RerankTopN:       in.RerankTopN,
+		ScoreThreshold:   in.ScoreThreshold,
+		TraceID:          meta.TraceID,
 	}
 }
 
@@ -696,8 +837,21 @@ func validateSendInput(in SendMessageInput, content string) []errs.FieldError {
 	if len(in.Attachments) > 0 {
 		fields = append(fields, errs.FieldError{
 			Field: "attachments", Reason: "not_supported",
-			Message: "attachments 尚未支持（P2：需先把文件上传为文档）",
+			Message: "二进制附件暂不支持；请先上传为文档并使用 attachment_doc_ids",
 		})
+	}
+	if len(in.AttachmentDocIDs) > 5 {
+		fields = append(fields, errs.FieldError{
+			Field: "attachment_doc_ids", Reason: "too_many", Message: "最多 5 个附件",
+		})
+	}
+	for _, docID := range in.AttachmentDocIDs {
+		if !strings.HasPrefix(docID, "doc_") || len(docID) < 8 {
+			fields = append(fields, errs.FieldError{
+				Field: "attachment_doc_ids", Reason: "invalid_value", Message: "附件必须是已入库文档 ID",
+			})
+			break
+		}
 	}
 	return fields
 }
@@ -712,6 +866,11 @@ func validateMessageListInput(in ListMessagesInput) []errs.FieldError {
 	if in.Order != OrderAsc && in.Order != OrderDesc {
 		fields = append(fields, errs.FieldError{
 			Field: "order", Reason: "invalid_value", Message: "order 只能是 asc 或 desc",
+		})
+	}
+	if in.AfterSeq < 0 {
+		fields = append(fields, errs.FieldError{
+			Field: "after_seq", Reason: "invalid_value", Message: "after_seq 不能为负数",
 		})
 	}
 	return fields

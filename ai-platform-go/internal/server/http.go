@@ -50,6 +50,10 @@ type Deps struct {
 	// Proxy 负责对 ai-platform 的透传（KB / 文档 / 检索 / 任务 / 上下文与摘要）；
 	// 为 nil 时不注册这些路由（「依赖缺失就不挂路由」）。
 	Proxy *service.ProxyHandler
+	// TaskEvents 是任务进度 SSE 透传（B-01）；nil 时前端继续用轮询。
+	TaskEvents *service.TaskEventHandler
+	// Search 是消息正文检索（B-10）；nil 时不注册。
+	Search *service.SearchHandler
 
 	// IdemStore 是幂等记录仓储；为 nil 时两个写接口退化为「不做幂等」。
 	IdemStore biz.IdempotencyStore
@@ -267,6 +271,14 @@ func registerMessages(authed *gin.RouterGroup, d Deps) {
 	msgs := authed.Group("/messages")
 	msgs.GET("/:message_id", d.Messages.Get)
 	msgs.DELETE("/:message_id", d.Messages.Delete)
+	regenerate := []gin.HandlerFunc{d.Messages.Regenerate}
+	if d.RateLimit != nil {
+		regenerate = []gin.HandlerFunc{
+			middleware.RateLimitByUser(d.RateLimit, biz.RateScopeMessage),
+			d.Messages.Regenerate,
+		}
+	}
+	msgs.POST("/:message_id/regenerate", regenerate...)
 }
 
 // registerPassthrough 注册对 ai-platform 的透传路由（docs/04-§7）。三条通用规则：
@@ -307,6 +319,8 @@ func registerPassthrough(authed *gin.RouterGroup, d Deps) {
 	docs := authed.Group("/documents")
 	docs.GET("/:doc_id", meta(false))
 	docs.GET("/:doc_id/chunks", meta(false))
+	docs.GET("/:doc_id/download", meta(false))
+	docs.GET("/:doc_id/download-url", meta(false))
 	docs.DELETE("/:doc_id", meta(false))
 
 	// 文档上传（M5）：`POST /knowledge-bases/{kb_id}/documents`。
@@ -356,10 +370,16 @@ func registerPassthrough(authed *gin.RouterGroup, d Deps) {
 	// 任务（`GET /tasks` 的聚合视图由 AI 提供，网关**不建任务副本表**：REQ-ORCH-007）。
 	tasks := authed.Group("/tasks")
 	tasks.GET("", meta(false))
+	if d.TaskEvents != nil {
+		tasks.GET("/:task_id/events", d.TaskEvents.Stream)
+	}
 	tasks.GET("/:task_id", meta(false))
 	tasks.POST("/:task_id/cancel", meta(false))
 	tasks.POST("/:task_id/retry", meta(false))
 
 	// 模型列表：对话功能的一部分（前端要拿它填模型下拉框），没有任何本土逻辑。
 	authed.GET("/models", meta(false))
+	if d.Search != nil {
+		authed.GET("/search/messages", d.Search.SearchMessages)
+	}
 }

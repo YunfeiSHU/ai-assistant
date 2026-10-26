@@ -52,6 +52,7 @@ def task_out(task: Task) -> TaskOut:
         resource_type=str(task.resource_type),
         resource_id=task.resource_id,
         progress=task.progress,
+        cancel_requested=task.cancel_requested,
         stage=task.stage,
         chunks_total=task.chunks_total,
         chunks_done=task.chunks_done,

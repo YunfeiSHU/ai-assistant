@@ -234,8 +234,10 @@ async def test_cancel_running_only_sets_flag(tasks: TaskService) -> None:
     returned = await tasks.cancel(task.id, "u_1")
 
     assert returned.status is TaskStatus.RUNNING, "不能立刻改状态：这一批还在跑"
+    assert returned.cancel_requested is True, "取消接口应回显 cancel_requested"
     assert await tasks.is_cancel_requested(task.id) is True
     assert (await tasks.get(task.id)).status is TaskStatus.RUNNING, "库里也仍是 RUNNING"
+    assert (await tasks.get(task.id)).cancel_requested is True, "GET 应补出取消中标记"
 
 
 async def test_cancel_running_is_idempotent(tasks: TaskService) -> None:

@@ -758,3 +758,36 @@ def test_memory_save_invoke_is_forced_dry_run(memory_client: TestClient) -> None
     assert response.json()["status"] == "ok"
     assert response.json()["result"] == {}
     assert len(_list_memories(memory_client)) == before, "调试调用不得真的写库"
+
+
+def test_context_persists_when_memory_disabled(
+    make_memory_client: Callable[..., tuple[Any, Settings, FakeLLM]],
+    make_token: Callable[..., str],
+) -> None:
+    """B-15：关闭长期记忆仍应读写短期上下文，只是不召回/抽取长期记忆。"""
+    chat_llm = FakeLLM(replies=["第一轮回答", "第二轮回答"])
+    application, settings, _ = make_memory_client(
+        llm=chat_llm,
+        memory_llm=MemoryScriptLLM(),
+    )
+
+    with TestClient(application, headers=_headers(settings, make_token)) as client:
+        first = _chat(client, query="第一问", use_memory=True).json()
+        conversation_id = first["conversation_id"]
+        assert conversation_id
+
+        second = _chat(
+            client,
+            query="第二问",
+            conversation_id=conversation_id,
+            use_memory=False,
+        ).json()
+        assert second["conversation_id"] == conversation_id
+
+        context = client.get(
+            f"{PREFIX}/conversations/{conversation_id}/context"
+        ).json()
+        assert context["message_count"] >= 4, context
+
+    # 第二轮仍然把上一轮带进了模型上下文，只是没有长期记忆。
+    assert "第一问" in _sent_text(chat_llm, index=1)

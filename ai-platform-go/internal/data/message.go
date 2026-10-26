@@ -95,6 +95,9 @@ func (r *messageRepo) ListByConversation(ctx context.Context, userID, convID str
 		Joins("JOIN "+quoteIdent(TableConversation)+" AS conv ON conv.id = "+
 			quoteIdent(TableMessage)+".conversation_id AND conv.deleted_at IS NULL").
 		Where(quoteIdent(TableMessage)+".user_id = ? AND "+quoteIdent(TableMessage)+".conversation_id = ?", userID, convID)
+	if in.AfterSeq > 0 {
+		q = q.Where(quoteIdent(TableMessage)+".seq > ?", in.AfterSeq)
+	}
 
 	var cur *MsgCursor
 	if in.Cursor != "" {

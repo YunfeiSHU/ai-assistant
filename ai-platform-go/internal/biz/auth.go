@@ -170,6 +170,9 @@ func NewAuthService(d AuthDeps) *AuthService {
 
 func (s *AuthService) now() time.Time { return s.d.Clock() }
 
+// RefreshTTL 是刷新令牌有效期；handler 用它设置 HttpOnly Cookie 的 MaxAge。
+func (s *AuthService) RefreshTTL() time.Duration { return s.d.RefreshTTL }
+
 // ---- 输入结构 ----
 
 // RegisterInput 是注册请求体。
@@ -316,9 +319,9 @@ func (s *AuthService) Login(ctx context.Context, in LoginInput, meta RequestMeta
 // 单次有效：旧令牌在同一次调用里被作废，重复使用返回 401。
 func (s *AuthService) Refresh(ctx context.Context, in RefreshInput, meta RequestMeta) (*TokenPair, error) {
 	if strings.TrimSpace(in.RefreshToken) == "" {
-		return nil, errs.InvalidArgument([]errs.FieldError{
-			{Field: "refresh_token", Reason: "required", Message: "refresh_token 不能为空"},
-		})
+		// Cookie 模式下属正常未登录路径，按 401 处理而不是 400：
+		// 客户端拿到 400 会把它当参数错误，掩盖“需要重新登录”的语义。
+		return nil, errs.New(errs.CodeInvalidRefreshToken)
 	}
 	hash := cryptox.SHA256Hex(in.RefreshToken)
 	now := s.now()

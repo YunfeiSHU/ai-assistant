@@ -34,6 +34,20 @@ type RateLimiter interface {
 	Allow(ctx context.Context, scope, id string, limit int64, window time.Duration, at time.Time) (allowed bool, retryAfter time.Duration, err error)
 }
 
+// RateLimitInfoLimiter 是可返回剩余额度的限流器（B-07）。
+// 单独接口而不是扩展 RateLimiter：测试替身只需要实现 Allow 也能编译。
+type RateLimitInfoLimiter interface {
+	AllowInfo(ctx context.Context, scope, id string, limit int64, window time.Duration, at time.Time) (allowed bool, used int64, retryAfter time.Duration, err error)
+}
+
+// RateLimitInfo 是给响应头用的限流快照。
+type RateLimitInfo struct {
+	Limit     int64
+	Remaining int64
+	ResetAt   time.Time
+	Available bool
+}
+
 // RateLimits 是限流阈值（来自配置，MUST NOT 硬编码）。
 type RateLimits struct {
 	LoginPerMinute      int
@@ -97,26 +111,51 @@ func (s *RateLimitService) windowFor(scope string) (int64, time.Duration) {
 // 普通维度超额 → 429 RATE_LIMITED（带 Retry-After）；全局 QPS 超额 → 503 AI_OVERLOADED
 // （docs/02-§5.3：这是整体过载而非「你太快了」，客户端应退避而不是重试）。
 func (s *RateLimitService) Allow(ctx context.Context, scope, id string) error {
+	_, err := s.AllowWithInfo(ctx, scope, id)
+	return err
+}
+
+// AllowWithInfo 与 Allow 相同，但额外返回 B-07 所需的 limit / remaining / reset。
+// 限流器不支持剩余额度时 Available=false，调用方不要写头。
+func (s *RateLimitService) AllowWithInfo(ctx context.Context, scope, id string) (RateLimitInfo, error) {
 	limit, window := s.windowFor(scope)
-	if limit <= 0 || id == "" {
-		return nil
-	}
-	if s.d.Limiter == nil {
-		return nil
+	if limit <= 0 || id == "" || s.d.Limiter == nil {
+		return RateLimitInfo{}, nil
 	}
 	at := s.d.Clock()
-	allowed, retryAfter, err := s.d.Limiter.Allow(ctx, scope, id, limit, window, at)
+	resetAt := at.Truncate(window).Add(window)
+	info := RateLimitInfo{Limit: limit, ResetAt: resetAt}
+
+	var (
+		allowed    bool
+		used       int64
+		retryAfter time.Duration
+		err        error
+	)
+	if limiter, ok := s.d.Limiter.(RateLimitInfoLimiter); ok {
+		allowed, used, retryAfter, err = limiter.AllowInfo(ctx, scope, id, limit, window, at)
+		info.Available = true
+		info.Remaining = limit - used
+		if info.Remaining < 0 {
+			info.Remaining = 0
+		}
+	} else {
+		allowed, retryAfter, err = s.d.Limiter.Allow(ctx, scope, id, limit, window, at)
+	}
 	if err != nil {
 		// 限流器不可用时放行而非拒绝（与配额相反）：放行最坏是短时压力偏大
 		//（本地计数仍在拦），拒绝则是全部用户不可用。
 		s.log().WarnContext(ctx, "ratelimit.unavailable",
 			slog.String("scope", scope), slog.Any("error", err))
-		return nil
+		return RateLimitInfo{}, nil
 	}
 	if allowed {
-		return nil
+		return info, nil
 	}
 	s.d.Metrics.RateLimited(scope)
+	if info.Available {
+		info.Remaining = 0
+	}
 	seconds := int(math.Ceil(retryAfter.Seconds()))
 	if seconds <= 0 {
 		seconds = 1
@@ -133,7 +172,7 @@ func (s *RateLimitService) Allow(ctx context.Context, scope, id string) error {
 			WithDetail("scope", scope).
 			WithRetryAfter(seconds)
 	}
-	return e
+	return info, e
 }
 
 func (s *RateLimitService) log() *slog.Logger {

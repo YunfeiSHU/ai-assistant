@@ -45,12 +45,16 @@ func ToUserResponse(u *biz.User) *UserResponse {
 	}
 }
 
-// TokenResponse 是登录 / 刷新返回的令牌对（docs/02-§6.1）。
+// TokenResponse 是登录 / 刷新返回的访问令牌视图（docs/02-§6.1）。
+//
+// 刷新令牌只通过 HttpOnly Cookie 下发，绝不能出现在 JSON 里（B-08）：
+// 一旦可被 JS 读取，XSS 就能长期换新，HttpOnly 的意义就没了。
 type TokenResponse struct {
-	AccessToken  string        `json:"access_token"`
-	RefreshToken string        `json:"refresh_token"`
-	TokenType    string        `json:"token_type"`
-	ExpiresIn    int           `json:"expires_in"`
+	AccessToken string `json:"access_token"`
+	TokenType   string `json:"token_type"`
+	ExpiresIn   int    `json:"expires_in"`
+	// RefreshToken 只在“body 模式刷新”（CLI/脚本）时返回；浏览器 Cookie 模式永远为空。
+	RefreshToken string        `json:"refresh_token,omitempty"`
 	User         *UserResponse `json:"user,omitempty"`
 }
 
@@ -60,11 +64,10 @@ func ToTokenResponse(p *biz.TokenPair) *TokenResponse {
 		return nil
 	}
 	return &TokenResponse{
-		AccessToken:  p.AccessToken,
-		RefreshToken: p.RefreshToken,
-		TokenType:    p.TokenType,
-		ExpiresIn:    p.ExpiresIn,
-		User:         ToUserResponse(p.User),
+		AccessToken: p.AccessToken,
+		TokenType:   p.TokenType,
+		ExpiresIn:   p.ExpiresIn,
+		User:        ToUserResponse(p.User),
 	}
 }
 
@@ -92,19 +95,20 @@ func NewPage[T any](items []T, nextCursor string, hasMore bool) Page[T] {
 // `user_id` 保留：它是会话模型的一等字段，而这里的会话一定是调用者自己的，
 // 不构成信息泄露；反过来缺了它，客户端缓存／合并多个用户的会话时就得另找字段区分。
 type ConversationResponse struct {
-	ID            string            `json:"id"`
-	UserID        string            `json:"user_id"`
-	Title         string            `json:"title"`
-	TitleSource   string            `json:"title_source"`
-	Status        string            `json:"status"`
-	Model         *string           `json:"model"`
-	KBIDs         []string          `json:"kb_ids"`
-	MessageCount  int               `json:"message_count"`
-	LastMessageAt *string           `json:"last_message_at"`
-	Pinned        bool              `json:"pinned"`
-	Metadata      map[string]string `json:"metadata"`
-	CreatedAt     string            `json:"created_at"`
-	UpdatedAt     string            `json:"updated_at"`
+	ID                 string            `json:"id"`
+	UserID             string            `json:"user_id"`
+	Title              string            `json:"title"`
+	TitleSource        string            `json:"title_source"`
+	Status             string            `json:"status"`
+	Model              *string           `json:"model"`
+	KBIDs              []string          `json:"kb_ids"`
+	MessageCount       int               `json:"message_count"`
+	LastMessageAt      *string           `json:"last_message_at"`
+	LastMessagePreview string            `json:"last_message_preview"`
+	Pinned             bool              `json:"pinned"`
+	Metadata           map[string]string `json:"metadata"`
+	CreatedAt          string            `json:"created_at"`
+	UpdatedAt          string            `json:"updated_at"`
 }
 
 // ToConversationResponse 把领域对象映射成对外视图。
@@ -121,19 +125,20 @@ func ToConversationResponse(c *biz.Conversation) *ConversationResponse {
 		metadata = map[string]string{}
 	}
 	return &ConversationResponse{
-		ID:            c.ID,
-		UserID:        c.UserID,
-		Title:         c.Title,
-		TitleSource:   c.TitleSource,
-		Status:        c.Status,
-		Model:         c.Model,
-		KBIDs:         kbIDs,
-		MessageCount:  c.MessageCount,
-		LastMessageAt: clockx.FormatPtr(c.LastMessageAt),
-		Pinned:        c.Pinned,
-		Metadata:      metadata,
-		CreatedAt:     clockx.Format(c.CreatedAt),
-		UpdatedAt:     clockx.Format(c.UpdatedAt),
+		ID:                 c.ID,
+		UserID:             c.UserID,
+		Title:              c.Title,
+		TitleSource:        c.TitleSource,
+		Status:             c.Status,
+		Model:              c.Model,
+		KBIDs:              kbIDs,
+		MessageCount:       c.MessageCount,
+		LastMessageAt:      clockx.FormatPtr(c.LastMessageAt),
+		LastMessagePreview: c.LastMessagePreview,
+		Pinned:             c.Pinned,
+		Metadata:           metadata,
+		CreatedAt:          clockx.Format(c.CreatedAt),
+		UpdatedAt:          clockx.Format(c.UpdatedAt),
 	}
 }
 

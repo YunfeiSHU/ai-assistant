@@ -143,7 +143,7 @@ func (s *MessageService) StreamSend(
 	}
 	defer func() { _ = stream.Close() }()
 
-	end, loopErr := s.pump(ctx, stream, acc, sink, conv.ID, assistantID)
+	end, loopErr := s.pump(ctx, stream, acc, sink, conv.ID, assistantID, userMsg)
 
 	// SSE 连接的关闭与「客户端主动离开」的记账。放这里而不是传输层：
 	// 断连原因由 pump 判定（写失败/ctx 取消/上游断开），传输层只拿到一个 error，
@@ -186,6 +186,7 @@ func (s *MessageService) pump(
 	sink StreamSink,
 	conversationID string,
 	assistantID string,
+	userMsg *Message,
 ) (streamEnd, error) {
 	events := stream.Events()
 
@@ -234,7 +235,7 @@ func (s *MessageService) pump(
 			}
 			resetTimer(idle, s.d.StreamIdleTimeout)
 			acc.observe(ev)
-			ev = s.authoritativeMeta(ctx, ev, conversationID, assistantID)
+			ev = s.authoritativeMeta(ctx, ev, conversationID, assistantID, userMsg)
 
 			if err := sink.Send(ev); err != nil {
 				// 写响应失败通常意味着客户端已经走了（RST）。继续把答案流进黑洞毫无意义，
@@ -290,6 +291,7 @@ func (s *MessageService) authoritativeMeta(
 	ctx context.Context,
 	ev StreamEvent,
 	conversationID, messageID string,
+	userMsg *Message,
 ) StreamEvent {
 	meta, ok := ev.(StreamMetaEvent)
 	if !ok {
@@ -305,6 +307,10 @@ func (s *MessageService) authoritativeMeta(
 	}
 	meta.ConversationID = conversationID
 	meta.MessageID = messageID
+	if userMsg != nil {
+		meta.UserMessageID = userMsg.ID
+		meta.UserSeq = userMsg.Seq
+	}
 	return meta
 }
 

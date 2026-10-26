@@ -312,10 +312,16 @@ func NewRedisRateLimiter(s *Store) *RedisRateLimiter { return &RedisRateLimiter{
 // 代价是窗口边界处可能通过接近 2 倍的名额（`59s` 与 `61s` 各来一轮），
 // 对本项目的阈值（10~30 次/分钟）可接受。
 func (l *RedisRateLimiter) Allow(ctx context.Context, scope, id string, limit int64, window time.Duration, at time.Time) (bool, time.Duration, error) {
+	allowed, _, retryAfter, err := l.AllowInfo(ctx, scope, id, limit, window, at)
+	return allowed, retryAfter, err
+}
+
+// AllowInfo 见 biz.RateLimitInfoLimiter：额外返回已用额度，供 B-07 响应头。
+func (l *RedisRateLimiter) AllowInfo(ctx context.Context, scope, id string, limit int64, window time.Duration, at time.Time) (bool, int64, time.Duration, error) {
 	bucket := at.Truncate(window)
 	key, err := RateWindowKey(scope, id, bucket)
 	if err != nil {
-		return false, 0, err
+		return false, 0, 0, err
 	}
 	counter := &RedisQuotaCounter{store: l.store}
 	// 复用 `reserveScript` 的「不超过上限则自增」语义；TTL 给整个窗口 ——
@@ -323,19 +329,19 @@ func (l *RedisRateLimiter) Allow(ctx context.Context, scope, id string, limit in
 	raw, err := counter.evalNumbers(ctx, reserveScript, []string{key, ""},
 		1, limit, int64(window/time.Millisecond), "")
 	if err != nil {
-		return false, 0, err
+		return false, 0, 0, err
 	}
 	if len(raw) < 2 {
-		return false, 0, fmt.Errorf("data: 限流脚本返回了 %d 个值", len(raw))
+		return false, 0, 0, fmt.Errorf("data: 限流脚本返回了 %d 个值", len(raw))
 	}
 	if raw[1] == 1 {
-		return true, 0, nil
+		return true, raw[0], 0, nil
 	}
 	retryAfter := bucket.Add(window).Sub(at)
 	if retryAfter < 0 {
 		retryAfter = 0
 	}
-	return false, retryAfter, nil
+	return false, raw[0], retryAfter, nil
 }
 
 // ---- 进程内兜底 ----
@@ -799,25 +805,39 @@ func NewDegradedRateLimiter(primary biz.RateLimiter, log *slog.Logger) *Degraded
 
 // Allow 见 biz.RateLimiter。
 func (l *DegradedRateLimiter) Allow(ctx context.Context, scope, id string, limit int64, window time.Duration, at time.Time) (bool, time.Duration, error) {
+	allowed, _, retryAfter, err := l.AllowInfo(ctx, scope, id, limit, window, at)
+	return allowed, retryAfter, err
+}
+
+// AllowInfo 见 biz.RateLimitInfoLimiter。
+func (l *DegradedRateLimiter) AllowInfo(ctx context.Context, scope, id string, limit int64, window time.Duration, at time.Time) (bool, int64, time.Duration, error) {
 	if l.usePrimary() {
-		allowed, retryAfter, err := l.primary.Allow(ctx, scope, id, limit, window, at)
-		if err == nil {
-			l.recovered()
-			return allowed, retryAfter, nil
+		if primary, ok := l.primary.(biz.RateLimitInfoLimiter); ok {
+			allowed, used, retryAfter, err := primary.AllowInfo(ctx, scope, id, limit, window, at)
+			if err == nil {
+				l.recovered()
+				return allowed, used, retryAfter, nil
+			}
+			l.degrade(err)
+		} else {
+			allowed, retryAfter, err := l.primary.Allow(ctx, scope, id, limit, window, at)
+			if err == nil {
+				l.recovered()
+				return allowed, 0, retryAfter, nil
+			}
+			l.degrade(err)
 		}
-		l.degrade(err)
 	}
 	bucket := at.Truncate(window)
 	used, ok := l.local.reserve("rate|"+scope+"|"+id+"|"+bucket.UTC().Format(time.RFC3339), 1, limit, window)
 	if ok {
-		return true, 0, nil
+		return true, used, 0, nil
 	}
 	retryAfter := bucket.Add(window).Sub(at)
 	if retryAfter < 0 {
 		retryAfter = 0
 	}
-	_ = used
-	return false, retryAfter, nil
+	return false, used, retryAfter, nil
 }
 
 func (l *DegradedRateLimiter) usePrimary() bool {

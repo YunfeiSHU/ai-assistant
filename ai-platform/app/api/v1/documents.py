@@ -7,8 +7,10 @@
 from __future__ import annotations
 
 import logging
+from urllib.parse import quote
 
-from fastapi import APIRouter, status
+from fastapi import APIRouter, Response, status
+from fastapi.responses import RedirectResponse
 
 from app.api.deps import DocumentServiceDep, PaginationDep, UserId
 from app.schemas.document import (
@@ -49,6 +51,48 @@ async def list_document_chunks(
         items=[ChunkOut.model_validate(chunk.to_dict()) for chunk in items],
         next_cursor=next_cursor,
         has_more=next_cursor is not None,
+    )
+
+
+@router.get(
+    "/{doc_id}/download-url",
+    summary="获取原文下载信息（预签名）",
+)
+async def get_document_download_url(
+    doc_id: str, user_id: UserId, service: DocumentServiceDep
+) -> dict[str, object]:
+    """真实对象存储返回预签名 URL；内存存储返回 ``url=null``，前端改走 /download 字节流。"""
+    document, url, _data = await service.download_document(doc_id, user_id)
+    return {
+        "url": url,
+        "expires_in": 300 if url else 0,
+        "doc_name": document.doc_name,
+        "mime_type": document.mime_type,
+    }
+
+
+@router.get(
+    "/{doc_id}/download",
+    summary="下载/预览原文",
+    responses={
+        200: {"content": {"application/octet-stream": {}}},
+        302: {"description": "预签名 URL（真实对象存储）"},
+    },
+)
+async def download_document(
+    doc_id: str, user_id: UserId, service: DocumentServiceDep
+) -> Response:
+    """真实存储 302 到预签名 URL；内存存储直接返回字节。"""
+    document, url, data = await service.download_document(doc_id, user_id)
+    if url:
+        return RedirectResponse(url=url, status_code=status.HTTP_302_FOUND)
+    if data is None:
+        return Response(status_code=status.HTTP_404_NOT_FOUND)
+    filename = quote(document.doc_name or "document")
+    return Response(
+        content=data,
+        media_type=document.mime_type or "application/octet-stream",
+        headers={"Content-Disposition": f"inline; filename*=UTF-8''{filename}"},
     )
 
 

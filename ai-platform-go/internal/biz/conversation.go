@@ -57,11 +57,14 @@ type Conversation struct {
 	KBIDs         []string
 	MessageCount  int
 	LastMessageAt *time.Time
-	Pinned        bool
-	Metadata      map[string]string
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
-	DeletedAt     *time.Time
+	// LastMessagePreview 是最后一条非空 user/assistant 的短预览（B-06）。
+	// 只由列表查询填充；详情不保证有值。
+	LastMessagePreview string
+	Pinned             bool
+	Metadata           map[string]string
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+	DeletedAt          *time.Time
 }
 
 // IsActive 报告会话是否可写（只有 active 能追加消息，docs/03-§1 不变式）。

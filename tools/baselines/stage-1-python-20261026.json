@@ -1,0 +1,123 @@
+{
+  "generated_at": "2026-10-26T02:20:39.053717+00:00",
+  "url": "http://127.0.0.1:8000/api/v1/chat/stream",
+  "model": null,
+  "rounds": 1,
+  "success": 5,
+  "total": 5,
+  "first_token_ms_p50": 1034.5,
+  "first_token_ms_p95": 1107.6,
+  "total_ms_p50": 1206.1,
+  "records": [
+    {
+      "index": 1,
+      "prompt": "用一句话解释什么是 SSE。",
+      "status": "ok",
+      "model": "deepseek-flash",
+      "first_event_ms": 34.7,
+      "first_token_ms": 784.1,
+      "total_ms": 1095.2,
+      "finish_reason": "stop",
+      "partial": false,
+      "usage": {
+        "prompt_tokens": 143,
+        "completion_tokens": 80,
+        "total_tokens": 223
+      },
+      "chars": 104,
+      "references": 0,
+      "tool_events": 0,
+      "degraded": false,
+      "error": null,
+      "round": 1
+    },
+    {
+      "index": 2,
+      "prompt": "把 128 乘以 1.15，只给结果。",
+      "status": "ok",
+      "model": "deepseek-flash",
+      "first_event_ms": 29.1,
+      "first_token_ms": 1034.5,
+      "total_ms": 1037.0,
+      "finish_reason": "stop",
+      "partial": false,
+      "usage": {
+        "prompt_tokens": 151,
+        "completion_tokens": 29,
+        "total_tokens": 180
+      },
+      "chars": 5,
+      "references": 0,
+      "tool_events": 0,
+      "degraded": false,
+      "error": null,
+      "round": 1
+    },
+    {
+      "index": 3,
+      "prompt": "用三句话说明 Redis 的 LTRIM 用途。",
+      "status": "ok",
+      "model": "deepseek-flash",
+      "first_event_ms": 20.6,
+      "first_token_ms": 1928.8,
+      "total_ms": 3077.3,
+      "finish_reason": "stop",
+      "partial": false,
+      "usage": {
+        "prompt_tokens": 150,
+        "completion_tokens": 296,
+        "total_tokens": 446
+      },
+      "chars": 283,
+      "references": 0,
+      "tool_events": 0,
+      "degraded": false,
+      "error": null,
+      "round": 1
+    },
+    {
+      "index": 4,
+      "prompt": "什么是向量数据库？一句话回答。",
+      "status": "ok",
+      "model": "deepseek-flash",
+      "first_event_ms": 26.9,
+      "first_token_ms": 880.7,
+      "total_ms": 1206.1,
+      "finish_reason": "stop",
+      "partial": false,
+      "usage": {
+        "prompt_tokens": 144,
+        "completion_tokens": 80,
+        "total_tokens": 224
+      },
+      "chars": 86,
+      "references": 0,
+      "tool_events": 0,
+      "degraded": false,
+      "error": null,
+      "round": 1
+    },
+    {
+      "index": 5,
+      "prompt": "写一个 Python 函数，判断字符串是否是回文。",
+      "status": "ok",
+      "model": "deepseek-flash",
+      "first_event_ms": 21.8,
+      "first_token_ms": 1107.6,
+      "total_ms": 3318.4,
+      "finish_reason": "stop",
+      "partial": false,
+      "usage": {
+        "prompt_tokens": 149,
+        "completion_tokens": 490,
+        "total_tokens": 639
+      },
+      "chars": 1088,
+      "references": 0,
+      "tool_events": 0,
+      "degraded": false,
+      "error": null,
+      "round": 1
+    }
+  ]
+}

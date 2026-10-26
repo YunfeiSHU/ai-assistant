@@ -63,7 +63,7 @@ def test_chat_without_memory_is_single_turn(
     chat_headers: dict[str, str],
     fake_llm: FakeLLM,
 ) -> None:
-    """``use_memory=false`` 时不落上下文、也不新建会话。"""
+    """``use_memory=false`` 且没有 ``conversation_id`` 时：单轮问答，不新建会话。"""
     application, _ = make_chat_app(llm=fake_llm)
 
     with TestClient(application) as client:
@@ -288,15 +288,16 @@ def test_messages_order_is_system_then_history_then_query(
     assert messages[-1] == LLMMessage(role="user", content="退款要几天？")
 
 
-def test_memory_disabled_uses_only_request_history(
+def test_memory_disabled_uses_short_term_context_not_request_history(
     make_chat_app: Callable[..., tuple[FastAPI, Settings]],
     chat_headers: dict[str, str],
     fake_llm: FakeLLM,
 ) -> None:
-    """``AC-CHAT-12``：关闭记忆后 prompt 里不得出现 memory/summary 片段。
+    """B-15：关闭长期记忆仍使用短期上下文；请求体 history 只在无会话时使用。
 
-    先在同一进程里跑一轮「带记忆」的对话制造上下文，再关掉记忆重问：
-    如果实现里偷偷读了存储，这里会立刻看到上一轮的痕迹。
+    旧契约（AC-CHAT-12）把 ``use_memory=false`` 当成“连短期上下文也不读”，
+    这会让关闭记忆的用户失去多轮上下文。这里锁定新语义：短期上下文照常，
+    长期记忆/摘要不注入。
     """
     application, _ = make_chat_app(llm=fake_llm)
 
@@ -313,8 +314,10 @@ def test_memory_disabled_uses_only_request_history(
 
     messages = fake_llm.calls[1]
     joined = "\n".join(message.content for message in messages)
-    assert "A123" not in joined
-    assert [message.content for message in messages[1:-1]] == ["只带这一条"]
+    # 短期上下文仍然带进来。
+    assert "A123" in joined
+    # 有 conversation_id 时以存储历史为准，不混入请求体 history。
+    assert "只带这一条" not in joined
     assert second["conversation_id"] == first["conversation_id"]
 
 

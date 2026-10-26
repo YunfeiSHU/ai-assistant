@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/oklog/ulid/v2"
@@ -32,10 +33,20 @@ const (
 // （math/rand 默认可被推断，会话 ID 可预测等于越权风险）。
 var entropy = ulid.Monotonic(rand.Reader, 0)
 
+// entropyMu 保护 entropy 的内部状态。
+//
+// `ulid.Monotonic` 返回的 MonotonicEntropy 不是并发安全的：同一毫秒内的并发调用
+// 会读到同一个 entropy 快照并各自递增，从而生成**相同 ULID**。症状是并发创建会话时
+// `conversation` 主键冲突（duplicated key）→ 503。ID 生成本身是纳秒级操作，
+// 串行化这一小段远比重试/回滚整个业务事务便宜。
+var entropyMu sync.Mutex
+
 // newIDFunc 允许测试注入确定性 ID（见 SetIDGeneratorForTest）。
 var newIDFunc = defaultNewID
 
 func defaultNewID(prefix string) string {
+	entropyMu.Lock()
+	defer entropyMu.Unlock()
 	return prefix + "_" + ulid.MustNew(ulid.Timestamp(time.Now().UTC()), entropy).String()
 }
 

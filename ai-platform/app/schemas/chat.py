@@ -98,6 +98,11 @@ class ChatRequest(StrictModel):
     )
     use_rag: bool = Field(default=True, description="是否启用知识库检索")
     kb_ids: list[str] = Field(default_factory=list, max_length=10, description="检索范围")
+    attachment_doc_ids: list[str] = Field(
+        default_factory=list,
+        max_length=5,
+        description="本轮临时附件（当前用户已入库文档；参与检索，不改 KB 范围）",
+    )
     use_memory: bool = Field(default=True, description="是否读写会话上下文与长期记忆")
     use_tools: bool = Field(default=False, description="是否启用 Agent Loop")
     stream: bool = Field(default=False, description="兼容字段；/chat 只接受 false")
@@ -114,6 +119,16 @@ class ChatRequest(StrictModel):
         for kb_id in value:
             if not _KB_PATTERN.fullmatch(kb_id):
                 msg = f"kb_id 格式非法：{kb_id}"
+                raise ValueError(msg)
+        return value
+
+    @field_validator("attachment_doc_ids")
+    @classmethod
+    def _check_attachment_doc_ids(cls, value: list[str]) -> list[str]:
+        pattern = re.compile(r"doc_[0-9A-HJKMNP-TV-Z]{26}")
+        for doc_id in value:
+            if not pattern.fullmatch(doc_id):
+                msg = f"attachment doc_id 格式非法：{doc_id}"
                 raise ValueError(msg)
         return value
 

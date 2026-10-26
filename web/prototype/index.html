@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI Assistant · 前端原型</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<!-- ========== 登录（静态原型入口） ========== -->
+<div class="auth" id="auth">
+  <section class="auth-left">
+    <div class="brand brand-lg">
+      <div class="logo">AI</div>
+      <div class="brand-text">
+        <strong>AI Assistant</strong>
+        <span>个人智能工作台</span>
+      </div>
+    </div>
+
+    <div class="auth-copy">
+      <p class="eyebrow">INTERFACE PROTOTYPE · MOCK DATA</p>
+      <h1>把 Agent 的能力，<br>做成可读的界面。</h1>
+      <p class="lead">
+        流式回答、引用溯源、工具轨迹、上下文预算。
+        这是一个不接后端的可点击原型，用来先定交互与视觉。
+      </p>
+      <ul class="feature-list">
+        <li><span class="tick">✓</span> 逐字流式，可随时停止并保留 partial</li>
+        <li><span class="tick">✓</span> 引用角标 ↔ 右侧资料卡双向定位</li>
+        <li><span class="tick">✓</span> 工具调用轨迹、降级原因、token 账单可见</li>
+        <li><span class="tick">✓</span> 上下文预算透视：模型到底看到了什么</li>
+      </ul>
+    </div>
+
+    <div class="auth-preview" aria-hidden="true">
+      <div class="preview-head">
+        <span class="dot red"></span><span class="dot amber"></span><span class="dot green"></span>
+        <span class="preview-title">conversation · cv_01J8…</span>
+      </div>
+      <div class="preview-body">
+        <div class="preview-user">首帧 35 秒超时是哪一层在兜底？</div>
+        <div class="preview-ai">
+          <span class="pulse"></span>
+          首帧超时在 <b>网关</b> 兜底：35s 内没等到第一帧就回 <code>504</code>，并把本轮落成
+          <code>partial</code>。<span class="preview-cite">1</span>
+        </div>
+        <div class="preview-meta">deepseek-flash · 812 → 64 tokens · 2.0s</div>
+      </div>
+    </div>
+
+    <p class="auth-note">界面数据全部为 mock；接口契约见 <code>web/docs/01</code>。</p>
+  </section>
+
+  <section class="auth-right">
+    <form class="auth-card" id="authForm" autocomplete="off">
+      <div class="auth-tabs">
+        <button type="button" class="active" id="tabLogin">登录</button>
+        <button type="button" id="tabRegister">注册</button>
+      </div>
+      <h2 id="authTitle">欢迎回来</h2>
+      <p class="auth-sub" id="authSub">演示原型：任意邮箱与密码都能进入。</p>
+
+      <label class="field">
+        <span>邮箱</span>
+        <input id="authEmail" type="email" value="demo@ai-assistant.dev" placeholder="you@example.com">
+      </label>
+      <label class="field hidden" id="nicknameField">
+        <span>昵称</span>
+        <input id="authNickname" type="text" placeholder="怎么称呼你">
+      </label>
+      <label class="field">
+        <span>密码</span>
+        <input id="authPassword" type="password" value="demo1234" placeholder="至少 8 位">
+      </label>
+
+      <button class="btn primary block" type="submit" id="authSubmit">登录并进入</button>
+      <button class="btn ghost block" type="button" id="demoEnter">跳过，直接看原型 →</button>
+      <p class="auth-foot">本页不发送任何请求；进入后所有操作都在内存里模拟。</p>
+    </form>
+  </section>
+</div>
+
+<!-- ========== 应用壳 ========== -->
+<div class="app hidden" id="app">
+  <div class="overlay" id="overlay"></div>
+
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      <div class="logo">AI</div>
+      <div class="brand-text">
+        <strong>AI Assistant</strong>
+        <span>个人智能工作台</span>
+      </div>
+      <button class="icon-btn collapse-btn" id="collapseBtn" title="收起侧栏" aria-label="收起侧栏">
+        <span data-icon="chevron"></span>
+      </button>
+    </div>
+
+    <button class="btn primary block new-chat" id="newChat">
+      <span data-icon="plus"></span><span class="label">新建对话</span>
+    </button>
+
+    <div class="search">
+      <span data-icon="search" class="search-icon"></span>
+      <input id="convSearch" placeholder="搜索会话 / 内容" aria-label="搜索会话">
+      <kbd>⌘K</kbd>
+    </div>
+
+    <div class="conv-section">
+      <div class="section-label">最近对话</div>
+      <div class="conv-list" id="convList"></div>
+    </div>
+
+    <nav class="side-nav" aria-label="主导航">
+      <button data-nav="knowledge"><span data-icon="book"></span><span class="label">知识库</span><em>2</em></button>
+      <button data-nav="tasks"><span data-icon="task"></span><span class="label">任务</span><em class="dot"></em></button>
+      <button data-nav="memory"><span data-icon="brain"></span><span class="label">记忆</span></button>
+      <button data-nav="quota"><span data-icon="gauge"></span><span class="label">配额</span><em>63%</em></button>
+    </nav>
+
+    <div class="user-card" id="userCard" role="button" tabindex="0">
+      <div class="avatar">阿</div>
+      <div class="user-info">
+        <strong>阿泽</strong>
+        <span>free · 今日 37/100</span>
+      </div>
+      <span data-icon="more" class="user-more"></span>
+    </div>
+    <div class="user-menu hidden" id="userMenu">
+      <button data-nav="settings"><span data-icon="settings"></span>设置</button>
+      <button id="menuTheme"><span data-icon="moon"></span>切换主题</button>
+      <button id="menuLogout" class="danger"><span data-icon="x"></span>退出登录</button>
+    </div>
+  </aside>
+
+  <div class="main">
+    <header class="topbar">
+      <button class="icon-btn only-mobile" id="menuBtn" aria-label="打开侧栏">
+        <span data-icon="menu"></span>
+      </button>
+      <div class="page-heading">
+        <h1 id="pageTitle">SSE 流式输出排查</h1>
+        <p id="pageSubtitle">deepseek-flash · 4 条消息</p>
+      </div>
+      <div class="topbar-actions" id="topbarActions"></div>
+    </header>
+    <main id="viewRoot"></main>
+  </div>
+
+  <aside class="rail" id="rail" aria-label="资料与上下文"></aside>
+</div>
+
+<div class="toast-stack" id="toastStack" aria-live="polite"></div>
+<div class="modal-root hidden" id="modalRoot" role="dialog" aria-modal="true"></div>
+
+<script src="app.js" defer></script>
+</body>
+</html>

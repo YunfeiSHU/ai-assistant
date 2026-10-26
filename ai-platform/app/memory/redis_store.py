@@ -236,6 +236,52 @@ class RedisConversationStore:
             ex=self._ttl_seconds,
         )
 
+    async def delete_message(
+        self,
+        conversation_id: str,
+        user_id: str,
+        *,
+        message_id: str = "",
+        role: str = "",
+        content: str = "",
+    ) -> int:
+        await self._assert_owner(conversation_id, user_id)
+        ctx_key = self._ctx_key(conversation_id)
+        raw_items = await self._client.lrange(ctx_key, 0, -1)
+        decoded = [(_decode(item), item) for item in raw_items]
+        target_index = -1
+        for index in range(len(decoded) - 1, -1, -1):
+            message, _raw = decoded[index]
+            if message is None:
+                continue
+            if message_id and message.message_id == message_id:
+                target_index = index
+                break
+            if role and content and message.role == role and message.content == content:
+                target_index = index
+                break
+        if target_index < 0:
+            return 0
+
+        remaining = [
+            raw for index, (_message, raw) in enumerate(decoded) if index != target_index
+        ]
+        ttl = await self._client.ttl(ctx_key)
+        await self._client.delete(ctx_key)
+        if remaining:
+            await self._client.rpush(ctx_key, *remaining)
+            await self._client.ltrim(
+                ctx_key, -max(1, self._settings.memory_max_messages), -1
+            )
+            await self._client.expire(
+                ctx_key, max(1, ttl) if ttl and ttl > 0 else self._ttl_seconds
+            )
+        return 1
+
+    async def delete_summary(self, conversation_id: str, user_id: str) -> None:
+        await self._assert_owner(conversation_id, user_id)
+        await self._client.delete(self._summary_key(conversation_id))
+
     async def clear(self, conversation_id: str, user_id: str) -> None:
         await self._assert_owner(conversation_id, user_id)
         # owner 键保留：清空的是「上下文」而不是「会话归属」。一并删掉会让下一次写入把会话

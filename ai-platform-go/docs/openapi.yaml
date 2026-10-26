@@ -1,0 +1,777 @@
+openapi: 3.0.3
+info:
+  title: AI Assistant Gateway API
+  version: 1.0.0
+  description: '网关对外契约（B-12）。路径均带 `/api/v1` 前缀；认证使用 Bearer access token，
+
+    refresh 走 HttpOnly `ai_refresh` Cookie。
+
+    '
+servers:
+- url: http://127.0.0.1:8080/api/v1
+  description: 本地开发（Vite 代理同源 /api）
+tags:
+- name: auth
+- name: conversations
+- name: messages
+- name: search
+- name: tasks
+- name: knowledge
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    Error:
+      type: object
+      required:
+      - error
+      properties:
+        error:
+          type: object
+          required:
+          - code
+          - message
+          - retryable
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+            retryable:
+              type: boolean
+            details:
+              type: object
+              additionalProperties: true
+            trace_id:
+              type: string
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+        email:
+          type: string
+        nickname:
+          type: string
+        plan:
+          type: string
+    TokenResponse:
+      type: object
+      properties:
+        access_token:
+          type: string
+        token_type:
+          type: string
+          example: Bearer
+        expires_in:
+          type: integer
+        user:
+          $ref: '#/components/schemas/User'
+    Conversation:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        title_source:
+          type: string
+        status:
+          type: string
+          enum:
+          - active
+          - archived
+        message_count:
+          type: integer
+        last_message_at:
+          type: string
+          nullable: true
+        last_message_preview:
+          type: string
+        pinned:
+          type: boolean
+    Message:
+      type: object
+      properties:
+        id:
+          type: string
+        conversation_id:
+          type: string
+        seq:
+          type: integer
+        role:
+          type: string
+          enum:
+          - user
+          - assistant
+          - system
+          - tool
+        content:
+          type: string
+        status:
+          type: string
+        references:
+          type: array
+          items:
+            type: object
+        tool_calls:
+          type: array
+          items:
+            type: object
+        created_at:
+          type: string
+    Page:
+      type: object
+      properties:
+        items:
+          type: array
+          items: {}
+        next_cursor:
+          type: string
+          nullable: true
+        has_more:
+          type: boolean
+paths:
+  /auth/login:
+    post:
+      tags:
+      - auth
+      summary: 登录；refresh 通过 Set-Cookie 下发
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - email
+              - password
+              properties:
+                email:
+                  type: string
+                password:
+                  type: string
+      responses:
+        '200':
+          description: OK
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '401':
+          description: INVALID_CREDENTIALS
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /auth/refresh:
+    post:
+      tags:
+      - auth
+      summary: 用 ai_refresh Cookie 轮换 access
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '401':
+          description: INVALID_REFRESH_TOKEN
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /auth/logout:
+    post:
+      tags:
+      - auth
+      security:
+      - bearerAuth: []
+      summary: 退出并清 refresh Cookie
+      responses:
+        '204':
+          description: No Content
+  /me:
+    get:
+      tags:
+      - auth
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+    patch:
+      summary: Gateway route
+      responses:
+        '200':
+          description: OK
+  /conversations:
+    get:
+      tags:
+      - conversations
+      security:
+      - bearerAuth: []
+      parameters:
+      - in: query
+        name: keyword
+        schema:
+          type: string
+      - in: query
+        name: limit
+        schema:
+          type: integer
+          maximum: 100
+      - in: query
+        name: cursor
+        schema:
+          type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                - $ref: '#/components/schemas/Page'
+                - type: object
+                  properties:
+                    items:
+                      type: array
+                      items:
+                        $ref: '#/components/schemas/Conversation'
+    post:
+      tags:
+      - conversations
+      security:
+      - bearerAuth: []
+      responses:
+        '201':
+          description: Created
+  /conversations/{conversation_id}:
+    parameters:
+    - in: path
+      name: conversation_id
+      required: true
+      schema:
+        type: string
+    get:
+      tags:
+      - conversations
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Conversation'
+    patch:
+      tags:
+      - conversations
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: OK
+    delete:
+      tags:
+      - conversations
+      security:
+      - bearerAuth: []
+      responses:
+        '204':
+          description: No Content
+  /conversations/{conversation_id}/messages:
+    parameters:
+    - in: path
+      name: conversation_id
+      required: true
+      schema:
+        type: string
+    get:
+      tags:
+      - messages
+      security:
+      - bearerAuth: []
+      parameters:
+      - in: query
+        name: after_seq
+        schema:
+          type: integer
+          minimum: 0
+      - in: query
+        name: order
+        schema:
+          type: string
+          enum:
+          - asc
+          - desc
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                - $ref: '#/components/schemas/Page'
+                - type: object
+                  properties:
+                    items:
+                      type: array
+                      items:
+                        $ref: '#/components/schemas/Message'
+    post:
+      tags:
+      - messages
+      security:
+      - bearerAuth: []
+      description: 非流式发送；支持 attachment_doc_ids（B-09）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - content
+              properties:
+                content:
+                  type: string
+                use_rag:
+                  type: boolean
+                use_memory:
+                  type: boolean
+                use_tools:
+                  type: boolean
+                attachment_doc_ids:
+                  type: array
+                  maxItems: 5
+                  items:
+                    type: string
+      responses:
+        '200':
+          description: OK
+  /conversations/{conversation_id}/messages/stream:
+    parameters:
+    - in: path
+      name: conversation_id
+      required: true
+      schema:
+        type: string
+    post:
+      tags:
+      - messages
+      security:
+      - bearerAuth: []
+      description: SSE；meta 帧含 user_message_id/user_seq（B-05）
+      responses:
+        '200':
+          description: text/event-stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+  /messages/{message_id}:
+    parameters:
+    - in: path
+      name: message_id
+      required: true
+      schema:
+        type: string
+    get:
+      tags:
+      - messages
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+    delete:
+      tags:
+      - messages
+      security:
+      - bearerAuth: []
+      description: 同时同步 AI 上下文（B-04）
+      responses:
+        '204':
+          description: No Content
+  /messages/{message_id}/regenerate:
+    parameters:
+    - in: path
+      name: message_id
+      required: true
+      schema:
+        type: string
+    post:
+      tags:
+      - messages
+      security:
+      - bearerAuth: []
+      description: 非流式重新生成（B-03）
+      responses:
+        '200':
+          description: OK
+  /search/messages:
+    get:
+      tags:
+      - search
+      security:
+      - bearerAuth: []
+      description: 会话正文检索（B-10）
+      parameters:
+      - in: query
+        name: q
+        required: true
+        schema:
+          type: string
+          maxLength: 100
+      - in: query
+        name: limit
+        schema:
+          type: integer
+          maximum: 50
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        conversation_id:
+                          type: string
+                        title:
+                          type: string
+                        message_id:
+                          type: string
+                        role:
+                          type: string
+                        snippet:
+                          type: string
+                        created_at:
+                          type: string
+                  has_more:
+                    type: boolean
+  /tasks:
+    get:
+      tags:
+      - tasks
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: OK
+  /tasks/{task_id}:
+    parameters:
+    - in: path
+      name: task_id
+      required: true
+      schema:
+        type: string
+    get:
+      tags:
+      - tasks
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: OK
+  /tasks/{task_id}/events:
+    parameters:
+    - in: path
+      name: task_id
+      required: true
+      schema:
+        type: string
+    get:
+      tags:
+      - tasks
+      security:
+      - bearerAuth: []
+      description: 任务进度 SSE（B-01）
+      responses:
+        '200':
+          description: text/event-stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+  /tasks/{task_id}/cancel:
+    parameters:
+    - in: path
+      name: task_id
+      required: true
+      schema:
+        type: string
+    post:
+      tags:
+      - tasks
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: OK
+  /tasks/{task_id}/retry:
+    parameters:
+    - in: path
+      name: task_id
+      required: true
+      schema:
+        type: string
+    post:
+      tags:
+      - tasks
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: OK
+  /documents/{doc_id}/download:
+    parameters:
+    - in: path
+      name: doc_id
+      required: true
+      schema:
+        type: string
+    get:
+      tags:
+      - knowledge
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: 字节流
+        '302':
+          description: 预签名 URL
+        '404':
+          description: DOCUMENT_NOT_FOUND
+  /knowledge-bases:
+    get:
+      tags:
+      - knowledge
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: OK
+    post:
+      summary: Gateway route
+      responses:
+        '200':
+          description: OK
+  /auth/register:
+    post:
+      summary: Gateway route
+      responses:
+        '200':
+          description: OK
+  /auth/password:
+    post:
+      summary: Gateway route
+      responses:
+        '200':
+          description: OK
+  /me/quota:
+    get:
+      summary: Gateway route
+      responses:
+        '200':
+          description: OK
+  /me/usage:
+    get:
+      summary: Gateway route
+      responses:
+        '200':
+          description: OK
+  /conversations/{conversation_id}/archive:
+    post:
+      summary: Gateway route
+      responses:
+        '200':
+          description: OK
+  /conversations/{conversation_id}/unarchive:
+    post:
+      summary: Gateway route
+      responses:
+        '200':
+          description: OK
+  /conversations/{conversation_id}/context:
+    get:
+      summary: Gateway route
+      responses:
+        '200':
+          description: OK
+    delete:
+      summary: Gateway route
+      responses:
+        '200':
+          description: OK
+  /conversations/{conversation_id}/summary:
+    get:
+      summary: Gateway route
+      responses:
+        '200':
+          description: OK
+  /conversations/{conversation_id}/summary/rebuild:
+    post:
+      summary: Gateway route
+      responses:
+        '200':
+          description: OK
+  /knowledge-bases/{kb_id}:
+    get:
+      summary: Gateway route
+      responses:
+        '200':
+          description: OK
+    patch:
+      summary: Gateway route
+      responses:
+        '200':
+          description: OK
+    delete:
+      summary: Gateway route
+      responses:
+        '200':
+          description: OK
+  /knowledge-bases/{kb_id}/documents:
+    get:
+      summary: Gateway route
+      responses:
+        '200':
+          description: OK
+    post:
+      summary: Gateway route
+      responses:
+        '200':
+          description: OK
+  /knowledge-bases/{kb_id}/search:
+    post:
+      summary: Gateway route
+      responses:
+        '200':
+          description: OK
+  /documents/{doc_id}:
+    get:
+      summary: Gateway route
+      responses:
+        '200':
+          description: OK
+    delete:
+      summary: Gateway route
+      responses:
+        '200':
+          description: OK
+  /documents/{doc_id}/chunks:
+    get:
+      summary: Gateway route
+      responses:
+        '200':
+          description: OK
+  /documents/{doc_id}/download-url:
+    get:
+      summary: Gateway route
+      responses:
+        '200':
+          description: OK
+  /memories:
+    get:
+      summary: Gateway route
+      responses:
+        '200':
+          description: OK
+    post:
+      summary: Gateway route
+      responses:
+        '200':
+          description: OK
+    delete:
+      summary: Gateway route
+      responses:
+        '200':
+          description: OK
+  /memories/{mem_id}:
+    get:
+      summary: Gateway route
+      responses:
+        '200':
+          description: OK
+    patch:
+      summary: Gateway route
+      responses:
+        '200':
+          description: OK
+    delete:
+      summary: Gateway route
+      responses:
+        '200':
+          description: OK
+  /memory-settings:
+    get:
+      summary: Gateway route
+      responses:
+        '200':
+          description: OK
+    put:
+      summary: Gateway route
+      responses:
+        '200':
+          description: OK
+  /tools:
+    get:
+      summary: Gateway route
+      responses:
+        '200':
+          description: OK
+  /tools/{name}/invoke:
+    post:
+      summary: Gateway route
+      responses:
+        '200':
+          description: OK
+  /mcp/servers:
+    get:
+      summary: Gateway route
+      responses:
+        '200':
+          description: OK
+  /mcp/servers/{name}/tools:
+    get:
+      summary: Gateway route
+      responses:
+        '200':
+          description: OK
+  /mcp/servers/{name}/reload:
+    post:
+      summary: Gateway route
+      responses:
+        '200':
+          description: OK
+  /models:
+    get:
+      summary: Gateway route
+      responses:
+        '200':
+          description: OK

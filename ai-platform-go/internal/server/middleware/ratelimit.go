@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 
@@ -28,13 +29,26 @@ func RateLimit(svc *biz.RateLimitService, scope string, idOf func(*gin.Context) 
 		if id == "" {
 			id = ClientIP(c)
 		}
-		if err := svc.Allow(c.Request.Context(), scope, id); err != nil {
+		info, err := svc.AllowWithInfo(c.Request.Context(), scope, id)
+		setRateLimitHeaders(c, scope, info)
+		if err != nil {
 			httpx.Fail(c, err)
 			c.Abort()
 			return
 		}
 		c.Next()
 	}
+}
+
+// setRateLimitHeaders 写 B-07 的剩余额度头；限流器不支持剩余额度时一个都不写。
+func setRateLimitHeaders(c *gin.Context, scope string, info biz.RateLimitInfo) {
+	if !info.Available {
+		return
+	}
+	c.Header("X-RateLimit-Scope", scope)
+	c.Header("X-RateLimit-Limit", strconv.FormatInt(info.Limit, 10))
+	c.Header("X-RateLimit-Remaining", strconv.FormatInt(info.Remaining, 10))
+	c.Header("X-RateLimit-Reset", strconv.FormatInt(info.ResetAt.Unix(), 10))
 }
 
 // RateLimitByUser 按当前用户限流（未鉴权时回落到 IP）。
@@ -75,7 +89,11 @@ func RateLimitLoginAccount(svc *biz.RateLimitService) gin.HandlerFunc {
 			c.Next()
 			return
 		}
-		if err := svc.Allow(c.Request.Context(), biz.RateScopeLoginAccount, accountBucketKey(email)); err != nil {
+		info, err := svc.AllowWithInfo(
+			c.Request.Context(), biz.RateScopeLoginAccount, accountBucketKey(email),
+		)
+		setRateLimitHeaders(c, biz.RateScopeLoginAccount, info)
+		if err != nil {
 			httpx.Fail(c, err)
 			c.Abort()
 			return

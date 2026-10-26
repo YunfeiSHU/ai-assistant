@@ -111,6 +111,8 @@ class Task:
     resource_id: str
     payload: dict[str, Any] = field(default_factory=dict)
     progress: int = 0
+    #: 已请求取消但尚未到检查点（B-13；RUNNING 时由服务层从取消标记补出，不落库）
+    cancel_requested: bool = False
     stage: str | None = None
     #: 切片总数（切分阶段一次算定）/ 已完成切片数（``docs/10`` UP-02）。
     #:
@@ -158,6 +160,7 @@ class Task:
             "resource_id": self.resource_id,
             "payload": self.payload,
             "progress": self.progress,
+            "cancel_requested": self.cancel_requested,
             "stage": self.stage,
             "chunks_total": self.chunks_total,
             "chunks_done": self.chunks_done,

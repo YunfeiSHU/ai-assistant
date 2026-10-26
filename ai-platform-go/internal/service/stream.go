@@ -137,16 +137,20 @@ func (s *sseSink) log() *slog.Logger {
 
 // ---- 事件渲染 ----
 
-// streamMetaDTO 是 `meta` 帧的 data（docs/04-§2.3 的字段列，与 AI 侧逐字段一致）。
+// streamMetaDTO 是 `meta` 帧的 data（docs/04-§2.3 的字段列）。
 // `conversation_id` / `message_id` 都必须是网关自己的值：会话 ID 的权威在网关
 // （REQ-ORCH-006 / AC-ORCH-07），转发上游回显的值会让用户看到「AI 忽然失忆」；
 // 消息 ID 转发 AI 侧的会 404（那条消息在网关台账里不存在）。
+// B-05 起额外带 `user_message_id` / `user_seq`。
 type streamMetaDTO struct {
 	ConversationID string `json:"conversation_id"`
 	MessageID      string `json:"message_id"`
-	Model          string `json:"model"`
-	CreatedAt      string `json:"created_at"`
-	Degraded       bool   `json:"degraded"`
+	// B-05：网关台账里的 user 消息 ID 与 seq，客户端据此对账，不再靠内容匹配。
+	UserMessageID string `json:"user_message_id"`
+	UserSeq       int    `json:"user_seq"`
+	Model         string `json:"model"`
+	CreatedAt     string `json:"created_at"`
+	Degraded      bool   `json:"degraded"`
 }
 
 // streamReferenceDTO 是 `reference` 帧的 data。
@@ -211,6 +215,8 @@ func renderStreamEvent(ev biz.StreamEvent) (string, []byte, error) {
 		return streamFrame(e.EventName(), streamMetaDTO{
 			ConversationID: e.ConversationID,
 			MessageID:      e.MessageID,
+			UserMessageID:  e.UserMessageID,
+			UserSeq:        e.UserSeq,
 			Model:          e.Model,
 			CreatedAt:      e.CreatedAt,
 			Degraded:       e.Degraded,

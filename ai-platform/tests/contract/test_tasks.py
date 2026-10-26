@@ -55,6 +55,7 @@ def test_task_shape_matches_contract(rag_client: TestClient) -> None:
         "resource_type",
         "resource_id",
         "progress",
+        "cancel_requested",
         "stage",
         "chunks_total",
         "chunks_done",

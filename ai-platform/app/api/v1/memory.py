@@ -29,6 +29,7 @@ from app.core.tokens import count_tokens
 from app.memory.long_term import MemoryKind, MemoryRecord
 from app.schemas.memory import (
     ContextBudgetOut,
+    ContextMessageDelete,
     ContextMessageOut,
     ContextSummaryOut,
     ConversationContextOut,
@@ -250,6 +251,27 @@ async def delete_conversation_context(
 ) -> None:
     """清空短期上下文（幂等）；**不删**长期记忆（``docs/07`` §5.4）。"""
     await service.store.clear(conversation_id, user_id)
+
+
+@router.post(
+    "/conversations/{conversation_id}/context/messages/delete",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="从上下文删除一条消息（内部 B-04）",
+)
+async def delete_context_message(
+    conversation_id: str,
+    body: ContextMessageDelete,
+    user_id: UserId,
+    service: MemoryServiceDep,
+) -> None:
+    """删除消息并失效摘要；消息不存在时幂等返回 204。"""
+    await service.delete_context_message(
+        conversation_id,
+        user_id,
+        message_id=body.message_id,
+        role=body.role,
+        content=body.content,
+    )
 
 
 @router.get(

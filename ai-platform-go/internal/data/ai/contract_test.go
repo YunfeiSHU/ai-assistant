@@ -53,6 +53,9 @@ func TestContractFieldParity(t *testing.T) {
 				// 流式是 M4 的事；M3 的 `/chat/stream` 仍走 HTTP/SSE，
 				// gRPC 契约先在 M4 加 `ChatStream`，届时这里同步放开。
 				"stream": "M4 的流式开关，gRPC 侧由独立的 ChatStream RPC 承担",
+				// B-09：附件目前只走 HTTP；gRPC proto 未扩展。
+				// 若开启 AI_GRPC_ENABLED，attachment_doc_ids 会被忽略，需显式禁用附件。
+				"attachment_doc_ids": "B-09 仅 HTTP 通道；gRPC proto 尚未增加 doc_ids",
 			},
 		},
 		{

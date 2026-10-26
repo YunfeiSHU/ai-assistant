@@ -38,10 +38,12 @@ type ChatRequest struct {
 	// Query 是用户提问原文（已去首尾空白）。
 	Query string
 
-	UseRAG    bool
-	KBIDs     []string
-	UseMemory bool
-	UseTools  bool
+	UseRAG bool
+	KBIDs  []string
+	// AttachmentDocIDs 是 B-09 的临时文档附件；参与检索，不改 KBIDs。
+	AttachmentDocIDs []string
+	UseMemory        bool
+	UseTools         bool
 
 	Model          string
 	Temperature    *float64

@@ -68,6 +68,8 @@ type AIProxyResponse struct {
 	Status      int
 	ContentType string
 	Body        []byte
+	// Location 是上游 3xx 的跳转目标（B-02 文档下载用 302 预签名 URL）。
+	Location string
 	// RetryAfter 是上游的 `Retry-After` 原值（空表示没有）。
 	RetryAfter string
 	// TraceID 是上游回显的 `X-Trace-Id`（接缝 J3）。只做一个「是否一致」判断（AC-NFR-06），

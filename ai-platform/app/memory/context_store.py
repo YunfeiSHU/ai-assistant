@@ -96,6 +96,26 @@ class ConversationStore(Protocol):
         """落库摘要（``REQ-MEM-003``）。"""
         ...
 
+    async def delete_message(
+        self,
+        conversation_id: str,
+        user_id: str,
+        *,
+        message_id: str = "",
+        role: str = "",
+        content: str = "",
+    ) -> int:
+        """从上下文删除一条消息，返回删除条数（B-04）。
+
+        网关的用户消息 ID 与 AI 侧上下文 ID 不保证一致，因此允许用
+        ``role + content`` 匹配最后一条；assistant 消息优先用 ``message_id``。
+        """
+        ...
+
+    async def delete_summary(self, conversation_id: str, user_id: str) -> None:
+        """删除摘要（消息被删后摘要可能覆盖了已删内容，必须失效）。"""
+        ...
+
     async def clear(self, conversation_id: str, user_id: str) -> None:
         """清空上下文（保留长期记忆，见 ``docs/07`` §5.4）。"""
         ...
@@ -167,6 +187,29 @@ class InMemoryConversationStore:
     ) -> None:
         self._get(conversation_id, user_id).summary = summary
 
+    async def delete_message(
+        self,
+        conversation_id: str,
+        user_id: str,
+        *,
+        message_id: str = "",
+        role: str = "",
+        content: str = "",
+    ) -> int:
+        conversation = self._get(conversation_id, user_id)
+        for index in range(len(conversation.messages) - 1, -1, -1):
+            message = conversation.messages[index]
+            if message_id and message.message_id == message_id:
+                del conversation.messages[index]
+                return 1
+            if role and content and message.role == role and message.content == content:
+                del conversation.messages[index]
+                return 1
+        return 0
+
+    async def delete_summary(self, conversation_id: str, user_id: str) -> None:
+        self._get(conversation_id, user_id).summary = None
+
     async def clear(self, conversation_id: str, user_id: str) -> None:
         conversation = self._get(conversation_id, user_id)
         conversation.messages.clear()
@@ -214,6 +257,20 @@ class UnavailableConversationStore:
     async def save_summary(
         self, conversation_id: str, user_id: str, summary: ConversationSummary
     ) -> None:
+        raise self._fail()
+
+    async def delete_message(
+        self,
+        conversation_id: str,
+        user_id: str,
+        *,
+        message_id: str = "",
+        role: str = "",
+        content: str = "",
+    ) -> int:
+        raise self._fail()
+
+    async def delete_summary(self, conversation_id: str, user_id: str) -> None:
         raise self._fail()
 
     async def clear(self, conversation_id: str, user_id: str) -> None:

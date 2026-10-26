@@ -61,6 +61,10 @@ func (h *ProxyHandler) Forward(class biz.AIProxyTimeoutClass, ownedConversation 
 			// 透传上游的重试建议（429/503 才会带）。
 			c.Header("Retry-After", resp.RetryAfter)
 		}
+		if resp.Location != "" {
+			// B-02：文档下载由上游 302 到预签名 URL；浏览器/CLI 直接跟随。
+			c.Header("Location", resp.Location)
+		}
 		c.Status(resp.Status)
 		if len(resp.Body) > 0 {
 			if _, werr := c.Writer.Write(resp.Body); werr != nil {

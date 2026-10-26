@@ -401,8 +401,10 @@ func run() error {
 			PIIHashSalt: cfg.Observ.PIIHashSalt,
 		},
 		Conversations: service.NewConversationHandler(convSvc),
-		Messages:      service.NewMessageHandler(msgSvc),
+		Messages:      service.NewMessageHandler(msgSvc, proxySvc),
 		Proxy:         service.NewProxyHandler(proxySvc),
+		TaskEvents:    service.NewTaskEventHandler(cfg.AI.BaseURL),
+		Search:        service.NewSearchHandler(data.NewMessageSearchRepo(d)),
 		Upload:        service.NewUploadHandler(proxySvc, cfg.AI.UploadMaxMB),
 		IdemStore:     idemStore,
 		// 期望的表清单由装配层传入：service 不 import data（规范 §四）。

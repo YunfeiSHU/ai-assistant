@@ -159,6 +159,28 @@ class MinioObjectStore:
                 raise mapped from exc
             raise AppError(ErrorCode.DOCUMENT_NOT_FOUND, "对象不存在", {"object_key": key}) from exc
 
+    async def presigned_get(self, key: str, *, expires_seconds: int = 300) -> str:
+        """生成短时预签名下载 URL；浏览器直接 GET 该 URL，不经过网关。"""
+        import anyio
+        from datetime import timedelta
+
+        def _presign() -> str:
+            return self.client.presigned_get_object(
+                self._settings.minio_bucket,
+                key,
+                expires=timedelta(seconds=max(30, expires_seconds)),
+            )
+
+        try:
+            return await anyio.to_thread.run_sync(_presign)
+        except AppError:
+            raise
+        except Exception as exc:
+            mapped = _classify_minio_error(exc)
+            if mapped is not None:
+                raise mapped from exc
+            raise
+
     async def delete(self, key: str) -> None:
         import anyio
         from minio.error import S3Error

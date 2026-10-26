@@ -6,12 +6,11 @@ import (
 	"strings"
 	"time"
 
-	"gorm.io/gorm"
-
 	"github.com/YunfeiSHU/ai-assistant/ai-platform-go/internal/biz"
 	"github.com/YunfeiSHU/ai-assistant/ai-platform-go/pkg/clockx"
 	"github.com/YunfeiSHU/ai-assistant/ai-platform-go/pkg/cursor"
 	"github.com/YunfeiSHU/ai-assistant/ai-platform-go/pkg/errs"
+	"gorm.io/gorm"
 )
 
 // ConvCursor 是会话列表的游标载荷。
@@ -128,8 +127,18 @@ func (r *conversationRepo) List(ctx context.Context, userID string, in biz.ListC
 		out.HasMore = true
 		rows = rows[:limit]
 	}
+	ids := make([]string, 0, len(rows))
 	for i := range rows {
-		out.Items = append(out.Items, *toConversationDO(&rows[i]))
+		ids = append(ids, rows[i].ID)
+	}
+	previews, err := r.lastMessagePreviews(ctx, userID, ids)
+	if err != nil {
+		return nil, err
+	}
+	for i := range rows {
+		item := toConversationDO(&rows[i])
+		item.LastMessagePreview = previews[rows[i].ID]
+		out.Items = append(out.Items, *item)
 	}
 	if out.HasMore && len(rows) > 0 {
 		last := rows[len(rows)-1]
@@ -146,7 +155,38 @@ func (r *conversationRepo) List(ctx context.Context, userID string, in biz.ListC
 	return out, nil
 }
 
-// applyConvCursor 把游标条件翻译成 SQL。
+// lastMessagePreviews 批量取每个会话最后一条非空 user/assistant 的 120 字预览。
+// 用一条聚合 SQL 而不是逐个会话查：列表一页 20 条，N+1 会把一个列表变成 21 次查询。
+func (r *conversationRepo) lastMessagePreviews(
+	ctx context.Context, userID string, conversationIDs []string,
+) (map[string]string, error) {
+	out := make(map[string]string, len(conversationIDs))
+	if len(conversationIDs) == 0 {
+		return out, nil
+	}
+	msgTable := quoteIdent(TableMessage)
+	query := "SELECT m.conversation_id, SUBSTR(m.content, 1, 120) AS content " +
+		"FROM " + msgTable + " AS m " +
+		"JOIN (SELECT conversation_id, MAX(seq) AS max_seq FROM " + msgTable +
+		" WHERE user_id = ? AND conversation_id IN ? AND role IN (?, ?) AND content <> '' " +
+		"GROUP BY conversation_id) AS latest " +
+		"ON latest.conversation_id = m.conversation_id AND latest.max_seq = m.seq " +
+		"WHERE m.user_id = ?"
+	var rows []struct {
+		ConversationID string `gorm:"column:conversation_id"`
+		Content        string `gorm:"column:content"`
+	}
+	if err := r.data.DB.GORM.WithContext(ctx).Raw(
+		query, userID, conversationIDs, biz.MessageRoleUser, biz.MessageRoleAssistant, userID,
+	).Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		out[row.ConversationID] = row.Content
+	}
+	return out, nil
+}
+
 // 必须分成「游标落在 NULL 段」与「游标有真实时间」两种情况：MySQL 里 NULL 的比较结果恒为 NULL，
 // `last_message_at < NULL` 一行都匹配不到 —— 写成统一的三值逻辑表达式会在翻到
 // 「没有消息的那一段」时静默返回空页。
@@ -177,6 +217,26 @@ func (r *conversationRepo) Update(ctx context.Context, userID, id string, patch 
 	if res.RowsAffected == 0 {
 		// ⚠️ 不能直接判定为「不存在」：把 status 改成与当前相同的值时，MySQL 会因「值没变」报告 0 行。
 		// 所以再确认真实可见性，否则「取消归档一个本就 active 的会话」会变成 404。
+		return r.ensureVisible(ctx, userID, id)
+	}
+	return nil
+}
+
+// DecrementMessageCount 在删除消息后把会话计数减一（B-04）。
+// 用 GREATEST 兜底：并发/重复删除不能让 count 变成负数。
+func (r *conversationRepo) DecrementMessageCount(
+	ctx context.Context, userID, id string, at time.Time,
+) error {
+	res := r.data.DB.GORM.WithContext(ctx).Model(&conversationPO{}).
+		Where("id = ? AND user_id = ? AND deleted_at IS NULL", id, userID).
+		Updates(map[string]any{
+			"message_count": gorm.Expr("GREATEST(message_count - 1, 0)"),
+			"updated_at":    at,
+		})
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
 		return r.ensureVisible(ctx, userID, id)
 	}
 	return nil

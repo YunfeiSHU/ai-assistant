@@ -15,6 +15,11 @@ Thumbs.db
 *.log
 logs/
 tmp/
+# 阶段验收脚本的本地缓存（tools/verify_stage0.py）
+ai-platform-go/.gocache/
+ai-platform-go/.gotmp/
+# 阶段 1 基线输出（tools/measure_chat.py）
+tools/out/
 
 # 各子项目的规则（Python 虚拟环境 / .env / 模型权重等）见
 # ai-platform/.gitignore

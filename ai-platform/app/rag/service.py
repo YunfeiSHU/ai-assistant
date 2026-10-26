@@ -457,6 +457,22 @@ class DocumentService:
         """取文档详情。"""
         return await self._repos.documents.get(doc_id, user_id)
 
+    async def download_document(
+        self, doc_id: str, user_id: str
+    ) -> tuple[Document, str | None, bytes | None]:
+        """返回下载目标：真实存储给预签名 URL，内存存储直接给字节（B-02）。
+
+        网关只负责把 302/字节原样交给浏览器；是否 302 由存储实现决定，
+        不在网关里分支「这是不是 MinIO」。
+        """
+        document = await self._repos.documents.get(doc_id, user_id)
+        presign = getattr(self._objects, "presigned_get", None)
+        if callable(presign):
+            url = await presign(document.object_key)
+            return document, url, None
+        data = await self._objects.get(document.object_key)
+        return document, None, data
+
     async def list_chunks(
         self, *, doc_id: str, user_id: str, limit: int = 50, cursor: str | None = None
     ) -> tuple[list[Chunk], str | None]:

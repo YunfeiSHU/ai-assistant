@@ -125,29 +125,31 @@ func (c *httpChatClient) Chat(ctx context.Context, req biz.ChatRequest) (*biz.Ch
 // 字段名以 AI 的 Pydantic 契约为准（HTTP 通道的契约真源是 AI 的 OpenAPI，docs/04-§2.1），
 // 这份结构体只是「按真源拼 JSON」，不新增任何语义。
 type chatRequestJSON struct {
-	Query          string            `json:"query"`
-	ConversationID string            `json:"conversation_id,omitempty"`
-	History        []biz.ChatMessage `json:"history,omitempty"`
-	UseRAG         bool              `json:"use_rag"`
-	KBIDs          []string          `json:"kb_ids"`
-	UseMemory      bool              `json:"use_memory"`
-	UseTools       bool              `json:"use_tools"`
-	Stream         bool              `json:"stream"`
-	Model          string            `json:"model,omitempty"`
-	Temperature    *float64          `json:"temperature,omitempty"`
-	TopK           *int              `json:"top_k,omitempty"`
-	RerankTopN     *int              `json:"rerank_top_n,omitempty"`
-	ScoreThreshold *float64          `json:"score_threshold,omitempty"`
+	Query            string            `json:"query"`
+	ConversationID   string            `json:"conversation_id,omitempty"`
+	History          []biz.ChatMessage `json:"history,omitempty"`
+	UseRAG           bool              `json:"use_rag"`
+	KBIDs            []string          `json:"kb_ids"`
+	AttachmentDocIDs []string          `json:"attachment_doc_ids,omitempty"`
+	UseMemory        bool              `json:"use_memory"`
+	UseTools         bool              `json:"use_tools"`
+	Stream           bool              `json:"stream"`
+	Model            string            `json:"model,omitempty"`
+	Temperature      *float64          `json:"temperature,omitempty"`
+	TopK             *int              `json:"top_k,omitempty"`
+	RerankTopN       *int              `json:"rerank_top_n,omitempty"`
+	ScoreThreshold   *float64          `json:"score_threshold,omitempty"`
 }
 
 func toHTTPChatRequest(req biz.ChatRequest) chatRequestJSON {
 	out := chatRequestJSON{
-		Query:          req.Query,
-		ConversationID: strings.TrimSpace(req.ConversationID),
-		UseRAG:         req.UseRAG,
-		KBIDs:          req.KBIDs,
-		UseMemory:      req.UseMemory,
-		UseTools:       req.UseTools,
+		Query:            req.Query,
+		ConversationID:   strings.TrimSpace(req.ConversationID),
+		UseRAG:           req.UseRAG,
+		KBIDs:            req.KBIDs,
+		AttachmentDocIDs: req.AttachmentDocIDs,
+		UseMemory:        req.UseMemory,
+		UseTools:         req.UseTools,
 		// 显式 false：`/chat` 只接受 false（`/chat/stream` 才是流式），
 		// 带上它能让「这个请求不是流式」在抓包时一目了然。
 		Stream:         false,

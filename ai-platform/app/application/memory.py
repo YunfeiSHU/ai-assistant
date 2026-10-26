@@ -535,6 +535,30 @@ class MemoryService:
         return ContextSnapshot(messages=messages, summary=summary, assembled=assembled)
 
     # ------------------------------------------------------------------
+    # 短期上下文删除（B-04）
+    # ------------------------------------------------------------------
+    async def delete_context_message(
+        self,
+        conversation_id: str,
+        user_id: str,
+        *,
+        message_id: str = "",
+        role: str = "",
+        content: str = "",
+    ) -> int:
+        """删除上下文消息并失效摘要；返回删除条数。"""
+        removed = await self._store.delete_message(
+            conversation_id,
+            user_id,
+            message_id=message_id,
+            role=role,
+            content=content,
+        )
+        if removed:
+            await self._store.delete_summary(conversation_id, user_id)
+        return removed
+
+    # ------------------------------------------------------------------
     # 摘要
     # ------------------------------------------------------------------
     async def summary(self, conversation_id: str, user_id: str) -> ConversationSummary | None:

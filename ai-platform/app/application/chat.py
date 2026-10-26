@@ -100,6 +100,8 @@ class PreparedChat:
     rag_chunks: list[RetrievedChunk]
     degraded_reasons: list[str] = field(default_factory=list)
     persist: bool = True
+    #: 只控制长期记忆；短期上下文是否落库由 conversation_id 决定（B-15）。
+    use_memory: bool = True
 
 
 class ChatService:
@@ -163,16 +165,26 @@ class ChatService:
         summary: str | None = None
         memories: list[MemoryItem] = []
 
-        if request.use_memory:
-            if conversation_id is None:
-                conversation_id = new_id("cv")
-            # 归属校验：不属于当前用户即 404（``docs/03`` §3.4）
+        # B-15：短期上下文与长期记忆解耦。
+        # 有 conversation_id 就恢复历史/摘要并允许落库；use_memory 只决定是否召回
+        # 长期记忆、是否在轮末做记忆抽取。否则关闭记忆会把多轮上下文一起关掉。
+        if conversation_id is not None:
+            await self._store.ensure(conversation_id, user_id)
+            history, summary, memories = await self._load_memory(
+                conversation_id,
+                user_id,
+                query,
+                degraded,
+                include_memories=request.use_memory,
+            )
+        elif request.use_memory:
+            conversation_id = new_id("cv")
             await self._store.ensure(conversation_id, user_id)
             history, summary, memories = await self._load_memory(
                 conversation_id, user_id, query, degraded
             )
         else:
-            # AC-CHAT-12：关闭记忆时只使用请求体里的 history
+            # 无会话 ID 且关闭记忆：真正的单轮问答，只使用请求体 history。
             history = [LLMMessage(role=m.role, content=m.content) for m in request.history]
 
         rag_chunks = await self._load_rag(request, user_id, query, degraded)
@@ -193,11 +205,19 @@ class ChatService:
             context=context,
             rag_chunks=rag_chunks,
             degraded_reasons=degraded,
-            persist=request.use_memory,
+            # 有会话就落短期上下文；不再跟随 use_memory。
+            persist=conversation_id is not None,
+            use_memory=request.use_memory,
         )
 
     async def _load_memory(
-        self, conversation_id: str, user_id: str, query: str, degraded: list[str]
+        self,
+        conversation_id: str,
+        user_id: str,
+        query: str,
+        degraded: list[str],
+        *,
+        include_memories: bool = True,
     ) -> tuple[list[LLMMessage], str | None, list[MemoryItem]]:
         """读取短期历史、摘要与长期记忆；任何一层失败只降级不报错。
 
@@ -218,7 +238,7 @@ class ChatService:
         history = [LLMMessage(role=item.role, content=item.content) for item in stored]
         summary = summary_record.content if summary_record else None
         memories: list[MemoryItem] = []
-        if self._memory is not None:
+        if include_memories and self._memory is not None:
             try:
                 memories = await self._memory.search(query, user_id)
             except AppError as exc:
@@ -233,7 +253,7 @@ class ChatService:
         self, request: ChatRequest, user_id: str, query: str, degraded: list[str]
     ) -> list[RetrievedChunk]:
         """检索知识库；不可用即降级（``AC-CHAT-08``）。"""
-        if not request.use_rag or self._retriever is None:
+        if (not request.use_rag and not request.attachment_doc_ids) or self._retriever is None:
             return []
         settings = self._settings
         try:
@@ -241,6 +261,7 @@ class ChatService:
                 query=query,
                 user_id=user_id,
                 kb_ids=list(request.kb_ids),
+                doc_ids=list(request.attachment_doc_ids),
                 top_k=request.top_k or settings.retrieval_top_k,
                 rerank_top_n=request.rerank_top_n or settings.reranker_top_n,
                 score_threshold=(
@@ -347,7 +368,12 @@ class ChatService:
             # 轮末动作（记忆抽取 / 摘要）必须在返回响应之前投递。只在流式路径里做收尾会让
             # 「用 /chat 还是 /chat/stream」决定记忆有没有被抽取 —— 默认走的是非流式，
             # 于是记忆永远是空的，而日志上看不出异常。
-            await self._after_turn(prepared.conversation_id, user_id, prepared.degraded_reasons)
+            await self._after_turn(
+                prepared.conversation_id,
+                user_id,
+                prepared.degraded_reasons,
+                use_memory=prepared.use_memory,
+            )
 
         elapsed_ms = int((time.perf_counter() - started) * 1000)
         logger.info(
@@ -471,7 +497,12 @@ class ChatService:
         answer = "".join(buffer)
         if prepared.persist and prepared.conversation_id:
             await self._persist(prepared.conversation_id, user_id, prepared, answer)
-            await self._after_turn(prepared.conversation_id, user_id, prepared.degraded_reasons)
+            await self._after_turn(
+                prepared.conversation_id,
+                user_id,
+                prepared.degraded_reasons,
+                use_memory=prepared.use_memory,
+            )
 
         # 流式不能回溯裁剪：`[9]` 可能在某个 delta 里就已经推给前端了，而把越界标注
         # 「吐一半再撤回」在 SSE 协议里没有表达方式。所以这里只做审计（``docs/06`` §6 用的是
@@ -505,8 +536,17 @@ class ChatService:
     # ------------------------------------------------------------------
     # 轮末动作：记忆抽取与摘要（``docs/07`` §3.1 / §5.1）
     # ------------------------------------------------------------------
-    async def _after_turn(self, conversation_id: str, user_id: str, degraded: list[str]) -> None:
+    async def _after_turn(
+        self,
+        conversation_id: str,
+        user_id: str,
+        degraded: list[str],
+        *,
+        use_memory: bool = True,
+    ) -> None:
         """一轮对话结束后的收尾：投递记忆抽取，按需生成摘要。
+
+        ``use_memory`` 只关闭长期记忆抽取；摘要属于短期上下文，仍按阈值生成（B-15）。
 
         两个动作都不得把失败冒泡给调用方：它们是在用户已经拿到回答之后执行的，让它们把一次
         成功对话变成 500 是最不划算的取舍。
@@ -525,17 +565,19 @@ class ChatService:
             logger.warning("memory.turn_snapshot_failed", extra={"error": str(exc)})
             messages = []
         turn_marker = messages[-1].message_id if messages else "empty"
-        try:
-            await self._submit(
-                TaskType.MEMORY_EXTRACT,
-                user_id=user_id,
-                resource_type=ResourceType.CONVERSATION,
-                resource_id=conversation_id,
-                payload={"conversation_id": conversation_id},
-                turn_marker=turn_marker,
-            )
-        except Exception as exc:
-            logger.warning("memory.extract_submit_failed", extra={"error": str(exc)})
+
+        if use_memory:
+            try:
+                await self._submit(
+                    TaskType.MEMORY_EXTRACT,
+                    user_id=user_id,
+                    resource_type=ResourceType.CONVERSATION,
+                    resource_id=conversation_id,
+                    payload={"conversation_id": conversation_id},
+                    turn_marker=turn_marker,
+                )
+            except Exception as exc:
+                logger.warning("memory.extract_submit_failed", extra={"error": str(exc)})
 
         builder = self._memory.summary_builder
         if builder is None or not self._settings.summary_enabled:

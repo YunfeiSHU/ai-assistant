@@ -73,12 +73,16 @@ type StreamMetaEvent struct {
 	ConversationID string
 	// MessageID 是 AI 侧本条回答的 ID（网关自己的消息 ID 另生成）。
 	MessageID string
-	Model     string
+	// UserMessageID / UserSeq 是本轮 user 消息在网关台账里的 ID 与序号（B-05）。
+	// AI 侧不知道网关的台账 ID，由网关在转发 meta 时补上。
+	UserMessageID string
+	UserSeq       int
+	Model         string
 	// CreatedAt 是 RFC3339 毫秒 UTC 字符串，原样透传（解析只会多一个「格式非法就失败」的分支）。
 	CreatedAt string
 	Degraded  bool
 	// DegradedReasons 是降级原因列表，只用于落库（docs/04-§9），
-	// 不会出现在下发给客户端的 `meta` 帧（那帧字段固定为契约的五个，docs/04-§2.3）。
+	// 不会出现在下发给客户端的 `meta` 帧（该帧字段见 docs/04-§2.3）。
 	//
 	// 这是网关在 proto 里补出的字段：gRPC 通道 AI 侧会填，HTTP/SSE 兜底通道的 meta 帧只有布尔，此时为空。
 	DegradedReasons []string

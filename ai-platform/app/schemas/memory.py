@@ -102,6 +102,18 @@ class MemorySettingsUpdate(StrictModel):
     memory_top_n: int | None = Field(default=None, ge=1, le=20)
 
 
+class ContextMessageDelete(StrictModel):
+    """删除上下文消息的请求体（B-04）。
+
+    ``message_id`` 优先；AI 侧用户消息 ID 可能与网关不同，故允许用
+    ``role + content`` 定位最后一条。
+    """
+
+    message_id: str = ""
+    role: str = ""
+    content: str = ""
+
+
 class ContextMessageOut(StrictModel):
     """``GET /context`` 里的一条消息。"""
 
@@ -160,6 +172,7 @@ class SummaryRebuildAccepted(StrictModel):
 __all__ = [
     "ContextBudgetOut",
     "ContextMessageOut",
+    "ContextMessageDelete",
     "ContextSummaryOut",
     "ConversationContextOut",
     "MemoryCreate",
