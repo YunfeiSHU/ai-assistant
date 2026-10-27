@@ -1,6 +1,7 @@
 # Personal AI Assistant｜个人智能工作台
 
-一个面向个人知识工作的全栈 AI 助手：把**对话、知识库、长期记忆、配额与工具调用**放在同一个工作台里。  
+一个面向个人知识工作的全栈 AI 助手：把**对话、知识库、长期记忆、配额与工具调用**放在同一个工作台里。
+
 Web 负责可读可操作的界面，Go 负责身份、会话台账与配额，Python 负责 Agent、RAG、Memory 与异步任务。
 
 ![工作台](web/previews/chat-home-product.png)
